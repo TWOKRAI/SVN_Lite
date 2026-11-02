@@ -452,6 +452,7 @@ class Settings:
     project_dirs: list[str] = field(default_factory=list)
     mine_col2_collapsed: bool = False                      # «Мои проекты»: свёрнута колонка «Проекты»
     mine_col3_collapsed: bool = False                      # «Мои проекты»: свёрнута колонка «Состояние проекта»
+    mine_col2_width: int = 0                               # ширина колонки «Проекты» (px до масштаба экрана); 0 - по умолчанию
     tray_on_close: bool = True                             # крестик окна сворачивает программу в трей, а не закрывает
     tray_hint_shown: bool = False                          # подсказка «программа продолжает работать у часов» уже показана
     # уведомления и фоновая проверка (Task E.2); допустимые значения и проверка - clean_notify
@@ -671,6 +672,8 @@ class SettingsStore:
                 project_dirs=clean_project_dirs(data.get("project_dirs"), text("last_dir")),
                 mine_col2_collapsed=flag("mine_col2_collapsed") or False,
                 mine_col3_collapsed=flag("mine_col3_collapsed") or False,
+                mine_col2_width=data["mine_col2_width"] if type(data.get("mine_col2_width")) is int
+                and 100 <= data["mine_col2_width"] <= 2000 else 0,
                 tray_on_close=flag("tray_on_close") is not False,
                 tray_hint_shown=flag("tray_hint_shown") is True,
                 local_histories={k: v for k, v in data["local_histories"].items()

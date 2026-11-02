@@ -346,7 +346,7 @@ def apply(root: tk.Misc, px: Callable[[int], int] = lambda v: v, mode: str = "li
                 ("Menubutton.label", {"sticky": ""})]})]})]})])
     s.configure("MenuBar.TMenubutton", background=p.bg, foreground=p.text, bordercolor=p.bg,
                 lightcolor=p.bg, darkcolor=p.bg, focuscolor=p.bg, padding=(px(10), px(4)), relief="flat",
-                borderwidth=0, font=font)
+                borderwidth=0, font=font, width=0)     # width=0: по тексту (в clam у кнопок минимум 11 символов)
     menubar_states = [("pressed", p.button_pressed), ("active", p.button_hover)]
     s.map("MenuBar.TMenubutton", background=menubar_states, lightcolor=menubar_states,
           darkcolor=menubar_states, bordercolor=menubar_states)

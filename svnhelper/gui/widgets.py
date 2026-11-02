@@ -569,6 +569,16 @@ class CollapsibleColumn(ttk.Frame):
         self._place()
         self.event_generate(self.EVENT)
 
+    @property
+    def width(self) -> int:
+        return self._width
+
+    def set_width(self, width: int) -> None:
+        """Запрошенная ширина развёрнутой колонки (меняется перетаскиванием разделителя); у свёрнутой не трогается."""
+        self._width = width
+        if not self._collapsed:
+            self.configure(width=width)
+
     def toggle(self) -> None:
         self.set_collapsed(not self._collapsed)
 

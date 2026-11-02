@@ -1248,7 +1248,8 @@ class Stage3GuiTests(unittest.TestCase):
         tab, col2, col3 = app.mine_tab, app.mine_col2, app.mine_col3
         weight = lambda index: int(tab.grid_columnconfigure(index, "weight"))   # noqa: E731
         self.assertFalse(col2.collapsed or col3.collapsed)
-        self.assertEqual((weight(0), weight(1), weight(2)), (0, 0, 1))          # растягивается колонка 3
+        self.assertEqual((weight(0), weight(1), weight(3)), (0, 0, 1))          # растягивается колонка 3
+        self.assertEqual(app.mine_sash.winfo_manager(), "grid")                  # между развёрнутыми колонками - разделитель
         self.assertEqual(col2.body.winfo_manager(), "grid")
         self.assertEqual(col2.strip.winfo_manager(), "")
         toggled = []
@@ -1267,20 +1268,56 @@ class Stage3GuiTests(unittest.TestCase):
         self.assertFalse(SettingsStore(Path(tmp) / "s.json").settings.mine_col2_collapsed)
 
         col3.toggle_btn.invoke()                                                 # колонка 3 свёрнута:
-        self.assertEqual((weight(1), weight(2)), (1, 0))                         # колонка 2 занимает её место
+        self.assertEqual((weight(1), weight(3)), (1, 0))                         # колонка 2 занимает её место
+        self.assertEqual(app.mine_sash.winfo_manager(), "")                      # разделитель не нужен
         self.assertEqual(col3.strip.itemcget("title", "text"), "Состояние")
         app.set_theme("dark")                                                    # полоса перерисована в тёмной теме
         self.assertEqual(col3.strip.itemcget("title", "fill"), theme.DARK.muted)
         self.assertEqual(col3.strip.cget("background"), theme.DARK.surface_alt)
         col2.collapse()                                                          # обе свёрнуты: ничего не растягивается,
-        self.assertEqual((weight(1), weight(2)), (0, 1))                         # полоса «Состояние» у правого края
+        self.assertEqual((weight(1), weight(3)), (0, 1))                         # полоса «Состояние» у правого края
         self.assertEqual(col3.grid_info()["sticky"], "nes")
 
         again = self.reopen(tmp)                                                 # после перезапуска - как было
         self.assertTrue(again.mine_col2.collapsed and again.mine_col3.collapsed)
         again.mine_col2.expand()
         self.assertEqual((int(again.mine_tab.grid_columnconfigure(1, "weight")),
-                          int(again.mine_tab.grid_columnconfigure(2, "weight"))), (1, 0))
+                          int(again.mine_tab.grid_columnconfigure(3, "weight"))), (1, 0))
+
+    def test_column_sash_resizes_projects_column_and_remembers_width(self):
+        from svnhelper.config import SettingsStore
+        root, app, tmp = self.make_app()
+        root.deiconify()
+        root.geometry("1100x700")
+        root.update()
+        col2, sash = app.mine_col2, app.mine_sash
+        before = col2.winfo_width()
+
+        def drag(dx):
+            start = sash.winfo_rootx() + 2
+            sash.event_generate("<ButtonPress-1>", x=2, y=5, rootx=start, rooty=0)
+            sash.event_generate("<B1-Motion>", x=2 + dx, y=5, rootx=start + dx, rooty=0)
+            sash.event_generate("<ButtonRelease-1>", x=2 + dx, y=5, rootx=start + dx, rooty=0)
+            root.update()
+
+        drag(60)
+        self.assertGreater(col2.winfo_width(), before + 40)                      # колонка «Проекты» стала шире
+        self.assertEqual(SettingsStore(Path(tmp) / "s.json").settings.mine_col2_width,
+                         round(col2.width / (app.px(1000) / 1000)))               # и ширина запомнена
+        drag(-5000)
+        self.assertEqual(col2.width, app.px(app.MINE_COL2_MIN))                  # меньше минимума не сузить
+        drag(5000)
+        self.assertGreaterEqual(app.mine_col3.winfo_width(), app.px(app.MINE_COL3_MIN) - 5)   # колонке 3 хватает места
+        self.assertEqual(self.reopen(tmp).mine_col2.width, col2.width)           # после перезапуска - та же ширина
+
+    def test_menu_buttons_fit_their_text(self):
+        root, app, tmp = self.make_app()
+        root.update_idletasks()
+        buttons = [w for w in app.menu_bar.winfo_children()]
+        self.assertEqual([b.cget("text") for b in buttons], ["Настройки", "Вид", "Справка"])
+        widths = {b.cget("text"): b.winfo_reqwidth() for b in buttons}
+        self.assertLess(widths["Вид"], widths["Справка"])                        # короткая подпись - узкая кнопка
+        self.assertLess(widths["Справка"], widths["Настройки"])
 
     def test_open_project_tab_expands_column(self):
         from svnhelper.config import SettingsStore

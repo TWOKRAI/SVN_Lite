@@ -70,6 +70,7 @@ class ProjectsTabMixin:
     MINE_COL2_WIDTH = 260     # ширина колонки «Проекты», пока колонка 3 развёрнута (px до масштаба экрана)
     MINE_COL3_WIDTH = 360     # запрошенная ширина колонки 3 (дальше растягивается весом)
     MINE_STRIP_WIDTH = 28     # ширина свёрнутой колонки
+    MINE_SASH_WIDTH = 8       # разделитель колонок 2 и 3 (он же промежуток между ними)
     # внутренние вкладки колонки 3: ключ для open_project_tab → подпись на ярлыке
     PROJECT_TABS = PROJECT_TABS
     HISTORY_LIMIT = 50        # сколько последних сохранений показывает вкладка «История»
@@ -91,7 +92,7 @@ class ProjectsTabMixin:
         # предупреждение о давно занятых файлах (скрыто, пока нечего напоминать)
         self.lock_warn = tk.Frame(tab, background=p.warn_bg, padx=px(10), pady=px(6), highlightthickness=1,
                                   highlightbackground=p.warn_border, highlightcolor=p.warn_border)
-        self.lock_warn.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, px(8)))
+        self.lock_warn.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, px(8)))
         self.lock_warn_var = tk.StringVar()
         warn_label = tk.Label(self.lock_warn, textvariable=self.lock_warn_var, background=p.warn_bg,
                               foreground=p.text, anchor="w", justify="left", wraplength=px(560),
@@ -104,7 +105,7 @@ class ProjectsTabMixin:
         # незаконченная отправка проекта на сервер (скрыто, пока нечего завершать); кнопки обрабатывает App
         self.publish_warn = tk.Frame(tab, background=p.warn_bg, padx=px(10), pady=px(6), highlightthickness=1,
                                      highlightbackground=p.warn_border, highlightcolor=p.warn_border)
-        self.publish_warn.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(px(8), 0))
+        self.publish_warn.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(px(8), 0))
         self.publish_warn_var = tk.StringVar()
         publish_label = tk.Label(self.publish_warn, textvariable=self.publish_warn_var, background=p.warn_bg,
                                  foreground=p.text, anchor="w", justify="left", wraplength=px(560),
@@ -169,7 +170,8 @@ class ProjectsTabMixin:
         # колонки 2 и 3
         if not self.settings.project_dirs and self.dir_var.get().strip():   # первый запуск: папка по умолчанию
             self.settings.project_dirs = add_project_dir([], self.dir_var.get())
-        self.mine_col2 = CollapsibleColumn(tab, "Проекты", side="left", width=px(self.MINE_COL2_WIDTH),
+        self.mine_col2 = CollapsibleColumn(tab, "Проекты", side="left",
+                                           width=px(self.settings.mine_col2_width or self.MINE_COL2_WIDTH),
                                            strip_width=px(self.MINE_STRIP_WIDTH),
                                            collapsed=self.settings.mine_col2_collapsed)
         self.mine_col3 = CollapsibleColumn(tab, "Состояние проекта", side="right", width=px(self.MINE_COL3_WIDTH),
@@ -179,6 +181,7 @@ class ProjectsTabMixin:
             column.bind(CollapsibleColumn.EVENT, self._on_mine_column_toggled)
         self._build_mine_projects_column(self.mine_col2.body)
         self._build_mine_state_column(self.mine_col3.body)
+        self._build_mine_sash(tab)
         self._layout_mine_columns()
 
         # сообщения о ходе работы больше не занимают место внизу: они видны в подсказке индикатора в шапке
@@ -265,16 +268,56 @@ class ProjectsTabMixin:
 
     # -- колонки: сворачивание и раскладка -------------------------------------------------
 
+    MINE_COL2_MIN = 180       # границы ширины колонки «Проекты» при перетаскивании разделителя (px до масштаба)
+    MINE_COL3_MIN = 300       # столько остаётся колонке «Состояние проекта»
+
+    def _build_mine_sash(self, tab: ttk.Frame) -> None:
+        """Разделитель между колонками 2 и 3: тянется мышью, пока развёрнуты обе колонки."""
+        px = self.px
+        p = self.palette
+        self.mine_sash = sash = tk.Frame(tab, width=px(self.MINE_SASH_WIDTH), background=p.bg, cursor="sb_h_double_arrow")
+        drag: dict[str, int] = {}
+
+        def press(event) -> None:
+            drag["x"], drag["width"] = event.x_root, self.mine_col2.winfo_width()
+
+        def move(event) -> None:
+            if "x" not in drag:
+                return
+            room = tab.winfo_width() - self.actions_row.winfo_width() - sash.winfo_width() - px(self.MINE_COL3_MIN + 40)
+            width = drag["width"] + event.x_root - drag["x"]
+            self.mine_col2.set_width(max(px(self.MINE_COL2_MIN), min(width, max(px(self.MINE_COL2_MIN), room))))
+
+        def release(_event) -> None:
+            if drag.pop("x", None) is None:
+                return
+            scale = px(1000) / 1000
+            width = max(self.MINE_COL2_MIN, round(self.mine_col2.width / scale))
+            if self.settings.mine_col2_width != width:
+                self.settings.mine_col2_width = width
+                self.settings_store.save()
+
+        sash.bind("<ButtonPress-1>", press)
+        sash.bind("<B1-Motion>", move)
+        sash.bind("<ButtonRelease-1>", release)
+        sash.bind("<Enter>", lambda _e: sash.configure(background=self.palette.border_strong))
+        sash.bind("<Leave>", lambda _e: sash.configure(background=self.palette.bg))
+
     def _layout_mine_columns(self) -> None:
         """Веса колонок по их состоянию: колонка 3 растягивается; свёрнута - растягивается колонка 2.
-        Свёрнуты обе - полоса «Состояние» прижата к правому краю."""
+        Свёрнуты обе - полоса «Состояние» прижата к правому краю. Пока развёрнуты обе, между ними разделитель."""
         tab, col2, col3 = self.mine_tab, self.mine_col2, self.mine_col3
         px = self.px
         wide2 = col3.collapsed and not col2.collapsed
+        both = not col2.collapsed and not col3.collapsed
         tab.columnconfigure(1, weight=1 if wide2 else 0)
-        tab.columnconfigure(2, weight=0 if wide2 else 1)
-        col2.grid(row=1, column=1, sticky="nsw" if col2.collapsed else "nsew", padx=(0, px(8)))
-        col3.grid(row=1, column=2, sticky="nse" if col3.collapsed else "nsew")
+        tab.columnconfigure(3, weight=0 if wide2 else 1)
+        col2.grid(row=1, column=1, sticky="nsw" if col2.collapsed else "nsew", padx=(0, 0 if both else px(8)))
+        col3.grid(row=1, column=3, sticky="nse" if col3.collapsed else "nsew")
+        if both:
+            self.mine_sash.grid(row=1, column=2, sticky="ns")
+        else:
+            self.mine_sash.grid_remove()
         self._apply_mine_view(wide2)
 
     def _apply_mine_view(self, wide: bool) -> None:
