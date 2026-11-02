@@ -685,11 +685,11 @@ _WRITE_RETRIES = 3               # попыток заменить файл на
 
 @contextlib.contextmanager
 def _settings_file_lock(settings_path: Path, timeout: float = SETTINGS_LOCK_TIMEOUT):
-    """Временная заглушка именованного замка «settings» на msvcrt.locking.
+    """Замок файла настроек на msvcrt.locking.
 
-    TODO: заменить на folderlock.named_lock после AG.0a (вызов named_lock("settings", timeout)).
-    Замок лежит рядом с файлом настроек, чтобы разные файлы настроек (например, в тестах) не мешали друг другу.
-    Не вызывать повторно из того же потока: замок не рекурсивный.
+    Намеренно не folderlock.named_lock: тот общий на всю папку данных, а замок настроек привязан к самому файлу.
+    Он лежит рядом с ним, поэтому разные файлы настроек (например, в тестах) не мешают друг другу и не трогают
+    настоящую папку данных. Не вызывать повторно из того же потока: замок не рекурсивный.
     """
     import msvcrt
     lock_path = settings_path.with_name(settings_path.name + ".lock")
