@@ -22,6 +22,7 @@ STORAGE_WORD = re.compile(r"хранилищ", re.IGNORECASE)
 # модули, написанные с этим правилом с самого начала; ревизия/репозиторий/svnadmin проверяются только в них
 RU_CHECKED = ("gui/new_project_dialog.py", "newproject.py", "gui/server_tree.py", "localrepo.py", "gui/projects_tab.py",
               "gui/project_panel.py")
+RU_CHECKED_DIRS = ("ops/",)      # слой ops для ИИ-помощника (AG.1): все его модули, в том числе будущие
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 # что разрешено оставить в тексте: названия программ, адреса и ключи для администратора
 # (commit_templates и update_path - ключи svn_helper.json, их называют в сообщениях администратору)
@@ -75,7 +76,8 @@ class UiTextsTests(unittest.TestCase):
                 cleaned = text
                 for ok in ALLOWED:
                     cleaned = cleaned.replace(ok, "")
-                ru_checked = path.relative_to(ROOT / "svnhelper").as_posix() in RU_CHECKED
+                relative = path.relative_to(ROOT / "svnhelper").as_posix()
+                ru_checked = relative in RU_CHECKED or relative.startswith(RU_CHECKED_DIRS)
                 if (FORBIDDEN.search(cleaned) or SVN_WORD.search(cleaned) or STORAGE_WORD.search(cleaned)
                         or (ru_checked and FORBIDDEN_RU.search(cleaned))):
                     found.append(f"{path.relative_to(ROOT)}:{lineno}: {text[:100]!r}")
