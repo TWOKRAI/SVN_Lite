@@ -222,6 +222,11 @@ class CreateError(Exception):
     def kind(self) -> ErrorKind:
         return self.error.kind
 
+    def to_dict(self) -> dict:
+        """Для CLI и MCP: тип ошибки, возвращено ли всё на сервере и короткий текст. Без сырого ответа svn."""
+        from .messages import short_message
+        return {"kind": self.kind.value, "rolled_back": self.rolled_back, "message": short_message(self.kind)}
+
 
 @dataclass
 class CreateResult:

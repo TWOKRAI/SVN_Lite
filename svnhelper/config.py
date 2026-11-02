@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import copy
 import ctypes
 import dataclasses
 import json
@@ -13,10 +15,11 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 CONFIG_NAME = "svn_helper.json"
 APP_DIR_NAME = "SvnHelper"
@@ -630,70 +633,195 @@ def clean_project_dirs(raw: object, last_dir: str = "") -> list[str]:
     return add_project_dir(dirs, last_dir)
 
 
+def _parse_settings(data: dict) -> Settings:
+    """Settings из содержимого settings.json; мусорные значения заменяются стандартными.
+    Если data не словарь, бросает AttributeError."""
+
+    def text(key: str) -> str:
+        return data[key] if isinstance(data.get(key), str) else ""
+
+    def flag(key: str) -> Optional[bool]:
+        return data[key] if isinstance(data.get(key), bool) else None
+
+    repos = data.get("repos")
+    return Settings(
+        last_dir=text("last_dir"), username=text("username"), password_enc=text("password_enc"),
+        config_path=text("config_path"), server=text("server"), svn_path=text("svn_path"),
+        repos=[r for r in repos if isinstance(r, str) and r] if isinstance(repos, list) else [],
+        skip_junk=flag("skip_junk"), show_report=flag("show_report"),
+        recent=_clean_recent(data.get("recent")),
+        favorites=list(dict.fromkeys(f for f in data["favorites"] if isinstance(f, str) and f))
+        if isinstance(data.get("favorites"), list) else [],
+        remember_password=flag("remember_password"),
+        update_attempt=text("update_attempt"),
+        theme=text("theme") if text("theme") in ("system", "light", "dark") else "system",
+        mirrors=clean_mirrors(data.get("mirrors")) or [],
+        opened={k: float(v) for k, v in data["opened"].items()
+                if isinstance(k, str) and isinstance(v, (int, float))}
+        if isinstance(data.get("opened"), dict) else {},
+        mine_sort=text("mine_sort") if text("mine_sort") in ("name", "opened", "created", "changed")
+        else "name",
+        recent_comments=[c for c in data["recent_comments"] if isinstance(c, str) and c.strip()][:5]
+        if isinstance(data.get("recent_comments"), list) else [],
+        # старые настройки знали одну папку (last_dir): она становится первой в списке
+        project_dirs=clean_project_dirs(data.get("project_dirs"), text("last_dir")),
+        mine_col2_collapsed=flag("mine_col2_collapsed") or False,
+        mine_col3_collapsed=flag("mine_col3_collapsed") or False,
+        mine_col2_width=data["mine_col2_width"] if type(data.get("mine_col2_width")) is int
+        and 100 <= data["mine_col2_width"] <= 2000 else 0,
+        tray_on_close=flag("tray_on_close") is not False,
+        tray_hint_shown=flag("tray_hint_shown") is True,
+        local_histories={k: v for k, v in data["local_histories"].items()
+                         if isinstance(k, str) and k and isinstance(v, str) and v}
+        if isinstance(data.get("local_histories"), dict) else {},
+        **clean_notify({k: data[k] for k in NOTIFY_DEFAULTS if k in data})[0],
+    )
+
+
+# Замок настроек: окно, консольная программа и сервер для ИИ-агента правят один settings.json.
+# Внутри процесса потоки ждут друг друга обычным замком (замки файла двух потоков одного процесса конфликтуют),
+# между процессами - замок байта в файле рядом с настройками.
+_SETTINGS_THREAD_LOCK = threading.Lock()
+SETTINGS_LOCK_TIMEOUT = 10.0     # секунд ждать, пока другая программа закончит запись настроек
+_WRITE_RETRIES = 3               # попыток заменить файл настроек (антивирус или читатель держит его мгновение)
+
+
+@contextlib.contextmanager
+def _settings_file_lock(settings_path: Path, timeout: float = SETTINGS_LOCK_TIMEOUT):
+    """Замок файла настроек на msvcrt.locking.
+
+    Намеренно не folderlock.named_lock: тот общий на всю папку данных, а замок настроек привязан к самому файлу.
+    Он лежит рядом с ним, поэтому разные файлы настроек (например, в тестах) не мешают друг другу и не трогают
+    настоящую папку данных. Не вызывать повторно из того же потока: замок не рекурсивный.
+    """
+    import msvcrt
+    lock_path = settings_path.with_name(settings_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    with _SETTINGS_THREAD_LOCK:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+        try:
+            while True:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Настройки сейчас сохраняет другая программа. Повторите позже.") from None
+                    time.sleep(0.02)
+            try:
+                yield
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(fd)
+
+
 class SettingsStore:
-    """settings.json: личные настройки. Пароль хранится только зашифрованным (DPAPI) и только по желанию."""
+    """settings.json: личные настройки. Пароль хранится только зашифрованным (DPAPI) и только по желанию.
+
+    Файл могут править несколько программ сразу, поэтому запись идёт под замком: `update` перечитывает файл,
+    применяет правку и пишет результат, `save` не стирает чужие записи о локальной истории.
+    """
 
     def __init__(self, path: Optional[Path] = None):
         self.path = path or data_dir() / "settings.json"
-        self._save_lock = threading.Lock()      # save зовут и главный поток, и фоновый (запись о локальной истории)
         self.settings = self._load()
+        self._synced = copy.deepcopy(self.settings)    # как настройки выглядели при последней сверке с файлом
 
     def _load(self) -> Settings:
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
-
-            def text(key: str) -> str:
-                return data[key] if isinstance(data.get(key), str) else ""
-
-            def flag(key: str) -> Optional[bool]:
-                return data[key] if isinstance(data.get(key), bool) else None
-
-            repos = data.get("repos")
-            return Settings(
-                last_dir=text("last_dir"), username=text("username"), password_enc=text("password_enc"),
-                config_path=text("config_path"), server=text("server"), svn_path=text("svn_path"),
-                repos=[r for r in repos if isinstance(r, str) and r] if isinstance(repos, list) else [],
-                skip_junk=flag("skip_junk"), show_report=flag("show_report"),
-                recent=_clean_recent(data.get("recent")),
-                favorites=list(dict.fromkeys(f for f in data["favorites"] if isinstance(f, str) and f))
-                if isinstance(data.get("favorites"), list) else [],
-                remember_password=flag("remember_password"),
-                update_attempt=text("update_attempt"),
-                theme=text("theme") if text("theme") in ("system", "light", "dark") else "system",
-                mirrors=clean_mirrors(data.get("mirrors")) or [],
-                opened={k: float(v) for k, v in data["opened"].items()
-                        if isinstance(k, str) and isinstance(v, (int, float))}
-                if isinstance(data.get("opened"), dict) else {},
-                mine_sort=text("mine_sort") if text("mine_sort") in ("name", "opened", "created", "changed")
-                else "name",
-                recent_comments=[c for c in data["recent_comments"] if isinstance(c, str) and c.strip()][:5]
-                if isinstance(data.get("recent_comments"), list) else [],
-                # старые настройки знали одну папку (last_dir): она становится первой в списке
-                project_dirs=clean_project_dirs(data.get("project_dirs"), text("last_dir")),
-                mine_col2_collapsed=flag("mine_col2_collapsed") or False,
-                mine_col3_collapsed=flag("mine_col3_collapsed") or False,
-                mine_col2_width=data["mine_col2_width"] if type(data.get("mine_col2_width")) is int
-                and 100 <= data["mine_col2_width"] <= 2000 else 0,
-                tray_on_close=flag("tray_on_close") is not False,
-                tray_hint_shown=flag("tray_hint_shown") is True,
-                local_histories={k: v for k, v in data["local_histories"].items()
-                                 if isinstance(k, str) and k and isinstance(v, str) and v}
-                if isinstance(data.get("local_histories"), dict) else {},
-                **clean_notify({k: data[k] for k in NOTIFY_DEFAULTS if k in data})[0],
-            )
+            return _parse_settings(json.loads(self.path.read_text(encoding="utf-8-sig")))
         except (OSError, ValueError, AttributeError):
             return Settings()
 
-    def save(self) -> None:
-        with self._save_lock:
-            payload = dataclasses.asdict(self.settings)
+    def _read_file(self) -> Optional[Settings]:
+        """Настройки из файла. None: файла нет или он повреждён (тогда за основу берётся то, что в памяти).
+        Другая ошибка чтения (файл занят) пробрасывается: иначе чужие настройки были бы затёрты."""
+        try:
+            return _parse_settings(json.loads(self.path.read_text(encoding="utf-8-sig")))
+        except FileNotFoundError:
+            return None
+        except (ValueError, AttributeError):
+            logging.getLogger("svnhelper").warning("Файл настроек %s повреждён: он будет записан заново", self.path)
+            return None
+
+    def _write(self, settings: Settings) -> None:
+        """Атомарная запись (временный файл и замена), до 3 попыток. Вызывать под замком."""
+        payload = json.dumps(dataclasses.asdict(settings), ensure_ascii=False, indent=2)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        for attempt in range(_WRITE_RETRIES):
             try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self.path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.write_text(payload, encoding="utf-8")
                 os.replace(tmp, self.path)
+                return
             except OSError:
-                logging.getLogger("svnhelper").exception("Не удалось сохранить настройки")
+                if attempt == _WRITE_RETRIES - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+
+    def update(self, fn: Callable[[Settings], None]) -> None:
+        """Под замком перечитывает файл, применяет fn к свежим настройкам и записывает их.
+
+        Правки других программ в файле сохраняются. Объект self.settings (на него ссылается окно) обновляется
+        на месте: берутся поля, которые изменила fn, и поля без несохранённых правок окна в памяти.
+        Ошибка записи пишется в журнал и пробрасывается.
+        """
+        try:
+            with _settings_file_lock(self.path):
+                fresh = self._read_file()
+                if fresh is None:
+                    fresh = copy.deepcopy(self.settings)
+                before = copy.deepcopy(fresh)
+                fn(fresh)
+                if fresh != before or not self.path.exists():
+                    self._write(fresh)
+                self._adopt(before, fresh)
+        except OSError:
+            logging.getLogger("svnhelper").exception("Не удалось сохранить настройки")
+            raise
+
+    def _adopt(self, before: Settings, after: Settings) -> None:
+        """Переносит в self.settings результат update, не затирая несохранённые правки окна в других полях."""
+        for item in dataclasses.fields(Settings):
+            name = item.name
+            changed_by_fn = getattr(before, name) != getattr(after, name)
+            unsaved_edit = getattr(self.settings, name) != getattr(self._synced, name)
+            if changed_by_fn or not unsaved_edit:
+                setattr(self.settings, name, copy.deepcopy(getattr(after, name)))
+                setattr(self._synced, name, copy.deepcopy(getattr(after, name)))
+
+    def save(self) -> None:
+        """Записывает настройки из памяти. Записи о локальной истории, которые добавили другие программы,
+        остаются (удалять их можно только через update)."""
+        try:
+            with _settings_file_lock(self.path):
+                payload = copy.deepcopy(self.settings)
+                on_disk = self._read_file()
+                if on_disk is not None:
+                    payload.local_histories = {**on_disk.local_histories, **self.settings.local_histories}
+                self._write(payload)
+                self._synced = copy.deepcopy(self.settings)
+        except OSError:
+            logging.getLogger("svnhelper").exception("Не удалось сохранить настройки")
+
+    def refresh(self, keys: Sequence[str] = ("local_histories",)) -> None:
+        """Подтягивает в память указанные поля из файла (правки других программ).
+        Ошибка чтения пишется в журнал и пробрасывается."""
+        try:
+            with _settings_file_lock(self.path):
+                fresh = self._read_file()
+        except OSError:
+            logging.getLogger("svnhelper").exception("Не удалось перечитать настройки")
+            raise
+        if fresh is None:
+            return
+        for key in keys:
+            setattr(self.settings, key, copy.deepcopy(getattr(fresh, key)))
+            setattr(self._synced, key, copy.deepcopy(getattr(fresh, key)))
 
 
 # --------------------------------------------------------------------------

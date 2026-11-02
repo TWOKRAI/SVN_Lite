@@ -20,7 +20,7 @@ FORBIDDEN_WORDS = re.compile(r"хранилищ|SVN", re.IGNORECASE)
 SVN_WORD = re.compile(r"SVN")
 STORAGE_WORD = re.compile(r"хранилищ", re.IGNORECASE)
 # модули, написанные с этим правилом с самого начала; ревизия/репозиторий/svnadmin проверяются только в них
-RU_CHECKED = ("gui/new_project_dialog.py", "gui/server_tree.py", "localrepo.py", "gui/projects_tab.py",
+RU_CHECKED = ("gui/new_project_dialog.py", "newproject.py", "gui/server_tree.py", "localrepo.py", "gui/projects_tab.py",
               "gui/project_panel.py")
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 # что разрешено оставить в тексте: названия программ, адреса и ключи для администратора
