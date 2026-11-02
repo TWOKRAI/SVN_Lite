@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Сборки и результаты (exe, архивы, старые версии): собираются packaging\build.bat
+out/
+
+# Локальные настройки Claude Code и данные программы
+.claude/settings.local.json
+settings.json
+shared_config.json
+templates_cache/
+create_jobs/
+*.log
+
+# Редакторы и системное
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini

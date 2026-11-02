@@ -1,0 +1,42 @@
+{
+  "server": "svn://192.168.11.11",
+  "repos": [
+    "konstruktor",
+    "automation",
+    "common",
+    "test"
+  ],
+  "work_dir": "C:\\Проекты_svn",
+  "svn_path": "",
+  "username": "",
+  "password": "",
+  "support": "",
+  "latest_version": "",
+  "update_path": "",
+  "help_path": "",
+  "filter": {
+    "enabled": true,
+    "skip_junk": true,
+    "show_report": true,
+    "junk_extensions": [
+      ".bak",
+      ".tmp",
+      ".temp",
+      ".old",
+      ".swp"
+    ],
+    "junk_names": [
+      "Thumbs.db",
+      "desktop.ini",
+      ".DS_Store"
+    ],
+    "junk_prefixes": [
+      "~$",
+      ".~lock"
+    ],
+    "junk_dirs": [],
+    "junk_globs": [],
+    "big_file_mb": 50,
+    "path_warn_length": 200
+  }
+}

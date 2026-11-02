@@ -1,0 +1,95 @@
+#!/bin/sh
+# SVN-lite: версии (теги) только для чтения.
+#
+# Версией считается <X>/tags/<имя>/..., если в транзакции или в HEAD есть <X>/trunk
+# (X - папка проекта, может быть пустой). Правила:
+#   * создать версию копированием (A <X>/tags/<имя>/) и папку <X>/tags (A) - можно;
+#   * любые A/U/D/_U внутри уже существующей версии - нельзя;
+#   * удалить или заменить (D, R) папку <X>/tags или <X>/tags/<имя> - нельзя
+#     (в том числе `svn delete p/tags` и `svn mv p/tags p/old`).
+# Папки tags вне проекта (нет <X>/trunk), например g/tags/proj/trunk/..., не затрагиваются.
+# Если svnlook не отработал - коммит отклоняется (fail-closed).
+REPOS="$1"
+TXN="$2"
+SVNLOOK=${SVNLOOK:-/usr/bin/svnlook}
+
+fail_svnlook() {
+  echo "Хук не смог прочитать изменения (svnlook). Сообщите администратору." >&2
+  echo "The hook could not read the changes (svnlook). Contact the administrator." >&2
+  [ -n "$1" ] && echo "$1" >&2
+  exit 1
+}
+
+deny() {
+  echo "Версия (тег) только для чтения. Правки делайте в основной линии или ветке." >&2
+  echo "A version (tag) is read-only. Make changes in trunk or in a branch." >&2
+  exit 1
+}
+
+CHANGED=$("$SVNLOOK" changed -t "$TXN" "$REPOS") || fail_svnlook
+HEAD=$("$SVNLOOK" youngest "$REPOS") || fail_svnlook
+
+# exists_in <ключ -t TXN | -r HEAD> <путь>: 0 - есть, 1 - нет; прочие ошибки svnlook - выход с отказом
+exists_in() {
+  if [ "$1" = "txn" ]; then
+    ERR=$("$SVNLOOK" tree -t "$TXN" "$REPOS" "$2" --non-recursive 2>&1 >/dev/null)
+  else
+    ERR=$("$SVNLOOK" tree -r "$HEAD" "$REPOS" "$2" --non-recursive 2>&1 >/dev/null)
+  fi
+  CODE=$?
+  [ "$CODE" -eq 0 ] && return 0
+  case "$ERR" in
+    *E160013*) return 1 ;;
+    *) fail_svnlook "$ERR" ;;
+  esac
+}
+
+# is_project <X>: есть ли X/trunk в транзакции или в HEAD
+is_project() {
+  if [ -z "$1" ]; then TRUNK_PATH="trunk"; else TRUNK_PATH="$1/trunk"; fi
+  exists_in txn "$TRUNK_PATH" || exists_in head "$TRUNK_PATH"
+}
+
+# check_path <статус> <путь>
+check_path() {
+  ACT=$(printf '%s' "$1" | cut -c1)
+  REST=${2%/}
+  PREFIX=""
+  while :; do
+    SEG=${REST%%/*}
+    case "$REST" in */*) TAIL=${REST#*/} ;; *) TAIL="" ;; esac
+    if [ "$SEG" = "tags" ] && is_project "${PREFIX%/}"; then
+      X=${PREFIX%/}
+      if [ -z "$TAIL" ]; then
+        # сама папка X/tags
+        case "$ACT" in D|R) deny ;; esac
+      else
+        NAME=${TAIL%%/*}
+        case "$TAIL" in */*) INNER=${TAIL#*/} ;; *) INNER="" ;; esac
+        if [ -z "$INNER" ]; then
+          # сама версия X/tags/<имя>: добавить можно, остальное нельзя
+          case "$ACT" in A) ;; *) deny ;; esac
+        else
+          # внутри версии: нельзя, если версия уже была в HEAD
+          if exists_in head "${X:+$X/}tags/$NAME"; then deny; fi
+        fi
+      fi
+    fi
+    [ -z "$TAIL" ] && break
+    PREFIX="$PREFIX$SEG/"
+    REST=$TAIL
+  done
+}
+
+while IFS= read -r LINE; do
+  [ -z "$LINE" ] && continue
+  STATUS=$(printf '%s' "$LINE" | cut -c1-4)
+  PATH_IN_REPO=${LINE#????}
+  # быстрый отсев: нужен сегмент tags
+  case "/$PATH_IN_REPO" in
+    */tags|*/tags/*) check_path "$STATUS" "$PATH_IN_REPO" ;;
+  esac
+done <<EOF
+$CHANGED
+EOF
+exit 0
