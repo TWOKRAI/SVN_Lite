@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 from urllib.parse import unquote
 
-from . import checks, fsutil, importer, jobs, projectmeta, server
+from . import checks, folderlock, fsutil, importer, jobs, projectmeta, server
 from .config import FilterRules
 from .svn_core import CancelToken, CheckoutProgress, ErrorKind, SvnClient, SvnError
 
@@ -61,7 +61,8 @@ ALREADY_ON_SERVER = "already_on_server"
 BROKEN_COPY = "broken_copy"
 LOCAL_CHANGES = "local_changes"         # окно предлагает «Сохранить у себя»
 UNFINISHED = "unfinished"               # от прошлой отправки осталась .svn-old
-IN_PROGRESS = "in_progress"             # эта папка отправляется прямо сейчас
+IN_PROGRESS = "in_progress"             # эта папка отправляется прямо сейчас (или её держит другой процесс)
+LOCK_UNAVAILABLE = "lock_unavailable"   # строгий режим (агент): не удалось проверить, свободна ли папка
 INSIDE_PROJECT = "inside_project"       # папка лежит внутри скачанного проекта
 LOCAL_HISTORY_MISSING = "local_history_missing"
 NO_PARENT = "no_parent"
@@ -85,6 +86,8 @@ MESSAGES = {
     UNFINISHED: ("Прошлая отправка этого проекта не закончена. Перезапустите программу: "
                  "она предложит завершить её или убрать недоделанное."),
     IN_PROGRESS: "Этот проект уже отправляется.",
+    LOCK_UNAVAILABLE: ("Не удалось проверить, свободна ли папка проекта: служебная папка программы недоступна. "
+                       "Повторите позже или обратитесь к администратору."),
     INSIDE_PROJECT: ("Эта папка лежит внутри проекта, который уже связан с сервером. Отправить можно "
                      "только отдельную папку проекта."),
     LOCAL_HISTORY_MISSING: ("История проекта на этом компьютере потеряна. Это не мешает отправке: "
@@ -151,6 +154,11 @@ class PublishError(Exception):
         self.job = job
         self.create_error = create_error
 
+    def to_dict(self) -> dict:
+        """Код, стадия, текст для человека и id журнала (если отправку можно завершить). Ответа svn здесь нет."""
+        return {"code": self.code, "stage": self.stage, "message": self.message,
+                "job_id": self.job.id if self.job is not None else None}
+
 
 def _svn_code(exc: SvnError) -> str:
     return _SVN_KIND_CODES.get(exc.kind, FAILED)
@@ -159,6 +167,9 @@ def _svn_code(exc: SvnError) -> str:
 # --------------------------------------------------------------------------
 # Занятые папки: окно и фоновая проверка их не трогают
 # --------------------------------------------------------------------------
+# Набор _busy - работа этого процесса; межпроцессный замок (folderlock) - чтобы и другие процессы
+# (svnlite.exe, MCP, второе окно) видели папку занятой. На один путь в процессе замок берут одним способом:
+# mark_busy или folderlock.hold, не двумя.
 
 _busy: set[str] = set()
 _busy_lock = threading.Lock()
@@ -169,26 +180,45 @@ def _key(path: str) -> str:
 
 
 def is_busy(path: str) -> bool:
-    """Идёт ли сейчас отправка этой папки."""
+    """Занята ли папка: работа этого процесса (mark_busy) или замок другого процесса. Свой folderlock.hold
+    занятостью не считается."""
     with _busy_lock:
-        return _key(path) in _busy
+        if _key(path) in _busy:
+            return True
+    return folderlock.held_by_other(path)
 
 
 def busy_paths() -> frozenset:
-    """Снимок папок, которые сейчас отправляются (ключи normcase+normpath)."""
+    """Снимок папок, занятых работой этого процесса (ключи normcase+normpath). Замки других процессов сюда
+    не входят (их перебор дорог): о конкретной папке спрашивают is_busy."""
     with _busy_lock:
         return frozenset(_busy)
 
 
 @contextmanager
-def mark_busy(folder: str) -> Iterator[None]:
+def mark_busy(folder: str, owner: str = "") -> Iterator[None]:
+    """Папка занята до выхода из блока: в этом процессе и для других процессов.
+
+    PublishError(IN_PROGRESS): с папкой уже работает этот или другой процесс. PublishError(LOCK_UNAVAILABLE):
+    строгий режим (folderlock.set_strict) и каталог замков недоступен. В обычном режиме без каталога замков
+    папка занимается только в этом процессе, в журнал пишется предупреждение."""
     key = _key(folder)
     with _busy_lock:
         if key in _busy:
             raise PublishError(IN_PROGRESS, "check")
         _busy.add(key)
     try:
-        yield
+        try:
+            lock = folderlock.try_lock(folder, owner)
+        except folderlock.LockUnavailable as exc:
+            raise PublishError(LOCK_UNAVAILABLE, "check", error=exc) from exc
+        if lock is None:
+            if folderlock.held_here(folder):        # тот же путь (через junction) или folderlock.hold
+                raise PublishError(IN_PROGRESS, "check", folderlock.SAME_PROCESS_TEXT)
+            log.info("Папку %s держит другой процесс: %s", folder, folderlock.holder_info(folder))
+            raise PublishError(IN_PROGRESS, "check", folderlock.BUSY_TEXT)
+        with lock:
+            yield
     finally:
         with _busy_lock:
             _busy.discard(key)
