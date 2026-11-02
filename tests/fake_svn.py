@@ -1,6 +1,7 @@
 """Заглушка svn для тестов. Режим задаётся переменной FAKE_SVN_MODE.
 
-ok | auth | authz | noconn | notfound | hang | commit_ood | commit_tag | lost_local
+ok | auth | authz | noconn | notfound | hang | hang_all | commit_ood | commit_tag | lost_local
+hang_all: любая команда (кроме --version) молчит 60 секунд, как сервер, который не отвечает
 lost_local: команды, в аргументах которых есть «lost», падают как при пропавшем локальном хранилище
 (E170013 + E180001 на file://); остальные работают как в ok.
 Каждый вызов дописывается в файл FAKE_SVN_LOG (JSON: аргументы и stdin).
@@ -68,6 +69,9 @@ if mode == "notfound":
 if mode == "lost_local" and any("lost" in a for a in args):
     fail("svn: E170013: Unable to connect to a repository at URL 'file:///C:/history/abc'\n"
          "svn: E180001: Unable to open repository 'file:///C:/history/abc'")
+
+if mode == "hang_all":      # любая команда зависает (сервер не отвечает); тест ждёт таймаут и убивает процесс
+    time.sleep(60)
 
 cmd = args[0]
 if cmd == "list":
