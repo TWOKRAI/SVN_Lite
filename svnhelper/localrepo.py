@@ -134,6 +134,10 @@ class LocalRepoError(Exception):
         self.error = error
         self.rolled_back = rolled_back
 
+    def to_dict(self) -> dict:
+        """Для CLI и MCP: код, текст по-русски и признак отката. Без подробностей svn (self.error)."""
+        return {"code": self.code, "message": self.message, "rolled_back": self.rolled_back}
+
 
 # --------------------------------------------------------------------------
 # Адреса и пути
@@ -232,25 +236,27 @@ def _key(folder: str) -> str:
 # --------------------------------------------------------------------------
 
 def register(store: SettingsStore, folder: str, repo: str) -> None:
-    """Запоминает, где лежит история проекта (словарь заменяется целиком: фоновый поток не мешает главному)."""
-    store.settings.local_histories = {**store.settings.local_histories, _key(folder): os.path.normpath(repo)}
-    store.save()
+    """Запоминает, где лежит история проекта (под замком настроек: другая программа не потеряет свои записи)."""
+    key, path = _key(folder), os.path.normpath(repo)
+    store.update(lambda s: setattr(s, "local_histories", {**s.local_histories, key: path}))
 
 
 def rebind(store: SettingsStore, folder: str, repo: str, old_repo: str = "") -> None:
     """История проекта нашлась на новом месте: запись по ключу-папке переписывается, устаревшие записи этой же
     истории (ключ - прежнее имя папки, значение - прежний путь к ней) убираются."""
     stale = {_key(repo), _key(old_repo)} if old_repo else {_key(repo)}
-    kept = {k: v for k, v in store.settings.local_histories.items() if k != _key(folder) and _key(v) not in stale}
-    store.settings.local_histories = {**kept, _key(folder): os.path.normpath(repo)}
-    store.save()
+    key, path = _key(folder), os.path.normpath(repo)
+
+    def apply(s) -> None:
+        kept = {k: v for k, v in s.local_histories.items() if k != key and _key(v) not in stale}
+        s.local_histories = {**kept, key: path}
+
+    store.update(apply)
 
 
 def unregister(store: SettingsStore, folder: str) -> None:
     key = _key(folder)
-    if key in store.settings.local_histories:
-        store.settings.local_histories = {k: v for k, v in store.settings.local_histories.items() if k != key}
-        store.save()
+    store.update(lambda s: setattr(s, "local_histories", {k: v for k, v in s.local_histories.items() if k != key}))
 
 
 def archive_path(store: SettingsStore, folder: str) -> str:

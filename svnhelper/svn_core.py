@@ -134,6 +134,12 @@ class SvnError(Exception):
         self.returncode = returncode
         self.codes = extract_codes(raw)
 
+    def to_dict(self) -> dict:
+        """Для CLI и MCP: тип, коды E###### и короткий текст по-русски. Сырой ответ svn (raw) не включается:
+        в нём могут быть пароль и адреса."""
+        from .messages import short_message   # отложенный импорт: messages сам импортирует svn_core
+        return {"kind": self.kind.value, "codes": sorted(self.codes), "message": short_message(self.kind)}
+
 
 # --------------------------------------------------------------------------
 # Кодировки вывода
