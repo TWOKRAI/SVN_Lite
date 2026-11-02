@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_publish as tp  # noqa: E402
 import test_templates as tt  # noqa: E402
-from svnhelper import config, localrepo, projectmeta, publish, server, templates  # noqa: E402
+from svnhelper import config, localrepo, newproject, projectmeta, publish, server, templates  # noqa: E402
 from svnhelper.config import FilterRules, SettingsStore  # noqa: E402
 from svnhelper.gui import new_project_dialog as npd  # noqa: E402
 from svnhelper.svn_core import CancelToken, CheckoutProgress, ErrorKind, SvnClient, SvnError  # noqa: E402
@@ -152,8 +152,8 @@ def cancel_before(obj, name: str, token: CancelToken):
 @contextmanager
 def killed_process():
     """Отключает уборку при сбое: на диске остаётся то же, что после убитого процесса."""
-    with mock.patch.object(npd, "_remove_creating", return_value=False), \
-            mock.patch.object(npd, "_drop_job"), \
+    with mock.patch.object(newproject, "_remove_creating", return_value=False), \
+            mock.patch.object(newproject, "_drop_job"), \
             mock.patch.object(templates, "_rollback"):
         yield
 
