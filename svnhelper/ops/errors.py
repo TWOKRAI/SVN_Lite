@@ -64,7 +64,8 @@ class OpsError(Exception):
     """Отказ операции с готовым видом ошибки (проект не найден, неверные параметры, нет svn)."""
 
     def __init__(self, kind: str, exit_code: int = EXIT_OTHER, message: str = "", next_step: str = "",
-                 data: Optional[dict] = None, svn: Optional[dict] = None, retryable: bool = False):
+                 data: Optional[dict] = None, svn: Optional[dict] = None, retryable: bool = False,
+                 untrusted_fields: Optional[list] = None):
         default_message, default_step = texts.ERRORS.get(kind, texts.ERRORS["failed"])
         super().__init__(message or default_message)
         self.kind = kind
@@ -74,6 +75,7 @@ class OpsError(Exception):
         self.data = data or {}
         self.svn = svn or {}
         self.retryable = retryable
+        self.untrusted_fields = untrusted_fields or []
 
 
 def no_svn() -> OpsError:

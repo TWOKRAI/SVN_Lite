@@ -1,8 +1,8 @@
 """Операции чтения, где в ответе есть слова коллег или данные сервера: incoming, history, locks, templates,
 server_projects.
 
-Всё, что написали коллеги (комментарии, имена авторов, файлов, папок, шаблонов), проходит `result.clean_text`
-(без управляющих знаков, комментарий до 500 знаков), перечисляется в `untrusted_fields`, записей не больше 50, а в
+Всё, что написали коллеги (комментарии, имена авторов, файлов, папок, шаблонов), проходит чистку (`result.clean_text`
+для комментария: до 500 знаков; `result.clean_name` для имён: одна строка, без управляющих знаков и кавычек « »), перечисляется в `untrusted_fields`, записей не больше 50, а в
 текстовом ответе оборачивается словами «данные коллег». Папки на сервере только просматриваются: ничего не
 скачивается и не записывается.
 """
@@ -16,15 +16,14 @@ from urllib.parse import unquote, urlparse
 from .. import server, templates
 from ..svn_core import ErrorKind, LogEntry, SvnError, WcInfo
 from . import texts
-from .context import OpsContext, deadline
+from .context import OpsContext, deadline, is_url
 from .errors import OpsError, invalid_args
-from .projects import (KIND_LOCAL_HISTORY, KIND_LOCAL_ONLY, KIND_PLAIN, KIND_PROJECT, busy_state, display_path, probe_folder,
-                       read_status)
+from .projects import (KIND_LOCAL_HISTORY, KIND_LOCAL_ONLY, KIND_PLAIN, KIND_PROJECT, add_warning, busy_state,
+                       display_path, probe_folder, read_status)
 from .registry import operation
-from .resolve import resolve_project
-from .result import MAX_ENTRIES, Result, clean_text
+from .resolve import match_warnings, resolve_project
+from .result import MAX_ENTRIES, NAME_LIMIT, Result, clean_name, clean_text
 
-NAME_LIMIT = 260
 FILES_PER_ENTRY = 20
 HISTORY_DEFAULT = 20
 SERVER_MAX_ENTRIES = 100          # папок в одном ответе server_projects
@@ -69,9 +68,9 @@ def _repo_relative(path: str, prefix: str) -> str:
 
 def _log_row(entry: LogEntry, prefix: str, number: bool) -> dict:
     iso, human = _date(entry.date)
-    files = [{"path": clean_text(_repo_relative(p.path, prefix), NAME_LIMIT), "action": _ACTIONS.get(p.action, p.action)}
+    files = [{"path": clean_name(_repo_relative(p.path, prefix), NAME_LIMIT), "action": _ACTIONS.get(p.action, p.action)}
              for p in entry.paths[:FILES_PER_ENTRY]]
-    row = {"author": clean_text(entry.author, 100) or "?", "date": iso, "date_ru": human,
+    row = {"author": clean_name(entry.author, 100) or "?", "date": iso, "date_ru": human,
            "comment": clean_text(entry.message), "files": files, "files_total": len(entry.paths)}
     if number:
         row["number"] = entry.revision
@@ -80,17 +79,24 @@ def _log_row(entry: LogEntry, prefix: str, number: bool) -> dict:
 
 def _copy_probe(ctx: OpsContext, project: str, tool: str, warnings: list) -> tuple:
     """(папка, ответ-заглушка). Заглушка не None: у папки нет связи с сервером или она повреждена."""
-    probe = probe_folder(ctx, resolve_project(ctx, project))
+    ref = resolve_project(ctx, project)
+    probe = probe_folder(ctx, ref)
+    warnings.extend(match_warnings(ref))
     if probe.kind in (KIND_PLAIN, KIND_LOCAL_ONLY):
-        return probe, Result(tool, data={"name": probe.name, "kind": probe.kind},
+        return probe, Result(tool, data=_head(probe), warnings=warnings,
                              text=texts.state_message(probe.name, "plain", kind=probe.kind))
     if probe.kind not in (KIND_PROJECT, KIND_LOCAL_HISTORY):
-        return probe, Result(tool, data={"name": probe.name, "kind": probe.kind},
+        return probe, Result(tool, data=_head(probe), warnings=warnings,
                              text=texts.state_message(probe.name, "broken", kind=probe.kind))
     busy, _holder = busy_state(probe.path)
     if busy:
-        warnings.append(texts.WARN_BUSY_READ.format(name=probe.name))
+        add_warning(warnings, texts.WARN_BUSY_READ.format(name=probe.name))
     return probe, None
+
+
+def _head(probe) -> dict:
+    """Общее начало data: какой проект и как он найден."""
+    return {"name": probe.name, "kind": probe.kind, "matched_by": probe.ref.matched_by}
 
 
 # --------------------------------------------------------------------------
@@ -104,7 +110,7 @@ def incoming(ctx: OpsContext, project: str) -> Result:
     if stub is not None:
         return stub
     if probe.kind != KIND_PROJECT:        # у истории на компьютере сервера нет, нового там не бывает
-        return Result("incoming", data={"name": probe.name, "kind": probe.kind, "total": 0, "entries": []},
+        return Result("incoming", data={**_head(probe), "total": 0, "entries": []}, warnings=warnings,
                       text=texts.incoming_text(probe.name, [], 0))
     with deadline(ctx) as token:
         entries = ctx.client.incoming_log(probe.path, token)
@@ -112,8 +118,8 @@ def incoming(ctx: OpsContext, project: str) -> Result:
     rows = [_log_row(e, prefix, number=False) for e in reversed(entries)]       # новые первыми
     shown = rows[:MAX_ENTRIES]
     if len(rows) > len(shown):
-        warnings.append(texts.WARN_TRUNCATED)
-    data = {"name": probe.name, "kind": probe.kind, "total": len(rows), "entries": shown, "truncated": len(rows) > len(shown)}
+        add_warning(warnings, texts.WARN_TRUNCATED)
+    data = {**_head(probe), "total": len(rows), "entries": shown, "truncated": len(rows) > len(shown)}
     return Result("incoming", data=data, text=texts.incoming_text(probe.name, shown, len(rows)), warnings=warnings,
                   untrusted_fields=["entries[].author", "entries[].comment", "entries[].files[].path"])
 
@@ -133,7 +139,7 @@ def history(ctx: OpsContext, project: str, limit: int = HISTORY_DEFAULT) -> Resu
         entries = ctx.client.recent_log(probe.path, limit, token)
     prefix = _wc_prefix(probe.info)
     rows = [_log_row(e, prefix, number=True) for e in entries[:limit]]
-    data = {"name": probe.name, "kind": probe.kind, "limit": limit, "entries": rows}
+    data = {**_head(probe), "limit": limit, "entries": rows}
     return Result("history", data=data, text=texts.history_text(probe.name, rows), warnings=warnings,
                   untrusted_fields=["entries[].author", "entries[].comment", "entries[].files[].path"])
 
@@ -147,7 +153,7 @@ def _lock_row(lock, root: str, owner: bool) -> dict:
     row = {"file": display_path(lock.path, root), "since": iso, "age_days": lock.age_days,
            "age_ru": texts.age_ru(lock.age_days), "comment": clean_text(lock.comment)}
     if owner:
-        row["owner"] = clean_text(lock.owner, 100) or "?"
+        row["owner"] = clean_name(lock.owner, 100) or "?"
     return row
 
 
@@ -160,10 +166,10 @@ def locks(ctx: OpsContext, project: str) -> Result:
     busy, _holder = busy_state(probe.path)
     read = read_status(ctx, probe, probe.kind == KIND_PROJECT and not busy)
     if probe.kind == KIND_PROJECT and not read.checked and not busy:
-        warnings.append(texts.WARN_OFFLINE)
+        add_warning(warnings, texts.WARN_OFFLINE)
     mine = [_lock_row(lock, probe.path, False) for lock in read.status.my_locks][:MAX_ENTRIES]
     others = [_lock_row(lock, probe.path, True) for lock in read.status.other_locks][:MAX_ENTRIES]
-    data = {"name": probe.name, "server_checked": read.checked, "mine": mine, "others": others}
+    data = {**_head(probe), "server_checked": read.checked, "mine": mine, "others": others}
     return Result("locks", data=data, text=texts.locks_text(probe.name, mine, others), warnings=warnings,
                   untrusted_fields=["mine[].file", "mine[].comment", "others[].file", "others[].owner",
                                     "others[].comment"])
@@ -179,9 +185,17 @@ def templates_list(ctx: OpsContext) -> Result:
     if not root:
         return Result("templates", data={"configured": False, "offline": False, "templates": []},
                       text=texts.TEMPLATES_NOT_CONFIGURED)
-    with deadline(ctx) as token:
-        found = templates.load_templates(ctx.client, root, cancel=token)
-    rows = [{"id": clean_text(t.id, 100), "title": clean_text(t.title, 200),
+    if not is_url(root):
+        raise OpsError("not_configured", 1, texts.TEMPLATES_ROOT_BAD)
+    try:
+        with deadline(ctx) as token:
+            found = templates.load_templates(ctx.client, root, cancel=token)
+    except SvnError as exc:
+        if exc.kind is not ErrorKind.TIMEOUT:
+            raise
+        # сервер не ответил за отведённое время: как и без связи, берём шаблоны, уже сохранённые на компьютере
+        found = templates.TemplateList(templates.cached_templates(templates.default_cache_dir()), offline=True)
+    rows = [{"id": clean_name(t.id, 100), "title": clean_name(t.title, 200),
              "description": clean_text(t.description)} for t in found.templates[:MAX_ENTRIES]]
     warnings = [texts.WARN_TEMPLATES_OFFLINE] if found.offline else []
     data = {"configured": True, "offline": found.offline, "templates": rows}
@@ -196,6 +210,8 @@ def templates_list(ctx: OpsContext) -> Result:
 
 def _server_segments(ctx: OpsContext, path: str) -> list:
     """Части пути на сервере. Первая - одна из корневых папок из настроек. Бросает OpsError."""
+    if not is_url(ctx.config.server):
+        raise OpsError("not_configured", 1)
     text = (path or "").strip().strip('"')
     prefix = ctx.config.server.rstrip("/")
     if prefix and text.lower().startswith(prefix.lower() + "/"):
@@ -203,7 +219,7 @@ def _server_segments(ctx: OpsContext, path: str) -> list:
     if "://" in text:
         raise invalid_args(texts.SERVER_PATH_BAD)
     parts = [unquote(p) for p in re.split(r"[\\/]", text) if p]
-    if any(p in (".", "..") for p in parts):
+    if any(p in (".", "..") or "/" in p or "\\" in p for p in parts):
         raise invalid_args(texts.SERVER_PATH_BAD)
     if not parts:
         return []
@@ -225,7 +241,7 @@ def server_projects(ctx: OpsContext, path: str = "", depth: int = 1) -> Result:
     base = _server_segments(ctx, path)
     warnings: list = []
     levels = max(1, min(int(depth), SERVER_MAX_DEPTH))
-    if levels != depth:
+    if depth > SERVER_MAX_DEPTH:
         warnings.append(texts.WARN_DEPTH_CUT)
     rows: list = []
     truncated = False
@@ -248,9 +264,9 @@ def server_projects(ctx: OpsContext, path: str = "", depth: int = 1) -> Result:
                             break
                         entry = names[name]
                         child = [*parent, name]
-                        row = {"path": clean_text("/".join(child[len(base):]), NAME_LIMIT), "name": clean_text(name, NAME_LIMIT),
+                        row = {"path": clean_name("/".join(child[len(base):])), "name": clean_name(name),
                                "is_project": False, "accessible": True, "depth": level,
-                               "author": clean_text(entry.author, 100) if entry else "",
+                               "author": clean_name(entry.author, 100) if entry else "",
                                "date": entry.date.isoformat() if entry and entry.date else ""}
                         rows.append(row)
                         pending.append((row, child))
@@ -265,8 +281,8 @@ def server_projects(ctx: OpsContext, path: str = "", depth: int = 1) -> Result:
                         level_dirs.append((child, names))
     data = {"path": "/".join(base), "depth": levels, "is_project": itself, "entries": rows, "truncated": truncated}
     if truncated:
-        warnings.append(texts.WARN_TRUNCATED)
-    text = texts.PROJECT_ITSELF.format(path=clean_text("/".join(base), NAME_LIMIT)) if itself \
+        add_warning(warnings, texts.WARN_TRUNCATED)
+    text = texts.PROJECT_ITSELF.format(path=clean_name("/".join(base))) if itself \
         else texts.server_projects_text("/".join(base), rows, truncated)
     return Result("server_projects", data=data, text=text, warnings=warnings,
                   svn={"server": ctx.config.server}, untrusted_fields=["entries[].name", "entries[].path",

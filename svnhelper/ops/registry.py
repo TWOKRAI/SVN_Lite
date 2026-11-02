@@ -44,11 +44,12 @@ class Operation:
             values = self._check_params(params)
             if self.needs_svn and ctx.client is None:
                 raise no_svn()
-            result = self.func(ctx, **values)
+            result = self.func(ctx.begin(), **values)
         except Exception as exc:                     # операции не бросают исключений: ответ всегда Result
             error = from_exception(exc)
             data = exc.data if isinstance(exc, OpsError) else {}
-            return Result.failure(self.name, error, data)
+            fields = exc.untrusted_fields if isinstance(exc, OpsError) else []
+            return Result.failure(self.name, error, data, untrusted_fields=fields)
         result.tool = self.name
         return result
 

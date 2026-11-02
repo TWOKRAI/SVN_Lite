@@ -8,7 +8,7 @@ from .. import __version__, agentlog, server
 from ..config import CONFIG_NAME, app_dir, data_dir, shared_cache_path
 from ..svn_core import SvnError
 from . import texts
-from .context import OpsContext
+from .context import OpsContext, is_url
 from .errors import from_exception, no_svn
 from .registry import operation
 from .result import ErrorInfo, Result, clean_text
@@ -35,7 +35,7 @@ def _check_connection(ctx: OpsContext, wanted: bool) -> tuple:
         return {"state": "skipped"}, None
     if ctx.client is None:
         return {"state": "no_svn"}, None
-    if not ctx.config.server or not ctx.config.repos:
+    if not is_url(ctx.config.server) or not ctx.config.repos:
         return {"state": "not_configured"}, None
     url = server.build_url(ctx.config.server, [ctx.config.repos[0]])
     try:
@@ -55,7 +55,7 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
         "program": {"version": __version__},
         "svn": _svn_data(ctx),
         "config": _config_data(ctx),
-        "server": {"configured": bool(ctx.config.server), "roots": len(ctx.config.repos)},
+        "server": {"configured": is_url(ctx.config.server) and bool(ctx.config.repos), "roots": len(ctx.config.repos)},
         "login": {"username": clean_text(settings.username or ctx.config.username, 100)},
         "project_dirs": [clean_text(d, 260) for d in dirs],
         "connection": connection,
@@ -74,6 +74,10 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
     if conn_error is not None:
         problems.append(conn_error.message)
         error = error or conn_error
+    elif connection["state"] == "not_configured":
+        problems.append(texts.ERRORS["not_configured"][0])
+    elif connection["state"] == "skipped":
+        problems.append(texts.DOCTOR_NOT_CHECKED)
     data["ready"] = not problems and error is None
     text = texts.doctor_text(problems, data["ready"])
     svn = {"server": ctx.config.server, "roots": list(ctx.config.repos), "templates_root": ctx.config.templates_root}

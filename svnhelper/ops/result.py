@@ -13,6 +13,7 @@ from typing import Any, Optional
 SCHEMA = 1
 MAX_ENTRIES = 50            # записей коллег в одном ответе
 MAX_COMMENT = 500           # знаков в комментарии коллеги
+NAME_LIMIT = 260            # знаков в названии папки, файла, автора
 
 # управляющие и невидимые знаки (в том числе переключатели направления письма): ими прячут текст от человека
 _CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‏‪-‮⁠-⁩﻿]")
@@ -42,6 +43,12 @@ def clean_text(text: Any, limit: int = MAX_COMMENT) -> str:
 def one_line(text: str) -> str:
     """Текст в одну строку (для строки ответа в текстовом режиме)."""
     return " ".join(text.split())
+
+
+def clean_name(text: Any, limit: int = NAME_LIMIT) -> str:
+    """Название папки, файла, автора: одна строка, без управляющих знаков и без кавычек « », которыми в текстовом
+    ответе помечаются данные коллег (иначе имя могло бы «закрыть» пометку и подделать строку списка)."""
+    return one_line(clean_text(text, limit)).replace("«", '"').replace("»", '"')
 
 
 @dataclass
@@ -80,9 +87,10 @@ class Result:
 
     @classmethod
     def failure(cls, tool: str, error: ErrorInfo, data: Optional[dict] = None, warnings: Optional[list] = None,
-                svn: Optional[dict] = None) -> "Result":
+                svn: Optional[dict] = None, untrusted_fields: Optional[list] = None) -> "Result":
         text = " ".join(part for part in (error.message, error.next_step) if part)
-        return cls(tool, False, dict(data or {}), text, list(warnings or []), [], error, dict(svn or {}))
+        return cls(tool, False, dict(data or {}), text, list(warnings or []), list(untrusted_fields or []), error,
+                   dict(svn or {}))
 
     def to_dict(self, details: bool = False) -> dict:
         out = {"schema": SCHEMA, "ok": self.ok, "tool": self.tool, "data": self.data, "text": self.text,
