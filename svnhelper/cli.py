@@ -62,6 +62,7 @@ MCP_MISSING = ("Режим для ИИ-помощника недоступен: 
                "или не установлен пакет mcp.")
 
 MCP_COMMAND = "mcp"
+COMMON_FLAGS = ("--json", "--text", "--details")     # общие флаги, допустимые до названия команды
 MCP_MODULE = "svnhelper.mcp_server"
 
 # Имя команды: имя операции с дефисом (server_projects -> server-projects); исключения и запасные названия
@@ -245,12 +246,22 @@ def run_mcp(argv: list) -> int:
     return code if isinstance(code, int) else 0
 
 
+def _mcp_argv(argv: list) -> Optional[list]:
+    """Аргументы, начиная с `mcp`, если это команда mcp (общие флаги до неё допустимы и игнорируются: сервер говорит
+    по протоколу, у него нет ни JSON, ни текста, ни подробностей); иначе None."""
+    start = 0
+    while start < len(argv) and argv[start] in COMMON_FLAGS:
+        start += 1
+    return argv[start:] if start < len(argv) and argv[start] == MCP_COMMAND else None
+
+
 def main(argv: Optional[list] = None, ctx=None) -> int:
     """Точка входа. argv: аргументы без имени программы (по умолчанию из командной строки); ctx: готовый контекст
     операций (для тестов; без него создаётся свой и подключается журнал консольной программы)."""
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == MCP_COMMAND:
-        return run_mcp(argv)
+    mcp_argv = _mcp_argv(argv)
+    if mcp_argv is not None:
+        return run_mcp(mcp_argv)
     json_mode = _wants_json(argv)
     _configure_streams(json_mode)
     try:
@@ -270,7 +281,7 @@ def main(argv: Optional[list] = None, ctx=None) -> int:
         sys.stderr.write(INTERRUPTED + "\n")
         return EXIT_OTHER
     except Exception as exc:                                    # операции не бросают, но создание контекста может
-        result = Result.failure(args.operation, from_exception(exc))
+        result = Result.failure(getattr(args, "operation", "cli"), from_exception(exc))
     return _emit(result, json_mode, details)
 
 

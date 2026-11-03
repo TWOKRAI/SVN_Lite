@@ -20,6 +20,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))                # test_ops_read импортируется без пакета (и при запуске tests.test_cli)
 
 from svnhelper import cli, config, winutil                                   # noqa: E402
 from svnhelper.config import SettingsStore, protect_text                     # noqa: E402
@@ -235,6 +236,30 @@ class McpSubcommandTests(unittest.TestCase):
         self.assertEqual((code, out, err), (0, "", ""))
         self.assertEqual(calls, [[saved[0], "--лишний"]])
         self.assertEqual(sys.argv, saved)
+
+    def test_common_flags_before_mcp_are_accepted(self):
+        """`svnlite --json mcp`, `--details mcp`, `--text mcp`: раньше падало с AttributeError (у mcp нет operation)."""
+        for flags in (["--json"], ["--details"], ["--text"], ["--json", "--details"]):
+            calls = []
+            fake = types.SimpleNamespace(main=lambda: calls.append(list(sys.argv)) or 0)
+            saved = list(sys.argv)
+            with self.subTest(flags=flags), mock.patch.dict(sys.modules, {"svnhelper.mcp_server": fake}):
+                code, out, err = run_cli([*flags, "mcp"])
+            self.assertEqual((code, out, err), (0, "", ""))               # в stdout ничего лишнего
+            self.assertEqual(calls, [[saved[0]]])
+            self.assertEqual(sys.argv, saved)
+
+    def test_flags_do_not_turn_other_words_into_mcp(self):
+        self.assertIsNone(cli._mcp_argv(["--json", "projects", "mcp"]))
+        self.assertIsNone(cli._mcp_argv(["--json"]))
+        self.assertEqual(cli._mcp_argv(["--text", "mcp", "--x"]), ["mcp", "--x"])
+
+    def test_mcp_subparser_without_operation_never_crashes(self):
+        """Запасная защита: даже если разбор дошёл до подкоманды mcp, ответ - ошибка в JSON, а не AttributeError."""
+        with mock.patch.object(cli, "_mcp_argv", return_value=None), mock.patch.object(cli.agentlog, "setup"),                 mock.patch.object(cli, "make_context", side_effect=RuntimeError("нет")):
+            code, out, err = run_cli(["--json", "mcp"])
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["ok"], False)
 
     def test_mcp_returns_the_server_exit_code(self):
         fake = types.SimpleNamespace(main=lambda: 3)
