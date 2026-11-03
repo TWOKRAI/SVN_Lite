@@ -146,6 +146,29 @@ class SessionTests(McpBase):
         self.assertIn("«" + NAME + "»", row["message"])
         self.assertNotIn("svn", out)                       # подробностей без details нет
 
+    async def test_busy_settings_file_at_start_does_not_stop_the_server(self):
+        """settings.json занят в момент запуска: сервер поднимается и показывает инструменты, вызов отвечает
+        «settings_busy» (код 8, можно повторить), а когда файл освободился, вызов работает."""
+        from mcp.shared.memory import create_connected_server_and_client_session
+        from svnhelper import ops
+        from svnhelper.config import SettingsUnreadable
+        busy = SettingsUnreadable("занят")
+        with mock.patch.object(ops, "make_context", side_effect=[busy, busy, self.make_ctx()]) as make:
+            server = mcp_server.build_server()                       # старт: файл занят, но сервер собран
+            async with create_connected_server_and_client_session(server) as client:
+                tools = (await client.list_tools()).tools
+                waiting = await client.call_tool("list_projects", {})
+                later = await client.call_tool("list_projects", {})
+        self.assertEqual(sorted(t.name for t in tools), EXPECTED_TOOLS)
+        self.assertTrue(waiting.isError)
+        error = parse(waiting)["error"]
+        self.assertEqual((error["kind"], error["exit_code"], error["retryable"], error["next_action"]),
+                         ("settings_busy", 8, True, "wait"))
+        self.assertNotIn("svn", error["message"].lower())
+        self.assertFalse(later.isError)
+        self.assertEqual([p["name"] for p in parse(later)["data"]["projects"]], [NAME])
+        self.assertEqual(make.call_count, 3)
+
     async def test_audit_records_client_name_from_the_session(self):
         import mcp.types as types
         from svnhelper.ops import audit

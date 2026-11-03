@@ -181,6 +181,55 @@ async def execute(ctx, op_name: str, params: dict, guard_seconds: float, client_
         return _timeout_result(op_name)
 
 
+class LazyContext:
+    """Контекст ops, который создаётся при первом вызове, если на старте не вышло.
+
+    settings.json в этот миг может быть занят (окно сохраняет настройки, проверяет антивирус): сервер при этом не должен
+    упасть с кодом 1 и остаться без инструментов, у клиента помощника тогда нет шанса подключиться. Сервер поднимается,
+    а вызов получает ответ «settings_busy» (можно повторить), и следующий вызов пробует снова."""
+
+    def __init__(self, make: Callable[[], Any], ctx: Any = None):
+        self._make = make
+        self._ctx = ctx
+
+    @property
+    def ready(self) -> bool:
+        return self._ctx is not None
+
+    def get(self) -> Any:
+        """Контекст; нет и не удалось создать: исключение (SettingsUnreadable и т.п.). Вызывать вне цикла событий:
+        создание читает файл настроек с повторами."""
+        if self._ctx is None:
+            self._ctx = self._make()
+        return self._ctx
+
+    @classmethod
+    def start(cls, make: Callable[[], Any]) -> "LazyContext":
+        """Пробует создать контекст сразу; занятый файл настроек только в журнал."""
+        from .config import SettingsUnreadable
+        lazy = cls(make)
+        try:
+            lazy.get()
+        except SettingsUnreadable:
+            log.warning("Настройки заняты при запуске: сервер поднят, контекст будет создан при первом вызове")
+        return lazy
+
+
+async def execute_lazy(lazy: LazyContext, op_name: str, params: dict, guard_seconds: float, client_info: str = ""):
+    """Как `execute`, но контекст создаётся здесь, если ещё не создан. Не вышло (файл настроек занят): ответ-ошибка
+    «settings_busy», сервер продолжает работать."""
+    if not lazy.ready:
+        from .ops.errors import from_exception
+        from .ops.result import Result
+        try:
+            await asyncio.wait_for(_in_daemon_thread(lazy.get), guard_seconds)
+        except asyncio.TimeoutError:
+            return _timeout_result(op_name)
+        except OSError as exc:                       # SettingsUnreadable и прочие сбои чтения настроек
+            return Result.failure(op_name, from_exception(exc))
+    return await execute(lazy.get(), op_name, params, guard_seconds, client_info)
+
+
 def tool_result(types, result, details: bool):
     """Ответ инструмента: тот же словарь в тексте и в structuredContent; ok=false помечается isError."""
     out = result.to_dict(details=details)
@@ -196,8 +245,8 @@ def build_server(ctx=None, guard_seconds: Optional[float] = None):
     from mcp.server.lowlevel.helper_types import ReadResourceContents
 
     from . import __version__, ops
-    if ctx is None:
-        ctx = ops.make_context(client_name="mcp", timeout=CALL_TIMEOUT)
+    make = lambda: ops.make_context(client_name="mcp", timeout=CALL_TIMEOUT)         # noqa: E731
+    lazy = LazyContext(make, ctx) if ctx is not None else LazyContext.start(make)
     guard = CALL_TIMEOUT + GUARD_MARGIN if guard_seconds is None else guard_seconds
     server = Server(SERVER_NAME, version=__version__, instructions=UNTRUSTED_NOTE)
     op_by_tool = {tool_name(op.name): op.name for op in ops.all_operations() if op.read_only}
@@ -216,7 +265,7 @@ def build_server(ctx=None, guard_seconds: Optional[float] = None):
             from .ops.result import Result
             error = errors.from_exception(errors.invalid_args(texts.ARG_NO_OPERATION.format(name=name)))
             return tool_result(types, Result.failure(name, error), details)
-        return tool_result(types, await execute(ctx, op_name, params, guard, client_label(server)), details)
+        return tool_result(types, await execute_lazy(lazy, op_name, params, guard, client_label(server)), details)
 
     @server.list_resources()
     async def list_resources() -> list:
@@ -233,7 +282,7 @@ def build_server(ctx=None, guard_seconds: Optional[float] = None):
     @server.read_resource()
     async def read_resource(uri) -> list:
         op_name, params = parse_resource_uri(uri)
-        result = await execute(ctx, op_name, params, guard, client_label(server))
+        result = await execute_lazy(lazy, op_name, params, guard, client_label(server))
         return [ReadResourceContents(content=json.dumps(result.to_dict(), ensure_ascii=False), mime_type=JSON_MIME)]
 
     return server

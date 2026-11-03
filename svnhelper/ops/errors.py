@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from .. import folderlock, importer, localrepo, newproject, publish, templates
+from ..config import SettingsUnreadable
 from ..messages import redact
 from ..svn_core import ErrorKind, SvnError
 from . import texts
@@ -140,6 +141,8 @@ def from_exception(exc: BaseException) -> ErrorInfo:
         return _build("lock_unavailable", EXIT_FOLDER_BUSY, True, "wait", svn=svn_block(exc.error))
     if isinstance(exc, folderlock.LockTimeout):
         return _build("settings_busy", EXIT_FOLDER_BUSY, True, "wait", svn={"name": exc.name})
+    if isinstance(exc, SettingsUnreadable):         # файл настроек занят другой программой: как «settings_busy», можно повторить
+        return _build("settings_busy", EXIT_FOLDER_BUSY, True, "wait", svn=svn_block(exc))
     if isinstance(exc, templates.TemplateError):
         return _build("template_error", EXIT_OTHER, False, message=str(exc))
     if isinstance(exc, OSError):

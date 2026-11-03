@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from svnhelper import folderlock, publish                                    # noqa: E402
-from svnhelper.config import SettingsStore                                   # noqa: E402
+from svnhelper.config import SettingsStore, SettingsUnreadable                # noqa: E402
 from svnhelper.ops import texts                                              # noqa: E402
 
 FAKE_SCRIPT = ROOT / "tests" / "fake_svn.py"
@@ -483,16 +483,16 @@ class SettingsRaceTests(RaceBase):
     # Здесь файл занят детерминированно на всё время вызова.
     def test_store_does_not_silently_return_empty_settings_when_file_is_held(self):
         with exclusive_open(self.settings_path):
-            try:
-                settings = SettingsStore(self.settings_path).settings
-            except OSError:
-                return                                              # явная ошибка вместо пустых настроек допустима
-        self.assertEqual(settings.project_dirs, [str(self.base)])
+            with self.assertLogs("svnhelper", "ERROR"), self.assertRaises(SettingsUnreadable):
+                SettingsStore(self.settings_path)                   # именно явная ошибка, а не пустые настройки
 
-    def test_cli_does_not_answer_project_not_found_when_settings_file_is_held(self):
+    def test_cli_answers_settings_busy_with_code_8_when_settings_file_is_held(self):
         with exclusive_open(self.settings_path):
             code, data = self.cli("status", NAME)
-        self.assertNotEqual((data.get("error") or {}).get("kind"), "project_not_found", data["text"])
+        error = data.get("error") or {}
+        self.assertEqual((code, error.get("kind"), error.get("exit_code"), error.get("retryable"),
+                          error.get("next_action")), (8, "settings_busy", 8, True, "wait"), data["text"])
+        self.assertNotIn("svn", error["message"].lower())
 
 
 # --------------------------------------------------------------------------
