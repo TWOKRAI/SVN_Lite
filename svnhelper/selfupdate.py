@@ -5,7 +5,8 @@
 освободится, подменяет его новым и запускает. Если подмена не удалась, скрипт открывает старую версию.
 Работает только у собранного exe (PyInstaller). Модуль не зависит от tkinter.
 
-Рядом с окном лежит консольная программа svnlite.exe (для ИИ-помощника, Task AG.7). Её обновляют вместе с окном, но
+Рядом с окном может лежать консольная программа svnlite.exe (для ИИ-помощника, Task AG.7); её раздаёт на ПК вручную
+администратор, самообновление окна её не устанавливает. Если она уже лежит рядом, её обновляют вместе с окном, но
 без ожидания: помощник может держать svnlite.exe запущенным часами, и из-за него обновление окна не должно зависнуть.
 Поэтому `prepare` кладёт новую версию рядом как «svnlite.exe.new», скрипт подмены делает одну попытку `move`, а если
 файл занят, `.new` остаётся и подменяется при следующем запуске окна (`apply_pending`). Окно при запуске записывает
@@ -99,12 +100,17 @@ def prepare(update_path: str) -> PreparedUpdate:
 
 def _prepare_cli(source: str, target: str) -> list:
     """Копирует svnlite.exe из папки с новой версией окна рядом с запущенным exe как «svnlite.exe.new».
+    Обновляется только уже установленный svnlite.exe: консольную программу сам администратор раздаёт на ПК вручную
+    (её нельзя ставить всем без согласования с ИТ и проверки антивирусом), обновление окна её не устанавливает.
     Нет файла в папке обновлений или он не скопировался: окно всё равно обновляется, причина только в журнале."""
+    cli_target = os.path.join(os.path.dirname(target), CLI_EXE_NAME)
+    if not os.path.isfile(cli_target):
+        log.info("Рядом с окном нет %s: консольная программа не устанавливается обновлением", CLI_EXE_NAME)
+        return []
     cli_source = os.path.join(os.path.dirname(source), CLI_EXE_NAME)
     if not os.path.isfile(cli_source):
         log.info("В папке обновлений нет %s: консольная программа не обновляется", CLI_EXE_NAME)
         return []
-    cli_target = os.path.join(os.path.dirname(target), CLI_EXE_NAME)
     cli_new = cli_target + ".new"
     try:
         shutil.copyfile(cli_source, cli_new)
@@ -171,14 +177,24 @@ def launch_swap(prepared: PreparedUpdate) -> None:
     log.info("Запущен скрипт подмены: %s", script)
 
 
+def _pending_cli_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(sys.executable)), CLI_EXE_NAME + ".new")
+
+
+def pending_cli_update() -> bool:
+    """Лежит ли рядом с программой «svnlite.exe.new»: обновление помощника скачано, но ещё не подменило старый файл
+    (его держит запущенный `svnlite.exe mcp`). У программы, запущенной из исходников, всегда False."""
+    return is_supported() and os.path.isfile(_pending_cli_path())
+
+
 def apply_pending() -> list:
     """При запуске окна подменяет «svnlite.exe.new», который скрипт обновления не смог положить (файл был занят).
     Занят и сейчас: остаётся до следующего запуска. Повреждённый файл удаляется. Возвращает подменённые файлы.
     Исключений не бросает: запуск окна из-за этого ломаться не должен."""
     if not is_supported():
         return []
-    cli = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), CLI_EXE_NAME)
-    pending = cli + ".new"
+    pending = _pending_cli_path()
+    cli = pending[:-len(".new")]
     if not os.path.isfile(pending):
         return []
     try:

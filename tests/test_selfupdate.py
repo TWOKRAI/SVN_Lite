@@ -111,7 +111,7 @@ def test_swap_script_waits_while_target_is_busy(tmp_path):
 CLI = selfupdate.CLI_EXE_NAME
 
 
-def make_install(tmp_path, monkeypatch, with_cli_on_server=True, cli_body=MZ_BODY):
+def make_install(tmp_path, monkeypatch, with_cli_on_server=True, cli_body=MZ_BODY, cli_installed=True):
     """Папка обновлений на «сервере» и папка установки с запущенным «окном» (пустышки)."""
     server = tmp_path / "server"
     server.mkdir()
@@ -122,7 +122,8 @@ def make_install(tmp_path, monkeypatch, with_cli_on_server=True, cli_body=MZ_BOD
     app.mkdir()
     running = app / selfupdate.EXE_NAME
     running.write_bytes(b"old")
-    (app / CLI).write_bytes(b"old cli")
+    if cli_installed:
+        (app / CLI).write_bytes(b"old cli")
     monkeypatch.setattr(selfupdate, "is_supported", lambda: True)
     monkeypatch.setattr(sys, "executable", str(running))
     return server, app
@@ -134,6 +135,16 @@ def test_prepare_copies_cli_next_to_running_exe(tmp_path, monkeypatch):
     assert prepared.extras == [(str(app / (CLI + ".new")), str(app / CLI))]
     assert (app / (CLI + ".new")).stat().st_size == len(MZ_BODY)
     assert (app / CLI).read_bytes() == b"old cli"                # сам файл не тронут до подмены
+
+
+def test_prepare_does_not_install_cli_that_is_not_next_to_window(tmp_path, monkeypatch):
+    """svnlite.exe раздаёт администратор вручную: обновление окна его не ставит, даже если он лежит на сервере."""
+    server, app = make_install(tmp_path, monkeypatch, cli_installed=False)
+    assert (server / CLI).is_file()
+    prepared = selfupdate.prepare(str(server))
+    assert prepared.extras == []
+    assert os.path.exists(prepared.new_path)                      # окно обновляется как обычно
+    assert not (app / CLI).exists() and not (app / (CLI + ".new")).exists()
 
 
 def test_prepare_without_cli_on_server_updates_window_only(tmp_path, monkeypatch):
@@ -255,6 +266,25 @@ def test_doctor_shows_both_versions_and_flags_mismatch(tmp_path, monkeypatch):
     assert any("разошлись" in w for w in result.warnings)
 
 
+def test_doctor_advises_closing_the_helper_when_new_cli_waits_next_to_program(tmp_path, monkeypatch):
+    """Обновление встало из-за запущенного `svnlite.exe mcp`: рядом лежит svnlite.exe.new, совет «обновите» не поможет."""
+    app = tmp_path / "app"
+    app.mkdir()
+    (tmp_path / "data").mkdir()
+    (app / selfupdate.EXE_NAME).write_bytes(b"old")
+    monkeypatch.setattr(sys, "executable", str(app / selfupdate.EXE_NAME))
+    (app / (CLI + ".new")).write_bytes(MZ_BODY)
+    result = doctor_result(tmp_path / "data", monkeypatch, frozen=True, window="0.0.1")
+    assert result.data["program"]["update_pending"] is True
+    assert "Закройте помощника (Claude) и перезапустите SVN-lite" in result.text
+    assert "Обновите SVN-lite" not in result.text
+    assert any("Закройте помощника" in w for w in result.warnings)
+    (app / (CLI + ".new")).unlink()
+    result = doctor_result(tmp_path / "data", monkeypatch, frozen=True, window="0.0.1")
+    assert result.data["program"]["update_pending"] is False
+    assert "Обновите SVN-lite" in result.text and "Закройте помощника" not in result.text
+
+
 def test_doctor_same_versions_or_unknown_window_is_quiet(tmp_path, monkeypatch):
     from svnhelper import __version__
     for window in (__version__, None):
@@ -272,7 +302,7 @@ def test_doctor_from_source_shows_package_version_only(tmp_path, monkeypatch):
 
 # ---- release.py ----
 
-def test_release_publishes_both_exes_and_keeps_previous(tmp_path):
+def test_release_with_cli_publishes_both_exes_cli_first_and_keeps_previous(tmp_path):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packaging"))
     try:
         import release
@@ -281,15 +311,31 @@ def test_release_publishes_both_exes_and_keeps_previous(tmp_path):
     dist, dest, old = tmp_path / "dist", tmp_path / "update", tmp_path / "old"
     dist.mkdir()
     dest.mkdir()
-    for name in release.EXE_NAMES:
+    for name in (release.WINDOW_EXE, release.CLI_EXE):
         (dist / name).write_bytes(b"new " + name.encode())
     (dest / "SVN-lite.exe").write_bytes(b"prev window")           # на сервере уже лежит прежний выпуск окна
-    copied = release.publish_exes(dist, dest, old, "1.2.8")
-    assert [p.name for p in copied] == ["SVN-lite.exe", "svnlite.exe"]
+    copied = release.publish_exes(dist, dest, old, "1.2.8", with_cli=True)
+    assert [p.name for p in copied] == ["svnlite.exe", "SVN-lite.exe"]     # окно последним: оно запускает обновление
     assert (dest / "SVN-lite.exe").read_bytes() == b"new SVN-lite.exe"
     assert (dest / "svnlite.exe").read_bytes() == b"new svnlite.exe"
     assert (old / "SVN-lite.prev-1.2.8.exe").read_bytes() == b"prev window"
     assert not (old / "svnlite.prev-1.2.8.exe").exists()          # прежнего svnlite.exe на сервере не было
+
+
+def test_release_without_flag_publishes_window_only(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packaging"))
+    try:
+        import release
+    finally:
+        sys.path.pop(0)
+    dist, dest = tmp_path / "dist", tmp_path / "update"
+    dist.mkdir()
+    dest.mkdir()
+    for name in (release.WINDOW_EXE, release.CLI_EXE):
+        (dist / name).write_bytes(b"new " + name.encode())
+    copied = release.publish_exes(dist, dest, tmp_path / "old", "1.2.8")
+    assert [p.name for p in copied] == ["SVN-lite.exe"]
+    assert [p.name for p in dest.iterdir()] == ["SVN-lite.exe"]   # svnlite.exe не раздаётся без --with-cli
 
 
 def test_release_copies_nothing_if_one_exe_is_missing(tmp_path):
@@ -303,7 +349,7 @@ def test_release_copies_nothing_if_one_exe_is_missing(tmp_path):
     dest.mkdir()
     (dist / "SVN-lite.exe").write_bytes(b"x")
     with pytest.raises(SystemExit):
-        release.publish_exes(dist, dest, tmp_path / "old", "1.2.8")
+        release.publish_exes(dist, dest, tmp_path / "old", "1.2.8", with_cli=True)
     assert list(dest.iterdir()) == []
 
 

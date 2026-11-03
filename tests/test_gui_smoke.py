@@ -1719,6 +1719,20 @@ class Stage3GuiTests(unittest.TestCase):
             self.assertIn("99.0.0", info.call_args[0][1])
             self.assertEqual(offer.call_count, 1)
 
+    def test_update_check_and_poll_finish_pending_cli_swap(self):
+        """Помощник закрылся, svnlite.exe.new освободился: окно доводит подмену при проверке обновления и раз в час."""
+        root, app, tmp = self.make_app()
+        app.settings.config_path = os.path.join(tmp, "svn_helper.json")
+        with mock.patch("svnhelper.selfupdate.apply_pending", return_value=[]) as pending,                 mock.patch("tkinter.messagebox.showinfo"), mock.patch.object(app, "reload_shared_config"),                 mock.patch.object(root, "after"):
+            app._check_for_update()                           # до проверки
+            pending.assert_called_once_with()
+            pending.reset_mock()
+            app._report_update_check()                        # и после неё
+            pending.assert_called_once_with()
+            pending.reset_mock()
+            app._update_poll()                                # и при часовой проверке
+            pending.assert_called_once_with()
+
     def test_hourly_update_poll_rereads_shared_config_quietly(self):
         root, app, tmp = self.make_app()
         app.settings.config_path = os.path.join(tmp, "svn_helper.json")      # общий конфиг на диске
@@ -1828,6 +1842,22 @@ class Stage3GuiTests(unittest.TestCase):
                 mock.patch("tkinter.messagebox.showinfo") as info:
             gui.main()
             info.assert_not_called()                                    # окно нашли и показали: сообщение не нужно
+
+    def test_unreadable_settings_show_message_release_mutex_and_return(self):
+        """settings.json занят и после ожидания: окно говорит об этом, отпускает мьютекс и не открывается."""
+        from svnhelper import gui
+        from svnhelper.config import READ_WAIT_WINDOW, SettingsUnreadable
+        from svnhelper.gui import app as app_module
+        fake_root = mock.Mock()
+        with mock.patch("svnhelper.winutil.acquire_single_instance", return_value=True),                 mock.patch("svnhelper.winutil.release_single_instance") as release,                 mock.patch.object(app_module, "enable_dpi_awareness"),                 mock.patch.object(app_module, "setup_logging", return_value=Path("w.log")),                 mock.patch("svnhelper.selfupdate.apply_pending"),                 mock.patch("svnhelper.selfupdate.record_window_version"),                 mock.patch.object(app_module, "SettingsStore", side_effect=SettingsUnreadable("занят")) as store,                 mock.patch.object(app_module, "load_shared_cache") as shared,                 mock.patch("tkinter.Tk", return_value=fake_root) as tk_root,                 mock.patch("tkinter.messagebox.showerror") as error:
+            gui.main()
+        store.assert_called_once_with(load_wait=READ_WAIT_WINDOW)     # окно ждёт дольше, чем CLI и сервер помощника
+        self.assertGreaterEqual(READ_WAIT_WINDOW, 3.0)
+        error.assert_called_once()
+        self.assertIn("файл настроек", error.call_args[0][1])
+        release.assert_called_once_with()
+        shared.assert_not_called()                                   # дальше запуск не пошёл
+        tk_root.assert_called_once()                                 # только скрытый корень для сообщения
 
     def test_exit_if_threads_alive_flushes_log_and_exits(self):
         from svnhelper import gui

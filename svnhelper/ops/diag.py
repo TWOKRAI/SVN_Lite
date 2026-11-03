@@ -21,7 +21,8 @@ def _program_data() -> dict:
     if selfupdate.is_supported():
         window = selfupdate.window_version()
         program.update(cli_version=__version__, window_version=window,
-                       versions_match=not window or window == __version__)
+                       versions_match=not window or window == __version__,
+                       update_pending=selfupdate.pending_cli_update())
     return program
 
 
@@ -97,7 +98,8 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
         warnings.append(note)
         text = f"{text} {note}"
     if not data["program"].get("versions_match", True):
-        differ = texts.VERSIONS_DIFFER.format(window=data["program"]["window_version"], cli=data["program"]["cli_version"])
+        template = texts.VERSIONS_DIFFER_PENDING if data["program"]["update_pending"] else texts.VERSIONS_DIFFER
+        differ = template.format(window=data["program"]["window_version"], cli=data["program"]["cli_version"])
         warnings.append(differ)
         text = f"{text} {differ}"
     text = f"{text} {texts.policy_mode_text(data['policy'].get('mode', ''))}".rstrip()

@@ -22,7 +22,8 @@ from .. import (__version__, autostart, docs, installer, messages, publish, self
                 tray, winutil)
 from ..config import (app_dir, apply_notify, build_config, Config, DEFAULT_SHARED_CONFIG, effective_credentials,
                       fetch_shared, find_svn, is_newer_version, load_shared_cache, parse_mirrors_text, protect_text,
-                      save_shared_cache, Settings, SettingsStore, SettingsUnreadable, setup_logging, SharedConfigError)
+                      READ_WAIT_WINDOW, save_shared_cache, Settings, SettingsStore, SettingsUnreadable, setup_logging,
+                      SharedConfigError)
 from ..notifier import discover_projects
 from ..dialogs import AboutDialog, center_window, ErrorDialog, FONT_FAMILY
 from ..svn_core import CancelToken, CheckoutProgress, ErrorKind, SvnClient, SvnError
@@ -883,10 +884,12 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             return
         if "://" in source and not (self.client and self.client.credentials):
             return    # ссылка svn:// без входа: не выскакиваем с окном логина раз в час
+        selfupdate.apply_pending()      # окно работает днями: подмену svnlite.exe доводим и без ручной проверки
         self.reload_shared_config()
 
     def _check_for_update(self) -> None:
         """Справка → «Проверить обновление программы»: перечитывает общие настройки и говорит, есть ли новая версия."""
+        selfupdate.apply_pending()      # помощник мог закрыться: доводим подмену svnlite.exe, которую задержал занятый файл
         if not self.settings.shared_source:
             self._report_update_check()
             return
@@ -896,6 +899,7 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
 
     def _report_update_check(self) -> None:
         self._update_check_pending = False
+        selfupdate.apply_pending()      # и после проверки: файл мог освободиться, пока она шла
         latest = self.config.latest_version.strip()
         if not is_newer_version(latest, __version__):
             messagebox.showinfo("Обновление программы", f"У вас последняя версия: {__version__}.", parent=self.root)
@@ -1565,7 +1569,7 @@ def main() -> None:
     selfupdate.apply_pending()           # svnlite.exe, который прошлое обновление не смогло подменить (был занят)
     selfupdate.record_window_version()   # по этой записи doctor в svnlite.exe видит, что версии разошлись
     try:
-        store = SettingsStore()
+        store = SettingsStore(load_wait=READ_WAIT_WINDOW)
     except SettingsUnreadable:        # запуск с пустыми настройками затёр бы настоящие при первом сохранении
         hidden = tk.Tk()
         hidden.withdraw()
