@@ -35,6 +35,7 @@ from .projects_tab import ProjectsTabMixin
 from .lines_tab import LinesTabMixin
 from .new_project_dialog import auth_error, publish_summary, recover_create_jobs, report_publish_error
 from .notify_ui import NotifyMixin
+from .agent_dialog import AgentDialog
 from .project_panel import TabLoads
 
 
@@ -706,6 +707,7 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         help_menu.add_command(label="Проверить обновление программы", command=self._check_for_update)
         help_menu.add_command(label="Создать ярлык на рабочем столе", command=self._create_shortcut,
                               state="normal" if getattr(sys, "frozen", False) else "disabled")
+        help_menu.add_command(label="ИИ-помощник…", command=self._open_agent_dialog)
         help_menu.add_separator()
         help_menu.add_command(label="О программе", command=self._on_about)
         self._add_menu_button("Справка", help_menu)
@@ -1352,6 +1354,16 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
                             extra={"Источник": source})
         elif self.settings.config_path.strip():  # путь задан явно: напоминаем, но без окон
             self.status_var.set(f"Общие настройки не прочитаны ({text}). Используется сохранённая копия.")
+
+    def _open_agent_dialog(self) -> None:
+        """Справка → «ИИ-помощник…»: состояние, папки, подключение. Окно одно: повторный вызов выводит его вперёд."""
+        dialog = getattr(self, "_agent_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.deiconify()
+            dialog.lift()
+            dialog.focus_set()
+            return
+        self._agent_dialog = AgentDialog(self)
 
     def _open_log(self) -> None:
         try:
