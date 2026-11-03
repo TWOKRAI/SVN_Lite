@@ -22,7 +22,7 @@ from .. import (__version__, autostart, docs, installer, messages, publish, self
                 tray, winutil)
 from ..config import (app_dir, apply_notify, build_config, Config, DEFAULT_SHARED_CONFIG, effective_credentials,
                       fetch_shared, find_svn, is_newer_version, load_shared_cache, parse_mirrors_text, protect_text,
-                      save_shared_cache, Settings, SettingsStore, setup_logging, SharedConfigError)
+                      save_shared_cache, Settings, SettingsStore, SettingsUnreadable, setup_logging, SharedConfigError)
 from ..notifier import discover_projects
 from ..dialogs import AboutDialog, center_window, ErrorDialog, FONT_FAMILY
 from ..svn_core import CancelToken, CheckoutProgress, ErrorKind, SvnClient, SvnError
@@ -1534,6 +1534,8 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
 # --------------------------------------------------------------------------
 
 ALREADY_RUNNING_TEXT = ("Программа уже запущена или закрывается. Подождите несколько секунд и запустите её ещё раз.")
+SETTINGS_UNREADABLE_TEXT = ("Не удалось прочитать файл настроек: его, возможно, занимает другая программа. "
+                            "Подождите несколько секунд и запустите программу ещё раз. Настройки не тронуты.")
 
 
 def exit_if_threads_alive() -> None:
@@ -1562,7 +1564,15 @@ def main() -> None:
     log_path = setup_logging()
     selfupdate.apply_pending()           # svnlite.exe, который прошлое обновление не смогло подменить (был занят)
     selfupdate.record_window_version()   # по этой записи doctor в svnlite.exe видит, что версии разошлись
-    store = SettingsStore()
+    try:
+        store = SettingsStore()
+    except SettingsUnreadable:        # запуск с пустыми настройками затёр бы настоящие при первом сохранении
+        hidden = tk.Tk()
+        hidden.withdraw()
+        messagebox.showerror(winutil.WINDOW_TITLE_PREFIX, SETTINGS_UNREADABLE_TEXT, parent=hidden)
+        hidden.destroy()
+        winutil.release_single_instance()
+        return
     cached = load_shared_cache()  # последняя копия общего конфига: окно открывается сразу, без ожидания сети
     config = build_config(store.settings, cached)
     svn = find_svn(config.svn_path)

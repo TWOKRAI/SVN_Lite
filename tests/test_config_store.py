@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from svnhelper import agentlog, localrepo                                     # noqa: E402
-from svnhelper.config import SettingsStore                                    # noqa: E402
+from svnhelper.config import Settings, SettingsStore, SettingsUnreadable      # noqa: E402
 from svnhelper.importer import CreateError                                    # noqa: E402
 from svnhelper.svn_core import ErrorKind, SvnError                            # noqa: E402
 
@@ -109,6 +109,78 @@ class SettingsStoreTests(unittest.TestCase):
             store.update(lambda s: setattr(s, "username", "ivanov"))
         saved = SettingsStore(self.path).settings
         self.assertEqual((saved.theme, saved.username), ("dark", "ivanov"))
+
+    # --- чтение настроек при создании store ---
+
+    def test_load_without_file_gives_default_settings(self):
+        store = SettingsStore(self.path)
+        self.assertEqual(store.settings.project_dirs, [])
+        self.assertFalse(self.path.exists())                  # чтение ничего не создаёт
+
+    def test_load_retries_busy_file_and_reads_real_settings(self):
+        SettingsStore(self.path).update(lambda s: setattr(s, "username", "ivanov"))
+        real_read = Path.read_bytes
+        calls = []
+
+        def flaky(path):
+            calls.append(path)
+            if len(calls) < 3:
+                raise PermissionError(32, "занято")
+            return real_read(path)
+
+        with mock.patch.object(Path, "read_bytes", flaky), mock.patch("svnhelper.config.time.sleep"):
+            store = SettingsStore(self.path)
+        self.assertEqual(store.settings.username, "ivanov")
+        self.assertEqual(len(calls), 3)
+
+    def test_load_of_file_that_stays_busy_is_logged_error_not_empty_settings(self):
+        SettingsStore(self.path).update(lambda s: setattr(s, "username", "ivanov"))
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(32, "занято")) as read,                 mock.patch("svnhelper.config.time.sleep"):
+            with self.assertLogs("svnhelper", "ERROR"):
+                with self.assertRaises(SettingsUnreadable) as caught:
+                    SettingsStore(self.path)
+        self.assertIsInstance(caught.exception, OSError)
+        self.assertEqual(read.call_count, 5)
+        self.assertEqual(SettingsStore(self.path).settings.username, "ivanov")    # файл не тронут
+
+    def test_load_of_broken_file_keeps_one_copy_and_does_not_rewrite_it(self):
+        broken = "{ не json"
+        self.path.write_text(broken, encoding="utf-8")
+        with self.assertLogs("svnhelper", "WARNING"):
+            store = SettingsStore(self.path)
+        self.assertEqual(store.settings.project_dirs, [])
+        with self.assertLogs("svnhelper", "WARNING"):
+            SettingsStore(self.path)                           # второй запуск с тем же файлом: копия не множится
+        copies = list(self.path.parent.glob("settings.json.bad-*"))
+        self.assertEqual(len(copies), 1)
+        self.assertEqual(copies[0].read_text(encoding="utf-8"), broken)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), broken)    # сам файл не затёрт
+
+    def test_save_over_broken_file_keeps_its_copy(self):
+        self.path.write_text("{ не json", encoding="utf-8")
+        with self.assertLogs("svnhelper", "WARNING"):
+            store = SettingsStore(self.path)
+        store.settings.theme = "dark"
+        store.save()
+        self.assertEqual(SettingsStore(self.path).settings.theme, "dark")
+        copies = list(self.path.parent.glob("settings.json.bad-*"))
+        self.assertEqual([c.read_text(encoding="utf-8") for c in copies], ["{ не json"])
+
+    def test_empty_file_is_default_settings_without_copy(self):
+        self.path.write_text("", encoding="utf-8")
+        with self.assertLogs("svnhelper", "WARNING"):
+            SettingsStore(self.path)
+        self.assertEqual(list(self.path.parent.glob("settings.json.bad-*")), [])
+
+    def test_save_does_not_overwrite_file_it_cannot_read(self):
+        store = SettingsStore(self.path)
+        store.update(lambda s: setattr(s, "username", "ivanov"))
+        store.settings.theme = "dark"
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(32, "занято")),                 mock.patch("svnhelper.config.time.sleep"):
+            with self.assertLogs("svnhelper", "ERROR"):
+                store.save()                                   # ошибка в журнал, файл остаётся прежним
+        saved = SettingsStore(self.path).settings
+        self.assertEqual((saved.username, saved.theme), ("ivanov", Settings().theme))
 
     def test_write_error_is_logged_and_raised(self):
         store = SettingsStore(self.path)

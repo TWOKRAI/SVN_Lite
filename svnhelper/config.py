@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 from ctypes import wintypes
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -712,6 +713,12 @@ def _parse_settings(data: dict) -> Settings:
 _SETTINGS_THREAD_LOCK = threading.Lock()
 SETTINGS_LOCK_TIMEOUT = 10.0     # секунд ждать, пока другая программа закончит запись настроек
 _WRITE_RETRIES = 3               # попыток заменить файл настроек (антивирус или читатель держит его мгновение)
+_READ_RETRIES = 5                # попыток прочитать файл настроек (его в этот миг заменяют или проверяет антивирус)
+
+
+class SettingsUnreadable(OSError):
+    """Файл настроек есть, но прочитать его не удалось. Пустые настройки вместо него подставлять нельзя:
+    проекты «пропали» бы, а окно потом записало бы пустые настройки поверх настоящих."""
 
 
 @contextlib.contextmanager
@@ -755,26 +762,67 @@ class SettingsStore:
     """
 
     def __init__(self, path: Optional[Path] = None):
-        self.path = path or data_dir() / "settings.json"
+        self.path = Path(path) if path else data_dir() / "settings.json"
         self.settings = self._load()
         self._synced = copy.deepcopy(self.settings)    # как настройки выглядели при последней сверке с файлом
 
-    def _load(self) -> Settings:
+    def _read_bytes(self) -> Optional[bytes]:
+        """Содержимое файла настроек. None: файла нет (это нормально). Если файл занят, чтение повторяется
+        несколько раз с короткой паузой; не вышло - OSError."""
+        for attempt in range(_READ_RETRIES):
+            try:
+                return self.path.read_bytes()
+            except FileNotFoundError:
+                return None
+            except OSError:
+                if attempt == _READ_RETRIES - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        return None                                                # недостижимо: последняя попытка бросает
+
+    def _keep_broken_copy(self, raw: bytes) -> None:
+        """Повреждённый файл настроек перед перезаписью сохраняется рядом как settings.json.bad-<дата-время>.
+        Одно и то же содержимое копируется один раз (его могли сохранить раньше, в том числе другая программа)."""
+        if not raw.strip():
+            return                                                 # пустой файл терять нечего
         try:
-            return _parse_settings(json.loads(self.path.read_text(encoding="utf-8-sig")))
-        except (OSError, ValueError, AttributeError):
+            for old in self.path.parent.glob(self.path.name + ".bad-*"):
+                if old.read_bytes() == raw:
+                    return
+            copy_path = self.path.with_name(f"{self.path.name}.bad-{datetime.now():%Y%m%d-%H%M%S}")
+            copy_path.write_bytes(raw)
+            logging.getLogger("svnhelper").warning("Копия повреждённого файла настроек: %s", copy_path)
+        except OSError:
+            logging.getLogger("svnhelper").exception("Не удалось сохранить копию повреждённого файла настроек")
+
+    def _parse(self, raw: bytes) -> Optional[Settings]:
+        """Настройки из содержимого файла; None: файл повреждён (копия сохранена, в журнал записано предупреждение)."""
+        try:
+            return _parse_settings(json.loads(raw.decode("utf-8-sig")))
+        except (ValueError, AttributeError):
+            logging.getLogger("svnhelper").warning("Файл настроек %s повреждён: он будет записан заново", self.path)
+            self._keep_broken_copy(raw)
+            return None
+
+    def _load(self) -> Settings:
+        """Настройки при создании. Нет файла или он повреждён: стандартные настройки (повреждённый файл сохраняется
+        копией). Файл есть, но не прочитан: SettingsUnreadable, запись в журнале."""
+        try:
+            raw = self._read_bytes()
+        except OSError as exc:
+            logging.getLogger("svnhelper").exception("Не удалось прочитать настройки %s", self.path)
+            raise SettingsUnreadable(
+                "Не удалось прочитать файл настроек: его, возможно, занимает другая программа. "
+                "Повторите через несколько секунд.") from exc
+        if raw is None:
             return Settings()
+        return self._parse(raw) or Settings()
 
     def _read_file(self) -> Optional[Settings]:
         """Настройки из файла. None: файла нет или он повреждён (тогда за основу берётся то, что в памяти).
-        Другая ошибка чтения (файл занят) пробрасывается: иначе чужие настройки были бы затёрты."""
-        try:
-            return _parse_settings(json.loads(self.path.read_text(encoding="utf-8-sig")))
-        except FileNotFoundError:
-            return None
-        except (ValueError, AttributeError):
-            logging.getLogger("svnhelper").warning("Файл настроек %s повреждён: он будет записан заново", self.path)
-            return None
+        Другая ошибка чтения (файл занят даже после повторов) пробрасывается: иначе чужие настройки были бы затёрты."""
+        raw = self._read_bytes()
+        return None if raw is None else self._parse(raw)
 
     def _write(self, settings: Settings) -> None:
         """Атомарная запись (временный файл и замена), до 3 попыток. Вызывать под замком."""

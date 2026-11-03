@@ -476,11 +476,11 @@ class SettingsRaceTests(RaceBase):
         self.assertTrue(sizes)
         self.assertEqual(sizes, sorted(sizes))
 
-    # Подтверждённый дефект (svnhelper/config.py, SettingsStore._load, строки 762-766): чтение settings.json при старте
-    # не под замком и не повторяется; файл в этот миг занят (замена у писателя, антивирус), OSError глотается, и
-    # возвращаются пустые Settings(): проекты «пропали», CLI отвечает «проект не найден». Вживую это бывает примерно в
-    # одном чтении из ~150 во время сохранения настроек окном (см. отчёт). Здесь файл занят детерминированно.
-    @unittest.expectedFailure
+    # Был дефект (svnhelper/config.py, SettingsStore._load): чтение settings.json при старте не повторялось; файл в этот
+    # миг занят (замена у писателя, антивирус), OSError глотался, и возвращались пустые Settings(): проекты «пропадали»,
+    # CLI отвечал «проект не найден». Вживую это бывало примерно в одном чтении из ~150 во время сохранения настроек
+    # окном. Исправлено: чтение повторяется, а если файл так и не прочитан, это явная ошибка (SettingsUnreadable).
+    # Здесь файл занят детерминированно на всё время вызова.
     def test_store_does_not_silently_return_empty_settings_when_file_is_held(self):
         with exclusive_open(self.settings_path):
             try:
@@ -489,7 +489,6 @@ class SettingsRaceTests(RaceBase):
                 return                                              # явная ошибка вместо пустых настроек допустима
         self.assertEqual(settings.project_dirs, [str(self.base)])
 
-    @unittest.expectedFailure
     def test_cli_does_not_answer_project_not_found_when_settings_file_is_held(self):
         with exclusive_open(self.settings_path):
             code, data = self.cli("status", NAME)
