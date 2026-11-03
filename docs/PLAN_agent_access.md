@@ -8,8 +8,8 @@
 
 ## Принятые решения
 
-- **Один слой `svnhelper/ops/`**, два тонких потребителя: консольный `svnlite.exe` (CLI) и `svnlite-mcp.exe` (MCP, stdio). Клиент неизвестен, поэтому делаем оба; логики в них нет.
-- **Окно не трогаем.** `SVN-lite.exe` собран без консоли и берёт мьютекс окна. Новые exe: `console=True`, `upx=False`, `excludes=['tkinter']`, лежат рядом с `SVN-lite.exe`; `mcp` только в `svnlite-mcp.exe`. Python на ПК не нужен.
+- **Один слой `svnhelper/ops/`**, два тонких потребителя: консольный `svnlite.exe` (CLI) и MCP-сервер (stdio; подкоманда `mcp` того же exe). Клиент неизвестен, поэтому делаем оба; логики в них нет. **По решению владельца (п. 3 «Решений владельца») exe один:** `svnlite.exe` (CLI и подкоманда `mcp`); отдельных `svnlite-mcp.exe`, `svnlite_mcp.py` и `svnlite-mcp.spec` нет, везде ниже, где они упомянуты, читать `svnlite.exe mcp`.
+- **Окно не трогаем.** `SVN-lite.exe` собран без консоли и берёт мьютекс окна. Новый exe: `console=True`, `upx=False`, `excludes=['tkinter']`, лежит рядом с `SVN-lite.exe`; `mcp` в том же `svnlite.exe` (подкоманда `mcp`; по решению владельца отдельного `svnlite-mcp.exe` нет). Python на ПК не нужен.
 - **Две поставки.** M1 (AG.0a, 0b, 1, 2, 3, 4, 6, 7): только чтение. M2 (AG.0c, 0d, 5): запись под политикой. Запись по умолчанию выключена.
 - **Пароль не нужен.** `SvnClient` без учётных данных, svn берёт пароль из своего кэша. `effective_credentials` и DPAPI в CLI/MCP не вызываются. Нет входа: ошибка `auth`, «Откройте SVN-lite и войдите».
 - **Запись двухшаговая.** Без `--apply` команда строит план (dry-run, это поведение по умолчанию) и выдаёт токен; с `--apply ТОКЕН` выполняет. В MCP это отдельные tools `*_plan` и `*_apply`, чтобы клиент требовал подтверждение человека только на `*_apply`. Токен защищает от подмены плана, но не заменяет подтверждение в клиенте.
@@ -155,11 +155,11 @@
 
 **Уровень:** M / Middle (Sonnet) · **Исполнитель:** developer · **Зависимости:** AG.1
 **Цель:** `svnlite <команда> --json` для чтения; отдельный exe.
-**Файлы:** `svnhelper/cli.py`, `svnlite_cli.py`, `packaging/svnlite-cli.spec` (создать), `packaging/build.bat`, `tests/test_cli.py` (создать).
+**Файлы:** `svnhelper/cli.py`, `svnlite_cli.py`, `packaging/svnlite.spec` (создать; в первой редакции плана `svnlite-cli.spec`, по решению владельца exe один), `packaging/build.bat`, `tests/test_cli.py` (создать).
 **Шаги:**
 1. `argparse`: `doctor`, `projects`, `status [проект ... | --all] [--offline]`, `changes`, `incoming`, `history [--limit N]`, `locks`, `templates`, `info`. Флаги: `--json` (по умолчанию не-tty), `--text`, `--details`, `--version`. `main(argv, ctx=None) -> int` для тестов. Команд записи нет.
 2. При `--json` `sys.stdout.reconfigure(encoding="utf-8")`; stdin не читается; пути `/c/...` принимаются. `agentlog.setup("cli")`; мьютекс окна, `setup_logging()`, трей и реестр не трогаются. Код возврата из `error.exit_code`.
-3. `svnlite-cli.spec`: `console=True`, `excludes=['tkinter']`, `upx=False`, имя `svnlite`. `build.bat` собирает второй exe, при ошибке `goto :fail`, итог про оба файла.
+3. `svnlite.spec` (был `svnlite-cli.spec`): `console=True`, `excludes=['tkinter']`, `upx=False`, имя `svnlite`. `build.bat` собирает второй exe, при ошибке `goto :fail`, итог про оба файла.
 **Критерии приёмки:**
 - [ ] В процессе: каждая команда даёт валидный JSON и 0; `noconn`, `auth`, `authz` дают 3, 4, 5; нет проекта даёт 1; неверные аргументы 2.
 - [ ] Через `subprocess` (`python -m svnhelper.cli`, `SVNLITE_DATA_DIR` во временной папке): вывод парсится `json.loads`, кириллица цела при `PYTHONIOENCODING=cp866` и `cp1251`.
@@ -168,18 +168,20 @@
 **Вне scope:** команды записи (AG.5), MCP, `--use-saved-login`. **Оценка:** ~450 строк.
 **Ручные проверки:** `svnlite.exe doctor --text` на ПК без Python при открытом окне и трее; `cmd`, PowerShell, Git Bash (`/c/...`); холодный старт onefile (дольше 3 с: решить про onedir); нет мелькающего окна консоли при вызове из Claude Code; антивирус.
 
+**Как сделано (AG.2).** Один exe `svnlite.exe`: точка входа `svnlite_cli.py` (`from svnhelper.cli import main`), сборка `packaging/svnlite.spec` (`console=True`, `upx=False`, `excludes=['tkinter']`), `build.bat` собирает его вторым после окна. Подкоманды строятся из реестра операций (`registry.all_operations()`), списков команд в `cli.py` нет: имя команды — имя операции с дефисом (`server_projects` → `server-projects`), исключение `project_info` → `info` (запасное `project-info`). Общие флаги `--json`, `--text`, `--details` принимаются и до, и после команды (значение `SUPPRESS`: не затирают друг друга); `--offline` и `--all` — флаги по таблице `FLAG_OVERRIDES`. Разбор ошибок argparse не печатается, а становится ответом (`invalid_args`, код 2); справка русская. В консоли по умолчанию текст, вне консоли JSON; stdout только результат, ошибка текстового режима в stderr. Подкоманда `mcp` вызывает `svnhelper.mcp_server.main` лениво (`importlib`): без пакета `mcp` остальные команды работают, а `svnlite mcp` пишет в stderr русское сообщение и возвращает 1. Общие флаги до `mcp` (`svnlite --json mcp`) допустимы и игнорируются (`_mcp_argv`); до ревью такая форма падала с `AttributeError`.
+
 ### Task AG.3 — MCP-сервер (чтение)
 
 **Уровень:** M / Middle+ (Sonnet), ревью teamlead · **Исполнитель:** developer · **Зависимости:** AG.1; шаг 0 можно сразу
 **Цель:** те же операции чтения как tools и resources MCP по stdio.
-**Файлы:** `svnhelper/mcp_server.py`, `svnlite_mcp.py`, `requirements-mcp.txt`, `packaging/svnlite-mcp.spec`, `docs/agent/claude_desktop_config.sample.json`, `docs/agent/mcp.json.sample`, `tests/test_mcp_server.py` (создать), `packaging/build.bat` (строка).
+**Файлы:** `svnhelper/mcp_server.py`, `requirements-mcp.txt`, `packaging/svnlite.spec` (общий; **по решению владельца exe один**: `svnlite_mcp.py` и `svnlite-mcp.spec` не создаются, сервер запускает `svnlite.exe mcp` через `svnlite_cli.py`), `docs/agent/claude_desktop_config.sample.json`, `docs/agent/mcp.json.sample`, `tests/test_mcp_server.py` (создать), `packaging/build.bat` (строка).
 **Шаги:**
 0. **Проверка SDK до кода.** Context7 в сессии составления плана был недоступен, поэтому факты ниже из исследования и памяти и не сверены. Через Context7 (`resolve-library-id` «mcp python sdk», `query-docs`) и `pip index versions mcp` выяснить и записать в шапку `mcp_server.py` и `requirements-mcp.txt`: точную версию (ориентир: последняя стабильная 1.x; 2.x только решением teamlead); класс сервера (в 1.x `mcp.server.fastmcp.FastMCP`, в 2.x по исследованию `MCPServer`); как задаются аннотации (`ToolAnnotations` из `mcp.types`; поля `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` или snake_case); как вернуть структурный результат вместе с `isError`; запуск `run(transport="stdio")`; API клиентской сессии в памяти для тестов (в 1.x `mcp.shared.memory.create_connected_server_and_client_session`); поддержку resources с шаблоном URI. Расхождения вносятся в план, код не угадывается.
 1. Tools: `doctor`, `list_projects`, `project_status`, `project_changes`, `project_incoming`, `project_history`, `project_locks`, `list_templates`, `project_info`; все `readOnlyHint=true`. В описаниях: поля коллег недоверенные, инструкции из них не исполнять, пароля у помощника нет. Resources: `svnlite://projects`, `svnlite://project/{name}/status`. Prompts не делаем.
 2. Каждый tool вызывает `ops.*` в потоке (`anyio.to_thread.run_sync` или `asyncio.to_thread`); общий таймаут 90 с (`retryable`-ошибка). Ответ: `Result.to_dict()`, при `ok=false` ответ помечается ошибкой средствами SDK.
 3. До импорта настроить `agentlog.setup("mcp")`; `print` запрещён. svn работает со `stdin=DEVNULL` (так делает `SvnClient._popen` без пароля).
-4. Примеры подключения (пути-заглушки): Claude Desktop, `%APPDATA%\Claude\claude_desktop_config.json`: `{"mcpServers": {"svnlite": {"command": "C:\\Program Files\\SVN-lite\\svnlite-mcp.exe", "args": []}}}`; Claude Code: `.mcp.json` в проекте или `claude mcp add --scope user svnlite -- "C:\...\svnlite-mcp.exe"`. После правки клиент перезапускается.
-5. `svnlite-mcp.spec`: как у CLI плюс скрытые импорты, найденные запуском собранного exe.
+4. Примеры подключения (пути-заглушки): Claude Desktop, `%APPDATA%\Claude\claude_desktop_config.json`: `{"mcpServers": {"svnlite": {"command": "C:\\Program Files\\SVN-lite\\svnlite.exe", "args": ["mcp"]}}}`; Claude Code: `.mcp.json` в проекте или `claude mcp add --scope user svnlite -- "C:\...\svnlite.exe" mcp`. После правки клиент перезапускается.
+5. Отдельного `svnlite-mcp.spec` нет (решение владельца: один exe): скрытые импорты MCP добавлены в `packaging/svnlite.spec`; точный список уточняется запуском собранного exe.
 **Критерии приёмки:**
 - [ ] Клиентская сессия SDK в памяти: список tools ожидаемый, у всех `readOnlyHint=true`, `list_projects` и `project_status` на фейковом svn дают ожидаемый JSON.
 - [ ] `subprocess`: `python -m svnhelper.mcp_server`, `initialize` + `tools/list` по stdio, в stdout только строки JSON-RPC (разбор каждой), журнал отдельно.
@@ -187,7 +189,9 @@
 - [ ] Канареечного пароля нет в ответах и журнале.
 
 **Вне scope:** запись, задачи с опросом (AG.5), prompts, HTTP. **Оценка:** ~350 строк.
-**Ручные проверки:** подключить Claude Desktop и Claude Code, спросить «что с моими проектами»; после закрытия клиента нет висящих `svnlite-mcp.exe` и `svn.exe`; размер exe, время старта; антивирус.
+**Ручные проверки:** подключить Claude Desktop и Claude Code, спросить «что с моими проектами»; после закрытия клиента нет висящих `svnlite.exe mcp` и `svn.exe`; размер exe, время старта; антивирус.
+
+**Как сделано (AG.3).** Сервер `svnhelper/mcp_server.py` на низкоуровневом `mcp.server.lowlevel.Server`, а не `FastMCP`: описания и схемы параметров уже лежат в реестре операций, а FastMCP строит схему из сигнатуры функции, и десять функций дублировали бы реестр. SDK `mcp==1.30.0` закреплён в `requirements-mcp.txt` (последняя 1.x). Ветка 2.x (на 2026-11-03 последняя 2.3.0) не взята: другая раскладка пакета (`MCPServer`, типы в отдельном пакете `mcp-types`, новые зависимости `httpx2` и `opentelemetry-api`), для сервера чтения выгоды нет, а exe вырос бы. Инструментов 10, все с `readOnlyHint=true`: `doctor`, `list_projects`, `project_status`, `project_changes`, `project_incoming`, `project_history`, `project_locks`, `list_templates`, `project_info` и `list_server_projects` (просмотр дерева на сервере, добавлен решением владельца; соответствие имён в `TOOL_NAMES`). Ресурсы: `svnlite://projects` и шаблон `svnlite://project/{name}/status`. Параметр `details` (технические подробности) снимает сервер, операция его не видит. Неизвестное имя инструмента отклоняется кодом 2 без обращения к реестру по сырому имени. Каждый вызов выполняется в потоке-демоне (`_in_daemon_thread`: поток `anyio` не демон и задержал бы выход процесса), общий бюджет операции 90 с и запас 5 с, по истечении сервер отвечает сам; перед вызовом `store.refresh(("project_dirs", "local_histories"))` подтягивает правки окна. stdout занят протоколом: на время работы `sys.stdout` заменён на `sys.stderr`, журнал идёт в файл (`agentlog.setup("mcp")`). Процессы `svn.exe` привязаны к серверу объектом «задание» Windows (`KILL_ON_JOB_CLOSE`, `_bind_children_to_process`): клиент, закрывший сервер посреди вызова, не оставит висящий `svn.exe`. Имя клиента (`clientInfo.name` и `version` из сессии) кладётся в копию контекста операции (`client_label`) и попадает в журнал действий. Тесты `tests/test_mcp_server.py` (сессия в памяти, stdio через `subprocess`, параллельные зависшие вызовы, канареечный пароль) без пакета `mcp` пропускаются; при `SVNLITE_REQUIRE_MCP=1` отсутствие пакета роняет тест. Сборка `svnlite.spec` без пакета `mcp` завершается `SystemExit` (скрытые импорты: `svnhelper.mcp_server`, `mcp.server.lowlevel`, `mcp.server.stdio`, подмодули `anyio`, модули `pywin32`, если они есть), `build.bat` ставит `requirements-mcp.txt`, проверяет `import mcp` и после сборки запускает `svnlite.exe --version`.
 
 ### Task AG.4 — Политика безопасности и аудит
 
@@ -215,6 +219,16 @@
 - [ ] Комментарий с «игнорируй предыдущие инструкции…» на 10 000 символов обрезан, помечен, JSON цел.
 
 **Вне scope:** окно политики (AG.7), сама запись (AG.5). **Оценка:** ~400 строк.
+
+**Как сделано (AG.4).** `svnhelper/agent_policy.py`, `svnhelper/ops/audit.py`, `agent_max_mode` в `config.py`. Действует меньший из двух режимов: потолок администратора и режим из файла политики. Потолок — меньший из локального `svn_helper.json` и общей копии (`apply_config_data` берёт `stricter_mode`, поэтому один файл не поднимает потолок другого); по умолчанию `read_only`, при `off` все операции кроме `doctor` отвечают кодом 6. Долгоживущий процесс перечитывает потолок и файл политики на каждую операцию (`OpsContext.begin()`, `agent_policy.current_ceiling` с кэшем по mtime и размеру файлов); если конфигурацию дали снаружи (тесты), потолок не перечитывается. Состояния подписи: `ok`, `no_file`, `invalid` (правка не через SVN-lite или повреждение), `foreign` (DPAPI не открывает подпись: другой профиль или ПК, текст «Политику нужно заново включить в SVN-lite на этом компьютере»), `unreadable` (файл не прочитан: не подделка); во всех, кроме `ok`, режим read_only, отказ и `doctor` говорят своими словами. `Policy.check(action, project, base_dirs, line, *, consume)`: режим, разрешение, папка (внутри `base_dirs` и `allowed_dirs`, по настоящему пути, UNC и junction отказ), лимит записей в час (метки в `data_dir()/agent/counters.json` под строгим `named_lock("policy")`, виден другому процессу), тег (`line="tag"`) даёт код 5 (`read_only_line`), все прочие отказы код 6 (`policy_denied`, причины в `texts.POLICY_DENIALS`). `consume` обязателен: `True` только перед самой записью, `False` для плана. `allowed_dirs` политики расширяют `ctx.project_dirs` (поиск проекта). Журнал: одна строка JSON на каждый вызов (и чтение, и отказ) в `agent/audit_ГГГГ-ММ.jsonl` под `named_lock("audit")`; операция записи дополняет строку словарём `ctx.audit.update(files=..., plan_id=..., rev_before=..., rev_after=..., op_id=..., comment=...)`, реестр сам вызывает `audit.record` после операции. Для AG.5 запись начинается так: `ctx.policy.check("save_server", path, base_dirs=ctx.project_dirs, consume=True)` непосредственно перед отправкой, затем `ctx.audit.update(...)` с номерами сохранений. Тест `test_reading_does_not_touch_settings` в `tests/test_ops_read.py` поправлен: чтение теперь создаёт в папке данных `agent/` (журнал) и `locks/`, больше ничего.
+
+**Задел (после ревью AG.2–AG.4, решить до указанных задач; не сделано).**
+- **До AG.5: `SVNLITE_DATA_DIR` подменяет папку политики, журнала и замков.** Процесс (агент), которому позволено задать переменную среды при запуске `svnlite.exe`, направит политику, счётчик записей и журнал в свою папку и обойдёт их. Решить: при `sys.frozen` игнорировать переменную для политики, счётчика и журнала (она нужна только демо-режиму и тестам), либо включить `data_dir` в подписываемый JSON политики.
+- **Сервер MCP: семафор на 4–6 одновременных вызовов.** Сейчас число потоков-демонов не ограничено; клиент, пославший много вызовов сразу, запустит столько же `svn.exe`.
+- **Объект «задание» Windows и для обычных команд CLI.** `_bind_children_to_process` живёт в `mcp_server.py` и защищает только сервер; вынести в общий модуль и подключить в `cli.main` (убитая консольная программа не оставляет `svn.exe`).
+- **Срок хранения `audit_*.jsonl`.** Файлы по месяцам копятся бесконечно; хранить 12 месяцев, как у `agentlog` (удаление старых при первой записи месяца).
+- **Уточнение `packaging/svnlite.spec` после первой сборки.** Список скрытых импортов (`mcp.server.lowlevel`, `mcp.server.stdio`, `anyio`, `pywin32`) предварительный: PyInstaller подтягивает остальное по байткоду; точный список и размер exe выясняются запуском собранного `svnlite.exe mcp` по stdio (ручная проверка, PyInstaller при ревью не запускался).
+
 
 ### Task AG.5 — Запись под политикой (M2)
 
@@ -267,20 +281,20 @@
 ### Task AG.7 — Гонки, упаковка, самообновление, окно, документация
 
 **Уровень:** M / Middle (Sonnet) · **Исполнитель:** tester (гонки), developer (упаковка, окно), docs-writer (документы) · **Зависимости:** M1: AG.2–AG.4; M2: AG.5
-**Цель:** три exe выпускаются и обновляются вместе; сотрудник включает помощника в окне; всё описано.
+**Цель:** два exe (`SVN-lite.exe` и `svnlite.exe`; по решению владельца третьего нет) выпускаются и обновляются вместе; сотрудник включает помощника в окне; всё описано.
 **Файлы:** `tests/test_agent_races.py` (создать), `packaging/release.py`, `svnhelper/selfupdate.py`, `tests/test_selfupdate.py`, `svnhelper/gui/app.py` (меню «Справка → ИИ-помощник…»), `svnhelper/gui/agent_dialog.py` (создать), `tests/test_ui_texts.py`, `README.md`, `ШПАРГАЛКА.html`, `TODO.md`, `docs/DECISIONS.md`.
 **Шаги:**
 1. Гонки (`subprocess`, настоящий `svnserve`): окно и CLI на одной папке (окно отказывает русским текстом); убитый CLI посреди `create_project`: окно откатывает `.creating`, живого не трогает; одновременная запись `settings.json` из окна и CLI без потерь; журнал `svn_helper.log` цел.
-2. `release.py` собирает и кладёт в папку обновлений три exe. `selfupdate.prepare` копирует соседние `svnlite*.exe` как `*.new`; `swap_script` для них делает одну попытку `move` без ожидания (запущенный агентом exe не блокирует обновление окна); оставшиеся `*.new` подменяются при следующем запуске окна. `doctor` показывает версии CLI/MCP и «версии разошлись».
+2. `release.py` собирает и кладёт в папку обновлений два exe. `selfupdate.prepare` копирует соседние `svnlite*.exe` как `*.new`; `swap_script` для них делает одну попытку `move` без ожидания (запущенный агентом exe не блокирует обновление окна); оставшиеся `*.new` подменяются при следующем запуске окна. `doctor` показывает версии окна и `svnlite.exe` (CLI и MCP в одном exe) и «версии разошлись».
 3. Окно «ИИ-помощник…»: состояние, переключатели «Разрешить помощнику: сохранять на сервере / у себя / занимать файлы / создавать проекты на компьютере» (создание на сервере и отправка с предупреждением, по умолчанию выкл), разрешённые папки, «Скопировать команду подключения» (Claude Code, Claude Desktop), «Открыть журнал действий помощника»; политика пишется через `agent_policy.write`. Тексты без svn-слов.
-4. Документы: README (раздел «Доступ для ИИ-агентов», таблица exe, структура кода, журналы), ШПАРГАЛКА (абзац для сотрудников), `docs/DECISIONS.md` (замок, политика, два шага), `TODO.md` (убрать «идея», добавить ручные проверки), строка про три exe в `build.bat`.
+4. Документы: README (раздел «Доступ для ИИ-агентов», таблица exe, структура кода, журналы), ШПАРГАЛКА (абзац для сотрудников), `docs/DECISIONS.md` (замок, политика, два шага), `TODO.md` (убрать «идея», добавить ручные проверки), строка про два exe в `build.bat`.
 **Критерии приёмки:**
-- [ ] `build.bat` собирает три exe; `release.py` кладёт их в тестовую папку обновлений.
+- [ ] `build.bat` собирает два exe; `release.py` кладёт их в тестовую папку обновлений.
 - [ ] `test_selfupdate` проходит с запущенным «чужим» `svnlite.exe` (имитация блокировки).
 - [ ] Автотест слов svn проходит на ops, CLI, меню; все тесты проходят.
 
 **Вне scope:** подпись exe, права на сервере, хуки. **Оценка:** ~600 строк, ~250 из них тесты.
-**Ручные проверки на Windows:** Claude Code и Claude Desktop на чистом ПК; окно и трей открыты, CLI сохраняет, окно обновляет строку; обновление окна при работающем `svnlite-mcp.exe`; диалог «ИИ-помощник» при масштабе 125–150%; профиль на C:, проекты на D:; антивирус на трёх exe; живой сервер; обрыв связи посреди `save`.
+**Ручные проверки на Windows:** Claude Code и Claude Desktop на чистом ПК; окно и трей открыты, CLI сохраняет, окно обновляет строку; обновление окна при работающем `svnlite.exe mcp`; диалог «ИИ-помощник» при масштабе 125–150%; профиль на C:, проекты на D:; антивирус на двух exe; живой сервер; обрыв связи посреди `save`.
 
 ### Task AG.8 — Журнал действий помощника: просмотр, откат назад и вперёд (M2)
 
