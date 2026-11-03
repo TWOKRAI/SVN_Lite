@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(svnlite doctor)",
+      "Bash(svnlite doctor *)",
+      "Bash(svnlite projects)",
+      "Bash(svnlite projects *)",
+      "Bash(svnlite status *)",
+      "Bash(svnlite changes *)",
+      "Bash(svnlite incoming *)",
+      "Bash(svnlite history *)",
+      "Bash(svnlite locks *)",
+      "Bash(svnlite info *)",
+      "Bash(svnlite templates)",
+      "Bash(svnlite templates *)",
+      "Bash(svnlite server-projects)",
+      "Bash(svnlite server-projects *)"
+    ],
+    "ask": [
+      "Bash(svnlite * --apply *)",
+      "Bash(svnlite save *)",
+      "Bash(svnlite lock *)",
+      "Bash(svnlite unlock *)",
+      "Bash(svnlite new-project *)",
+      "Bash(svnlite publish *)"
+    ],
+    "deny": [
+      "Bash(svn *)",
+      "Bash(svn.exe *)",
+      "Bash(svnadmin *)",
+      "Bash(svnadmin.exe *)",
+      "Read(~/AppData/Roaming/SvnHelper/**)",
+      "Edit(~/AppData/Roaming/SvnHelper/**)",
+      "Read(~/AppData/Roaming/Subversion/auth/**)",
+      "Edit(~/AppData/Roaming/Subversion/auth/**)"
+    ]
+  }
+}
