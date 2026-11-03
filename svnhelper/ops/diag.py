@@ -80,7 +80,12 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
         problems.append(texts.DOCTOR_NOT_CHECKED)
     data["ready"] = not problems and error is None
     text = texts.doctor_text(problems, data["ready"])
-    svn = {"server": ctx.config.server, "roots": list(ctx.config.repos), "templates_root": ctx.config.templates_root}
+    warnings = []
+    if data["policy"].get("signature") == "invalid":
+        warnings.append(texts.POLICY_TAMPERED)             # политику правили не через SVN-lite: запись выключена
+        text = f"{text} {texts.POLICY_TAMPERED}"
+    text = f"{text} {texts.policy_mode_text(data['policy'].get('mode', ''))}".rstrip()
+    svn ={"server": ctx.config.server, "roots": list(ctx.config.repos), "templates_root": ctx.config.templates_root}
     if error is not None:
-        return Result("doctor", False, data, text, [], [], error, svn)
-    return Result("doctor", data=data, text=text, svn=svn)
+        return Result("doctor", False, data, text, warnings, [], error, svn)
+    return Result("doctor", data=data, text=text, warnings=warnings, svn=svn)
