@@ -1548,6 +1548,8 @@ def main() -> None:
         return
     enable_dpi_awareness()
     log_path = setup_logging()
+    selfupdate.apply_pending()           # svnlite.exe, который прошлое обновление не смогло подменить (был занят)
+    selfupdate.record_window_version()   # по этой записи doctor в svnlite.exe видит, что версии разошлись
     store = SettingsStore()
     cached = load_shared_cache()  # последняя копия общего конфига: окно открывается сразу, без ожидания сети
     config = build_config(store.settings, cached)

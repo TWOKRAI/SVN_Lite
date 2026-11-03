@@ -4,20 +4,29 @@
 («SVN-lite.exe.new»), запускается маленький bat-скрипт, программа закрывается, скрипт ждёт, пока старый exe
 освободится, подменяет его новым и запускает. Если подмена не удалась, скрипт открывает старую версию.
 Работает только у собранного exe (PyInstaller). Модуль не зависит от tkinter.
+
+Рядом с окном лежит консольная программа svnlite.exe (для ИИ-помощника, Task AG.7). Её обновляют вместе с окном, но
+без ожидания: помощник может держать svnlite.exe запущенным часами, и из-за него обновление окна не должно зависнуть.
+Поэтому `prepare` кладёт новую версию рядом как «svnlite.exe.new», скрипт подмены делает одну попытку `move`, а если
+файл занят, `.new` остаётся и подменяется при следующем запуске окна (`apply_pending`). Окно при запуске записывает
+свою версию в `window_version.json` (`record_window_version`), чтобы `doctor` в svnlite.exe заметил разные версии.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 log = logging.getLogger("svnhelper.selfupdate")
 
 EXE_NAME = "SVN-lite.exe"          # имя файла в папке с новой версией, если update_path указывает на папку
+CLI_EXE_NAME = "svnlite.exe"       # консольная программа для ИИ-помощника: лежит рядом с окном и в папке обновлений
+WINDOW_VERSION_FILE = "window_version.json"
 WAIT_TRIES = 60                    # сколько секунд скрипт ждёт, пока старый exe закроется
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NO_WINDOW = 0x08000000
@@ -31,6 +40,8 @@ class UpdateError(Exception):
 class PreparedUpdate:
     new_path: str      # скачанный файл рядом с запущенным exe
     target: str        # запущенный exe, который нужно заменить
+    # (новый файл, что заменить) для svnlite.exe: подменяются одной попыткой, без ожидания
+    extras: list = field(default_factory=list)
 
 
 def is_supported() -> bool:
@@ -83,7 +94,29 @@ def prepare(update_path: str) -> PreparedUpdate:
         _remove(new_path)
         raise
     log.info("Новая версия скопирована: %s -> %s", source, new_path)
-    return PreparedUpdate(new_path=new_path, target=target)
+    return PreparedUpdate(new_path=new_path, target=target, extras=_prepare_cli(source, target))
+
+
+def _prepare_cli(source: str, target: str) -> list:
+    """Копирует svnlite.exe из папки с новой версией окна рядом с запущенным exe как «svnlite.exe.new».
+    Нет файла в папке обновлений или он не скопировался: окно всё равно обновляется, причина только в журнале."""
+    cli_source = os.path.join(os.path.dirname(source), CLI_EXE_NAME)
+    if not os.path.isfile(cli_source):
+        log.info("В папке обновлений нет %s: консольная программа не обновляется", CLI_EXE_NAME)
+        return []
+    cli_target = os.path.join(os.path.dirname(target), CLI_EXE_NAME)
+    cli_new = cli_target + ".new"
+    try:
+        shutil.copyfile(cli_source, cli_new)
+        if os.path.getsize(cli_new) != os.path.getsize(cli_source):
+            raise UpdateError("файл скопировался не полностью")
+        _check_exe(cli_new)
+    except (OSError, UpdateError) as exc:
+        log.warning("%s не скопирован, окно обновляется без него: %s", CLI_EXE_NAME, exc)
+        _remove(cli_new)
+        return []
+    log.info("Консольная программа скопирована: %s -> %s", cli_source, cli_new)
+    return [(cli_new, cli_target)]
 
 
 def _remove(path: str) -> None:
@@ -93,8 +126,14 @@ def _remove(path: str) -> None:
         pass
 
 
-def swap_script(new_path: str, target: str) -> str:
-    """Текст bat-скрипта: ждёт освобождения старого exe, подменяет его, запускает программу, удаляет себя."""
+def swap_script(new_path: str, target: str, extras: tuple = ()) -> str:
+    """Текст bat-скрипта: ждёт освобождения старого exe, подменяет его, запускает программу, удаляет себя.
+
+    extras: пары (новый файл, что заменить) для svnlite.exe. Для каждой одна попытка `move` без ожидания: занятый файл
+    (его держит запущенный помощник) остаётся как «.new» и подменяется при следующем запуске окна. Если не удалась
+    подмена самого окна, новые файлы помощника удаляются: версии программ не должны разойтись."""
+    extra_moves = "".join(f'move /y "{new}" "{old}" >nul 2>&1\r\n' for new, old in extras)
+    extra_drops = "".join(f'del /q "{new}" >nul 2>&1\r\n' for new, _old in extras)
     return (
         "@echo off\r\n"
         "chcp 65001 >nul\r\n"
@@ -111,7 +150,11 @@ def swap_script(new_path: str, target: str) -> str:
         "goto retry\r\n"
         ":fail\r\n"
         f'del /q "{new_path}" >nul 2>&1\r\n'
+        f"{extra_drops}"
+        "goto launch\r\n"
         ":done\r\n"
+        f"{extra_moves}"
+        ":launch\r\n"
         f'start "" "{target}"\r\n'
         '(goto) 2>nul & del "%~f0"\r\n'
     )
@@ -122,7 +165,58 @@ def launch_swap(prepared: PreparedUpdate) -> None:
     folder = tempfile.mkdtemp(prefix="svnlite_upd_")
     script = os.path.join(folder, "update.bat")
     with open(script, "w", encoding="utf-8", newline="") as f:
-        f.write(swap_script(prepared.new_path, prepared.target))
+        f.write(swap_script(prepared.new_path, prepared.target, tuple(prepared.extras)))
     subprocess.Popen(["cmd.exe", "/c", script], creationflags=_DETACHED_PROCESS | _CREATE_NO_WINDOW,
                      close_fds=True, cwd=folder)
     log.info("Запущен скрипт подмены: %s", script)
+
+
+def apply_pending() -> list:
+    """При запуске окна подменяет «svnlite.exe.new», который скрипт обновления не смог положить (файл был занят).
+    Занят и сейчас: остаётся до следующего запуска. Повреждённый файл удаляется. Возвращает подменённые файлы.
+    Исключений не бросает: запуск окна из-за этого ломаться не должен."""
+    if not is_supported():
+        return []
+    cli = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), CLI_EXE_NAME)
+    pending = cli + ".new"
+    if not os.path.isfile(pending):
+        return []
+    try:
+        _check_exe(pending)
+    except (OSError, UpdateError) as exc:
+        log.warning("Отложенный %s повреждён и удалён: %s", pending, exc)
+        _remove(pending)
+        return []
+    try:
+        os.replace(pending, cli)
+    except OSError as exc:
+        log.info("%s сейчас занят, подмена отложена до следующего запуска: %s", CLI_EXE_NAME, exc)
+        return []
+    log.info("Консольная программа обновлена при запуске: %s", cli)
+    return [cli]
+
+
+def record_window_version() -> None:
+    """Окно записывает свою версию в папку данных: по ней doctor в svnlite.exe видит, что версии разошлись.
+    Только у собранного exe (запуск из исходников не должен подменять запись). Сбой записи только в журнал."""
+    if not is_supported():
+        return
+    from . import __version__
+    from .config import data_dir
+    try:
+        path = data_dir() / WINDOW_VERSION_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"version": __version__}), encoding="utf-8")
+    except OSError:
+        log.exception("Версия окна не записана")
+
+
+def window_version() -> str:
+    """Версия окна SVN-lite, записанная им при последнем запуске; пустая строка, если окно ещё не запускалось."""
+    from .config import data_dir
+    try:
+        data = json.loads((data_dir() / WINDOW_VERSION_FILE).read_text(encoding="utf-8"))
+        version = data.get("version", "")
+        return version if isinstance(version, str) else ""
+    except (OSError, ValueError, AttributeError):
+        return ""
