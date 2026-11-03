@@ -29,7 +29,7 @@ from ..dialogs import AboutDialog, center_window, ErrorDialog, FONT_FAMILY
 from ..svn_core import CancelToken, CheckoutProgress, ErrorKind, SvnClient, SvnError
 from .models import (CLOSE_POLL_MS, CLOSE_WAIT_SEC, DownloadJob, JobStamp, log, MineItem, Node, POLL_MS,
                      REFRESH_SEC, UpdateJob)
-from .widgets import ButtonRow, Lamp, SettingsDialog, SideButtons, Tooltip
+from .widgets import ButtonRow, Lamp, popup_menu_under, SettingsDialog, SideButtons, Tooltip
 from .login import connection_error_text, LoginCoordinator
 from .download_tab import DownloadTabMixin
 from .projects_tab import ProjectsTabMixin
@@ -611,17 +611,8 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
     def _menu_button(self, parent: tk.Misc, text: str, menu: tk.Menu, style: str = "TButton") -> ttk.Button:
         """Кнопка, открывающая меню под собой («▾» в подписи рисуем сами)."""
         button = ttk.Button(parent, text=text, style=style)
-        button.configure(command=lambda: self._popup_menu(button, menu))
+        button.configure(command=lambda: popup_menu_under(button, menu))
         return button
-
-    @staticmethod
-    def _popup_menu(button: ttk.Button, menu: tk.Menu) -> None:
-        if str(button.cget("state")) == "disabled":
-            return
-        try:
-            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
-        finally:
-            menu.grab_release()
 
     def _build_ui(self) -> None:
         root = self.root

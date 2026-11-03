@@ -718,6 +718,16 @@ class AppNotifyTests(unittest.TestCase):
             self.app._notice_open(other)
         self.assertEqual(self.app._list_mode(), "mine")
 
+    def test_open_notice_switches_folder_before_subtab(self):
+        """Сначала папка, потом подвкладка: иначе открытие подвкладки «Мои проекты» ищет проекты в прежней папке зря."""
+        self.app._mine_dirty = False
+        self.app.select_list_mode("download")
+        order = []
+        other = notifier.Notice("incoming:y", "incoming", "Другой", "t", os.path.join(self.tmp.name, "b", "x"), "")
+        with mock.patch.object(self.app, "show_window"), mock.patch.object(self.root, "after"),                 mock.patch.object(self.app, "_switch_project_dir", side_effect=lambda _p: order.append("папка")),                 mock.patch.object(self.app, "select_list_mode", side_effect=lambda _m: order.append("подвкладка")):
+            self.app._notice_open(other)
+        self.assertEqual(order, ["папка", "подвкладка"])
+
     def test_busy_snapshot_includes_running_update_and_commit(self):
         from svnhelper.gui.models import MineItem, UpdateJob
         folder = lambda name: os.path.join(self.tmp.name, name)  # noqa: E731

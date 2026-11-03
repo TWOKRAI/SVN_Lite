@@ -386,9 +386,12 @@ class AuditDialog(tk.Toplevel):
 
 
 class PickDialog(tk.Toplevel):
-    """Выбор нескольких пунктов из списка. result — список выбранных или None."""
+    """Выбор нескольких пунктов из списка. result — список выбранных или None.
 
-    def __init__(self, parent: tk.Misc, title: str, prompt: str, items: list[str]):
+    preselect - номера пунктов, отмеченных заранее; по умолчанию (None) отмечены все."""
+
+    def __init__(self, parent: tk.Misc, title: str, prompt: str, items: list[str],
+                 preselect: Optional[list[int]] = None):
         super().__init__(parent, background=theme.PALETTE.surface)
         self.title(title)
         self.transient(parent)
@@ -407,7 +410,8 @@ class PickDialog(tk.Toplevel):
         scroll.pack(side="right", fill="y")
         for item in items:
             self._box.insert("end", item)
-        self._box.select_set(0, "end")
+        for index in (range(len(items)) if preselect is None else preselect):
+            self._box.select_set(index)
         buttons = ttk.Frame(body)
         buttons.pack(anchor="e", pady=(12, 0))
         ttk.Button(buttons, text="Освободить", command=self._ok).pack(side="left", padx=(0, 8))

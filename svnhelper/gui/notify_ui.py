@@ -191,10 +191,12 @@ class NotifyMixin:
         item = next((i for i in self.mine.values() if same_dir(i.path, path)), None)
         if item is None:
             if attempt == 0:
-                if self._list_mode() != "mine":
-                    self.select_list_mode("mine")      # список проектов построится при открытии подвкладки
+                # сначала папка, потом подвкладка: открытие подвкладки при устаревшем списке запускает поиск проектов,
+                # и в прежней папке он был бы лишним сетевым обращением
                 if not same_dir(self.dir_var.get(), os.path.dirname(path)):
                     self._switch_project_dir(os.path.dirname(path))
+                if self._list_mode() != "mine":
+                    self.select_list_mode("mine")
             if attempt < OPEN_RETRIES:
                 self.root.after(OPEN_RETRY_MS, self._open_notice_project, path, tab, attempt + 1)
             return

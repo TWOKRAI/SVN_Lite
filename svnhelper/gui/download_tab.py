@@ -25,6 +25,12 @@ LOCAL_MISSING = "Этого проекта ещё нет на сервере."
 class DownloadTabMixin:
     """Подвкладка «Скачать проект»: дерево сервера, поиск, ссылка, выбор ветки или версии, скачивание."""
 
+    # подписи кнопок колонки справа в форме; ширина колонки - не меньше, чем у «Скачать проект», и не меньше самой
+    # длинной из показанных (_fit_download_actions): «Создать проект из этой папки…» и «Удалить недокачанную папку»
+    # появляются редко, и пока их нет, форме остаётся больше места (в окне 900x640 при скачивании это важно)
+    DOWNLOAD_BUTTONS = ("Скачать", "Отмена", "Создать проект из этой папки…", "Удалить недокачанную папку")
+    DOWNLOAD_COLUMN_MIN_TEXT = "Скачать проект"
+
     # -- подвкладка «Скачать проект» колонки «Проекты» -------------------------------------------
     # Две части в разных колонках окна (docs/PLAN_ui_v4.md, раздел 3, вариант A): в колонке 2 вместо списка своих
     # проектов - поиск и дерево сервера (_build_server_browser), в колонке 3 вместо «Состояния проекта» - форма
@@ -40,7 +46,7 @@ class DownloadTabMixin:
         search = ttk.Frame(browser)
         search.grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         search.columnconfigure(1, weight=1)
-        ttk.Label(search, text="Найти проект:").grid(row=0, column=0, sticky="w", padx=(0, px(6)))
+        ttk.Label(search, text="Найти на сервере:").grid(row=0, column=0, sticky="w", padx=(0, px(6)))
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(search, textvariable=self.search_var)
         self.search_entry.grid(row=0, column=1, sticky="ew")
@@ -187,20 +193,28 @@ class DownloadTabMixin:
         self._hide_when_empty(info, self.info_var)
 
         # колонка кнопок справа, как у «Состояния проекта»: одна главная кнопка, остальные появляются по делу
-        self.download_actions = actions = SideButtons(form, px(6), button_column_width(form, ["Скачать проект"], px))
+        self.download_actions = actions = SideButtons(
+            form, px(6), button_column_width(form, [self.DOWNLOAD_COLUMN_MIN_TEXT], px))
         actions.grid(row=0, column=1, sticky="n", padx=(px(12), 0))
         self.download_btn = ttk.Button(actions, text="Скачать", style="Accent.TButton", command=self._on_download,
                                        state="disabled")
         # «Отмена» видна только во время скачивания
         self.cancel_btn = ttk.Button(actions, text="Отмена", command=self._on_cancel, state="disabled")
         # появляется, когда введён путь к папке, которой ещё нет в хранилище
-        self.create_btn = ttk.Button(actions, text="Создать проект из этой папки…", command=self._on_create_project)
+        self.create_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[2], command=self._on_create_project)
         # появляется только после отмены или ошибки, если на диске осталась недокачанная папка
-        self.cleanup_btn = ttk.Button(actions, text="Удалить недокачанную папку", command=self._on_remove_partial)
+        self.cleanup_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[3], command=self._on_remove_partial)
         actions.add(self.download_btn)
         actions.add(self.cancel_btn, visible=False)
         actions.add(self.create_btn, visible=False, separator=True)
         actions.add(self.cleanup_btn, visible=False, separator=True)
+        actions.on_change = self._fit_download_actions
+
+    def _fit_download_actions(self) -> None:
+        """Ширина колонки кнопок формы по самой длинной из показанных подписей: длинные не обрезаются."""
+        actions = self.download_actions
+        texts = [self.DOWNLOAD_COLUMN_MIN_TEXT] + [str(b.cget("text")) for b in actions._items if b not in actions._hidden]
+        actions.set_width(button_column_width(self.download_form, texts, self.px))
 
     def _tag_project_rows(self, tree: ttk.Treeview) -> None:
         """Цвета строк дерева: проект (✔) зелёный и полужирный, служебные строки серые."""
