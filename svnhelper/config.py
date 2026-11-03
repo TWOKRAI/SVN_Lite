@@ -713,7 +713,19 @@ def _parse_settings(data: dict) -> Settings:
 _SETTINGS_THREAD_LOCK = threading.Lock()
 SETTINGS_LOCK_TIMEOUT = 10.0     # секунд ждать, пока другая программа закончит запись настроек
 _WRITE_RETRIES = 3               # попыток заменить файл настроек (антивирус или читатель держит его мгновение)
-_READ_RETRIES = 5                # попыток прочитать файл настроек (его в этот миг заменяют или проверяет антивирус)
+READ_WAIT_CLI = 0.5              # секунд повторять чтение настроек у консольной программы и сервера помощника
+READ_WAIT_WINDOW = 4.0           # то же при запуске окна: оно ждёт дольше, ведь иначе не откроется совсем
+
+
+def _retry_delays(wait: float) -> list:
+    """Паузы между повторами чтения: 0.05, 0.1, 0.15 ... не больше 0.25 с, всего `wait` секунд."""
+    delays: list = []
+    total = 0.0
+    while total < wait - 1e-9:
+        delay = min(0.05 * (len(delays) + 1), 0.25, wait - total)
+        delays.append(delay)
+        total += delay
+    return delays
 
 
 class SettingsUnreadable(OSError):
@@ -761,37 +773,48 @@ class SettingsStore:
     применяет правку и пишет результат, `save` не стирает чужие записи о локальной истории.
     """
 
-    def __init__(self, path: Optional[Path] = None):
+    def __init__(self, path: Optional[Path] = None, load_wait: float = READ_WAIT_CLI):
+        """load_wait: сколько секунд при создании повторять чтение занятого файла (у окна больше, чем у CLI/MCP)."""
         self.path = Path(path) if path else data_dir() / "settings.json"
-        self.settings = self._load()
+        self._broken_seen: Optional[bytes] = None      # содержимое, о повреждении которого уже сказано в журнале
+        self.settings = self._load(load_wait)
         self._synced = copy.deepcopy(self.settings)    # как настройки выглядели при последней сверке с файлом
 
-    def _read_bytes(self) -> Optional[bytes]:
+    def _read_bytes(self, wait: float = READ_WAIT_CLI) -> Optional[bytes]:
         """Содержимое файла настроек. None: файла нет (это нормально). Если файл занят, чтение повторяется
-        несколько раз с короткой паузой; не вышло - OSError."""
-        for attempt in range(_READ_RETRIES):
+        с короткими паузами до `wait` секунд; не вышло - OSError."""
+        for delay in [*_retry_delays(wait), None]:
             try:
                 return self.path.read_bytes()
             except FileNotFoundError:
                 return None
             except OSError:
-                if attempt == _READ_RETRIES - 1:
+                if delay is None:
                     raise
-                time.sleep(0.05 * (attempt + 1))
+                time.sleep(delay)
         return None                                                # недостижимо: последняя попытка бросает
 
     def _keep_broken_copy(self, raw: bytes) -> None:
         """Повреждённый файл настроек перед перезаписью сохраняется рядом как settings.json.bad-<дата-время>.
-        Одно и то же содержимое копируется один раз (его могли сохранить раньше, в том числе другая программа)."""
+        Одно и то же содержимое копируется один раз (его могли сохранить раньше, в том числе другая программа).
+        Существующая копия не затирается: при совпадении имени к нему добавляется числовой суффикс."""
         if not raw.strip():
             return                                                 # пустой файл терять нечего
         try:
             for old in self.path.parent.glob(self.path.name + ".bad-*"):
                 if old.read_bytes() == raw:
                     return
-            copy_path = self.path.with_name(f"{self.path.name}.bad-{datetime.now():%Y%m%d-%H%M%S}")
-            copy_path.write_bytes(raw)
-            logging.getLogger("svnhelper").warning("Копия повреждённого файла настроек: %s", copy_path)
+            base = f"{self.path.name}.bad-{datetime.now():%Y%m%d-%H%M%S}"
+            for number in range(1000):
+                copy_path = self.path.with_name(base if number == 0 else f"{base}-{number}")
+                try:
+                    with open(copy_path, "xb") as f:               # "x": занятое имя не перезаписывается
+                        f.write(raw)
+                except FileExistsError:
+                    continue
+                logging.getLogger("svnhelper").warning("Копия повреждённого файла настроек: %s", copy_path)
+                return
+            logging.getLogger("svnhelper").error("Не удалось подобрать имя для копии повреждённого файла настроек")
         except OSError:
             logging.getLogger("svnhelper").exception("Не удалось сохранить копию повреждённого файла настроек")
 
@@ -800,15 +823,17 @@ class SettingsStore:
         try:
             return _parse_settings(json.loads(raw.decode("utf-8-sig")))
         except (ValueError, AttributeError):
-            logging.getLogger("svnhelper").warning("Файл настроек %s повреждён: он будет записан заново", self.path)
-            self._keep_broken_copy(raw)
+            if raw != self._broken_seen:               # сервер помощника перечитывает файл на каждый вызов: не спамить
+                self._broken_seen = raw
+                logging.getLogger("svnhelper").warning("Файл настроек %s повреждён: он будет записан заново", self.path)
+                self._keep_broken_copy(raw)
             return None
 
-    def _load(self) -> Settings:
+    def _load(self, wait: float) -> Settings:
         """Настройки при создании. Нет файла или он повреждён: стандартные настройки (повреждённый файл сохраняется
         копией). Файл есть, но не прочитан: SettingsUnreadable, запись в журнале."""
         try:
-            raw = self._read_bytes()
+            raw = self._read_bytes(wait)
         except OSError as exc:
             logging.getLogger("svnhelper").exception("Не удалось прочитать настройки %s", self.path)
             raise SettingsUnreadable(

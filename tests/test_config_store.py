@@ -143,6 +143,49 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(read.call_count, 5)
         self.assertEqual(SettingsStore(self.path).settings.username, "ivanov")    # файл не тронут
 
+    def test_window_waits_longer_for_busy_file_than_cli(self):
+        """Окно при запуске повторяет чтение 3-5 с, а CLI и сервер помощника около 0.5 с."""
+        from svnhelper import config
+        sleeps = []
+
+        def attempts(**kwargs):
+            sleeps.clear()
+            with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(32, "занято")) as read,                     mock.patch("svnhelper.config.time.sleep", side_effect=sleeps.append),                     self.assertLogs("svnhelper", "ERROR"), self.assertRaises(SettingsUnreadable):
+                SettingsStore(self.path, **kwargs)
+            return read.call_count, sum(sleeps)
+
+        cli_calls, cli_wait = attempts()
+        window_calls, window_wait = attempts(load_wait=config.READ_WAIT_WINDOW)
+        self.assertAlmostEqual(cli_wait, config.READ_WAIT_CLI)
+        self.assertLessEqual(cli_wait, 1.0)
+        self.assertGreaterEqual(window_wait, 3.0)
+        self.assertLessEqual(window_wait, 5.0)
+        self.assertGreater(window_calls, cli_calls)
+
+    def test_broken_copy_never_overwrites_existing_copy_with_same_name(self):
+        """Две разные порчи в одну секунду: вторая копия получает числовой суффикс, первая не затирается."""
+        stamp = datetime(2026, 11, 3, 12, 0, 0)
+        for text in ("{ первая порча", "{ вторая порча"):
+            self.path.write_text(text, encoding="utf-8")
+            with mock.patch("svnhelper.config.datetime") as fake_datetime, self.assertLogs("svnhelper", "WARNING"):
+                fake_datetime.now.return_value = stamp
+                SettingsStore(self.path)
+        copies = sorted(self.path.parent.glob("settings.json.bad-*"))
+        self.assertEqual([c.name for c in copies],
+                         ["settings.json.bad-20261103-120000", "settings.json.bad-20261103-120000-1"])
+        self.assertEqual([c.read_text(encoding="utf-8") for c in copies], ["{ первая порча", "{ вторая порча"])
+
+    def test_repeated_refresh_of_broken_file_warns_once(self):
+        """Сервер помощника перечитывает настройки на каждый вызов: в журнале одна запись о порче, а не по записи на вызов."""
+        store = SettingsStore(self.path)
+        self.path.write_text("{ не json", encoding="utf-8")
+        with self.assertLogs("svnhelper", "WARNING") as logs:
+            for _ in range(5):
+                store.refresh()
+        broken = [line for line in logs.output if "повреждён" in line and "Копия" not in line]
+        self.assertEqual(len(broken), 1)
+        self.assertEqual(len(list(self.path.parent.glob("settings.json.bad-*"))), 1)
+
     def test_load_of_broken_file_keeps_one_copy_and_does_not_rewrite_it(self):
         broken = "{ не json"
         self.path.write_text(broken, encoding="utf-8")
