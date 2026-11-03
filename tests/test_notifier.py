@@ -695,6 +695,29 @@ class AppNotifyTests(unittest.TestCase):
         open_tab.assert_called_once_with("incoming")
         self.assertEqual(self.app.mine_tree.selection(), (iid,))
 
+    def test_open_notice_from_download_subtab_returns_to_my_projects(self):
+        """U4.3: окно было на «Скачать проект» - «Открыть» возвращает на «Мои проекты» и открывает вкладку проекта."""
+        from svnhelper.gui.models import MineItem
+        item = MineItem(os.path.join(self.tmp.name, "dl", "Проект"), "Проект", "svn")
+        iid = self.app._insert_mine_row(item)
+        self.app.mine[iid] = item
+        self.app._mine_dirty = False
+        self.app.select_list_mode("download")
+        notice = notifier.Notice("incoming:x", "incoming", "Проект", "t", item.path, "locks")
+        with mock.patch.object(self.app, "show_window"), mock.patch.object(self.app, "_on_check_all"):
+            self.app._notice_open(notice)
+        self.assertEqual(self.app._list_mode(), "mine")
+        self.assertEqual(self.app.project_panel.winfo_manager(), "grid")
+        self.assertEqual(self.app.project_tabs.select(), str(self.app.project_tab_frames["locks"]))
+        self.assertEqual(self.app.mine_tree.selection(), (iid,))
+        # проекта ещё нет в списке (другая папка): тоже возврат на «Мои проекты»
+        self.app.select_list_mode("download")
+        other = notifier.Notice("incoming:y", "incoming", "Другой", "t", os.path.join(self.tmp.name, "b", "x"), "")
+        with mock.patch.object(self.app, "show_window"), mock.patch.object(self.app, "_switch_project_dir"), \
+                mock.patch.object(self.root, "after"):
+            self.app._notice_open(other)
+        self.assertEqual(self.app._list_mode(), "mine")
+
     def test_busy_snapshot_includes_running_update_and_commit(self):
         from svnhelper.gui.models import MineItem, UpdateJob
         folder = lambda name: os.path.join(self.tmp.name, name)  # noqa: E731

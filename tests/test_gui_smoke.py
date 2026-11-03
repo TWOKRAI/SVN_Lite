@@ -415,7 +415,7 @@ class MineTabTests(unittest.TestCase):
                     iid, item = self.select_first(root, app)
                     # переход на вкладку сам проверяет проекты: дожидаемся, иначе настоящий ответ svn затрёт
                     # подставленный ниже конфликт (так тест падал через раз)
-                    app.notebook.select(app.mine_tab)
+                    app.select_list_mode("mine")
                     root.update()
                     self.pump(root, lambda: not app._checking and not item.checking)
                     item.status = WcStatus(conflicts=1)  # показаны все кнопки сразу
@@ -933,7 +933,7 @@ class MineTabTests(unittest.TestCase):
             self.assertEqual(app.check_btn.cget("text"), "⟳")
             self.assertEqual(app.more_btn.cget("text"), "Ещё ▾")
             self.assertEqual(app.recent_btn.cget("text"), "Недавние ▾")
-            self.assertEqual(app.list_btn.cget("text"), "Выбрать из списка ▾")
+            self.assertFalse(hasattr(app, "list_btn"))      # дерево сервера видно сразу: «Выбрать из списка ▾» нет
         finally:
             root.destroy()
 
@@ -1891,6 +1891,253 @@ class Stage3GuiTests(unittest.TestCase):
         self.assertTrue(winutil.toplevel_handle(root.winfo_id()))
 
 
+@unittest.skipUnless(HAS_DISPLAY, "нет экрана")
+class ListModeTests(unittest.TestCase):
+    """U4.3: «Скачать проект» - подвкладка колонки «Проекты», вкладок окна нет (docs/PLAN_ui_v4.md, раздел 3)."""
+
+    def make_app(self, scale=None, visible=False, folder=True):
+        """Окно без настоящего svn; folder - создать папку для проектов (пустую). Поиск проектов при запуске идёт
+        сам с первым update(), как у настоящей программы."""
+        from svnhelper.config import Config, SettingsStore
+        from svnhelper.gui import App
+        from svnhelper.svn_core import SvnClient
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = tk.Tk()
+        if scale is not None:
+            root.tk.call("tk", "scaling", 96 * scale / 72)
+        if not visible:
+            root.withdraw()
+        quiet_clipboard(root)
+        self.addCleanup(lambda: root.winfo_exists() and root.destroy())
+        work_dir = os.path.join(tmp.name, "dl")
+        if folder:
+            os.makedirs(work_dir)
+        self.settings_path = Path(tmp.name) / "s.json"
+        app = App(root, Config(server="svn://srv", repos=["test"], work_dir=work_dir),
+                  SettingsStore(self.settings_path), SvnClient("svn"), os.path.join(tmp.name, "log.txt"),
+                  startup_jobs=False)
+        return root, app, work_dir
+
+    def pump(self, root, cond, timeout=10):
+        end = time.monotonic() + timeout
+        while not cond():
+            root.update()
+            time.sleep(0.02)
+            self.assertLess(time.monotonic(), end, "таймаут ожидания")
+
+    @staticmethod
+    def inside(widget, container):
+        return str(widget).startswith(str(container) + ".")
+
+    def test_download_subtab_takes_both_columns_and_hides_left_one(self):
+        root, app, _ = self.make_app()
+        app._mine_dirty = False
+        root.update()
+        self.assertEqual(app._list_mode(), "mine")
+        self.assertEqual((app.actions_row.winfo_manager(), app.project_panel.winfo_manager(),
+                          app.download_form.winfo_manager()), ("grid", "grid", ""))
+        self.assertEqual(app.mine_col3.title_label.cget("text"), "Состояние проекта")
+        self.assertEqual(app.mine_col2.width, app.px(app.MINE_COL2_WIDTH))
+        # дерево сервера - в колонке «Проекты», форма и её кнопки - в колонке 3
+        self.assertTrue(self.inside(app.tree, app.list_frames["download"]))
+        self.assertTrue(self.inside(app.mine_tree, app.list_frames["mine"]))
+        for widget in (app.url_entry, app.line_combo, app.dir_entry, app.progress, app.download_btn):
+            self.assertTrue(self.inside(widget, app.mine_col3.body), widget)
+
+        app.select_list_mode("download")
+        self.assertEqual(app._list_mode(), "download")
+        self.assertEqual((app.actions_row.winfo_manager(), app.project_panel.winfo_manager(),
+                          app.download_form.winfo_manager()), ("", "", "grid"))
+        cell = app.download_form.grid_info()
+        self.assertEqual((int(cell["row"]), int(cell["column"])), (0, 0))       # та же ячейка, что у панели
+        self.assertEqual(app.mine_col3.title_label.cget("text"), "Скачивание")
+        self.assertEqual(app.mine_col2.width, app.px(app.MINE_COL2_DOWNLOAD_WIDTH))   # дереву нужно шире
+        app.mine_col3.collapse()
+        self.assertEqual(app.mine_col3.strip.itemcget("title", "text"), "Скачивание")
+        app.mine_col3.expand()
+
+        app.select_list_mode("mine")
+        self.assertEqual((app.actions_row.winfo_manager(), app.project_panel.winfo_manager(),
+                          app.download_form.winfo_manager()), ("grid", "grid", ""))
+        self.assertEqual(app.mine_col3.title_label.cget("text"), "Состояние проекта")
+        self.assertEqual(app.mine_col2.width, app.px(app.MINE_COL2_WIDTH))
+        with self.assertRaises(ValueError):
+            app.select_list_mode("нет такой")
+
+    def test_download_subtab_expands_columns_also_on_click(self):
+        from svnhelper.config import SettingsStore
+        root, app, _ = self.make_app()
+        app._mine_dirty = False
+        root.update()
+        app.mine_col2.collapse()
+        app.mine_col3.collapse()
+        app.select_list_mode("download")              # кнопка или первый запуск: обе колонки разворачиваются
+        self.assertFalse(app.mine_col2.collapsed or app.mine_col3.collapsed)
+        saved = SettingsStore(self.settings_path).settings
+        self.assertFalse(saved.mine_col2_collapsed or saved.mine_col3_collapsed)
+        app.select_list_mode("mine")
+        app.mine_col3.collapse()
+        app.list_tabs.select(app.list_frames["download"])     # щелчок по ярлыку: то же через событие
+        root.update()
+        self.assertFalse(app.mine_col3.collapsed)
+        self.assertEqual(app.download_form.winfo_manager(), "grid")
+        self.assertEqual(app.actions_row.winfo_manager(), "")
+
+    def test_mine_subtab_refreshes_once_per_visit_and_auto_check_waits(self):
+        root, app, _ = self.make_app()
+        app._mine_dirty = False
+        root.update()
+        app.select_list_mode("download")
+        root.update()
+        app._mine_dirty = True                         # например, папку сменили на «Скачать проект»
+        with mock.patch.object(app, "_scan_projects") as scan, mock.patch.object(app, "_on_check_all") as check:
+            app.select_list_mode("mine")
+            root.update()                              # запоздавшее событие ярлыков ничего не повторяет
+            app.select_list_mode("mine")
+            root.update()
+            scan.assert_called_once_with()
+            check.assert_not_called()
+            app._mine_dirty = False
+            app.select_list_mode("download")
+            app.select_list_mode("mine")
+            root.update()
+            check.assert_called_once_with()            # при каждом возвращении состояние свежее
+        with mock.patch.object(app, "_check_status") as status,                 mock.patch.object(root, "state", return_value="normal"):     # окно на экране, а не в трее
+            app._auto_refresh_tick()                   # на «Мои проекты» автопроверка идёт
+            self.assertEqual(status.call_count, 1)
+            app.select_list_mode("download")
+            app._auto_refresh_tick()                   # на «Скачать проект» - нет
+            self.assertEqual(status.call_count, 1)
+
+    def test_empty_folder_shows_one_highlighted_way_to_download(self):
+        root, app, work_dir = self.make_app()
+        app._start_tab_chosen = True                   # не первый запуск: подвкладка сама не переключается
+        self.pump(root, lambda: app._mine_scanned)
+        self.assertEqual(app._list_mode(), "mine")
+        self.assertEqual((app.mine_empty.winfo_manager(), app.mine_table.winfo_manager(),
+                          app.mine_find_row.winfo_manager()), ("grid", "", ""))
+        self.assertEqual(app.mine_empty_label.cget("text"), "В этой папке пока нет проектов.")
+
+        from tkinter import ttk
+
+        def accents(widget):
+            found = [widget] if isinstance(widget, ttk.Button) and str(widget.cget("style")) == "Accent.TButton" \
+                else []
+            for child in widget.winfo_children():
+                found.extend(accents(child))
+            return found
+
+        self.assertEqual(accents(app.mine_col2), [app.mine_empty_btn])         # в колонке «Проекты» одна подсветка
+        self.assertEqual(app.mine_empty_btn.cget("text"), "Скачать проект с сервера")
+        app.mine_empty_btn.invoke()
+        self.assertEqual(app._list_mode(), "download")
+        os.makedirs(os.path.join(work_dir, "папка"))   # появился проект (обычная папка): снова таблица
+        app.select_list_mode("mine")
+        app._scan_projects()
+        self.pump(root, lambda: app.mine)
+        self.assertEqual((app.mine_empty.winfo_manager(), app.mine_table.winfo_manager()), ("", "grid"))
+        self.assertEqual(app._list_mode(), "mine")
+
+    def test_missing_folder_offers_download_without_switching(self):
+        root, app, _ = self.make_app(folder=False)    # первый запуск, папки для проектов ещё нет
+        self.pump(root, lambda: app._mine_scanned)
+        self.assertEqual(app._list_mode(), "mine")    # папка могла пропасть на миг: подвкладку сами не меняем
+        self.assertEqual(app.mine_empty.winfo_manager(), "grid")
+        self.assertIn("не найдена", app.project_panel.header_text())
+
+    def test_download_form_has_own_side_buttons(self):
+        root, app, _ = self.make_app()
+        app._mine_dirty = False
+        bar = app.download_actions
+        shown = lambda: [w for w in bar._items if w not in bar._hidden]   # noqa: E731
+        self.assertEqual([w.cget("text") for w in bar._items],
+                         ["Скачать", "Отмена", "Создать проект из этой папки…", "Удалить недокачанную папку"])
+        self.assertEqual(shown(), [app.download_btn])
+        self.assertEqual(str(app.download_btn.cget("style")), "Accent.TButton")
+        app._set_create_target(("C:\\папка", "svn://srv", ["test", "папка"]))
+        self.assertEqual(shown(), [app.download_btn, app.create_btn])
+        app._set_create_target(None)
+        self.assertEqual(shown(), [app.download_btn])
+        self.assertEqual(app.refresh_btn.cget("text"), "⟳")              # «Обновить» больше не пишем
+        for gone in ("list_btn", "tree_visible", "_toggle_tree", "tree_frame"):
+            self.assertFalse(hasattr(app, gone), gone)
+
+    def test_remembered_widths_are_per_subtab(self):
+        from svnhelper.config import SettingsStore
+        root, app, _ = self.make_app(visible=True)
+        app._mine_dirty = False
+        root.geometry("1300x700")
+        app.select_list_mode("download")
+        root.update()
+        sash = app.mine_sash
+        start = sash.winfo_rootx() + 2
+        sash.event_generate("<ButtonPress-1>", x=2, y=5, rootx=start, rooty=0)
+        sash.event_generate("<B1-Motion>", x=42, y=5, rootx=start + 40, rooty=0)
+        sash.event_generate("<ButtonRelease-1>", x=42, y=5, rootx=start + 40, rooty=0)
+        root.update()
+        saved = SettingsStore(self.settings_path).settings
+        self.assertGreater(saved.mine_col2_download_width, app.MINE_COL2_DOWNLOAD_WIDTH)
+        self.assertEqual(saved.mine_col2_width, 0)                            # ширина «Мои проекты» не тронута
+        app.select_list_mode("mine")
+        self.assertEqual(app.mine_col2.width, app.px(app.MINE_COL2_WIDTH))
+        app.select_list_mode("download")
+        self.assertEqual(app.mine_col2.width, app.px(saved.mine_col2_download_width))
+
+    def test_download_progress_fits_smallest_window(self):
+        """Ход скачивания (полоса, строка хода, размер проекта) виден в окне 900x640 вместе со ссылкой из буфера,
+        веткой и папкой: подсказка шага 3 уступает место ходу работы."""
+        from svnhelper.gui.models import DownloadJob
+        root, app, _ = self.make_app(visible=True)
+        app._mine_dirty = False
+        root.geometry(f"{app.px(900)}x{app.px(640)}")
+        app.select_list_mode("download")
+        app.url_var.set("svn://srv/test/projects/Очень длинное название проекта для проверки")
+        app.job = DownloadJob(url="u", name="n", dest="d")
+        app._update_buttons()
+        app._show(app.progress, True)
+        app.status_var.set("Скачано 120 из 400 (30%), осталось ~1 мин")
+        app.info_var.set("Размер проекта: 1,2 ГБ, 400 файлов и папок.")
+        app._show(app.line_row, True)                  # проект с ветками: строка «Что скачать» тоже на месте
+        root.update()
+        bottom = app.mine_col3.winfo_rooty() + app.mine_col3.winfo_height()    # колонка обрезает то, что ниже
+        info = next(w for w in app.progress.master.winfo_children()
+                    if "textvariable" in w.keys() and str(w.cget("textvariable")) == str(app.info_var))
+        for widget in (app.progress, app.cancel_btn, app.download_btn, app.line_combo, info):
+            self.assertTrue(widget.winfo_ismapped(), widget)
+            self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
+        app.job = None
+        app._update_buttons()
+
+    def test_subtab_labels_tree_and_form_fit_at_every_scale(self):
+        """Ярлыки «Мои проекты | Скачать проект» не обрезаны в колонке «Проекты», дерево, поля и кнопки формы
+        видны целиком в самом маленьком окне (900x640) при 100, 125 и 150%."""
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                root, app, _ = self.make_app(scale=scale, visible=True)
+                app._mine_dirty = False
+                root.geometry(f"{app.px(900)}x{app.px(640)}")
+                root.update()
+                for mode in ("mine", "download"):
+                    app.select_list_mode(mode)
+                    root.update()
+                    tabs, y = app.list_tabs, app.px(10)
+                    on_tab = [x for x in range(tabs.winfo_width()) if tabs.identify(x, y)]
+                    self.assertEqual(tabs.index(f"@{on_tab[0]},{y}"), 0, mode)
+                    self.assertEqual(tabs.index(f"@{on_tab[-1]},{y}"), 1, mode)
+                    self.assertLess(on_tab[-1], tabs.winfo_width() - 2, f"{mode}: ярлыки не помещаются")
+                right = root.winfo_rootx() + root.winfo_width()
+                bottom = root.winfo_rooty() + root.winfo_height()
+                for widget in (app.tree, app.search_entry, app.url_entry, app.dir_entry, app.browse_btn,
+                               app.download_btn, app.refresh_btn):
+                    self.assertTrue(widget.winfo_ismapped(), widget)
+                    self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
+                    self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
+                for button in (app.download_btn, app.browse_btn, app.refresh_btn):     # подписи не обрезаны
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), button)
+                root.withdraw()           # окно закроет addCleanup; следующий масштаб - в новом окне
+
+
 def tmp_path():
     """Путь внутри системной временной папки (файл не создаётся)."""
     return os.path.join(tempfile.gettempdir(), "svnhelper_test_nonexistent")
@@ -2299,11 +2546,15 @@ class BranchesGuiTests(unittest.TestCase):
             root.destroy()
 
     def test_window_tabs_order_and_no_separate_lines_tab(self):
+        """U4.3: вкладок окна нет; «Мои проекты | Скачать проект» - подвкладки колонки «Проекты», первая - свои."""
         root, app, _base, _store = self.make_app("tab_order")
         try:
-            titles = [app.notebook.tab(t, "text") for t in app.notebook.tabs()]
+            self.assertFalse(hasattr(app, "notebook"))
+            self.assertEqual(app.mine_tab.winfo_parent(), str(root))             # рабочая область прямо в окне
+            titles = [app.list_tabs.tab(t, "text") for t in app.list_tabs.tabs()]
             self.assertEqual(titles, ["Мои проекты", "Скачать проект"])      # вкладки «Ветки и версии» нет
-            self.assertEqual(app.notebook.index(app.mine_tab), 0)
+            self.assertEqual(app.list_tabs.index(app.list_frames["mine"]), 0)
+            self.assertEqual(app._list_mode(), "mine")
             self.assertFalse(hasattr(app, "lines_folder_combo"))
             self.assertFalse(hasattr(app, "_open_lines_for_selected"))
         finally:
@@ -2312,19 +2563,23 @@ class BranchesGuiTests(unittest.TestCase):
     def test_first_run_without_projects_opens_download_tab(self):
         root, app, _base, _store = self.make_app("first_run")
         try:
-            self.assertEqual(app.notebook.select(), str(app.mine_tab))        # приложение начинает с «Мои проекты»
+            self.assertEqual(app._list_mode(), "mine")                        # приложение начинает с «Мои проекты»
             empty = os.path.join(self.tmp.name, "first_run_empty")
             os.makedirs(empty)
             app.dir_var.set(empty)
+            app.mine_col2.collapse()                                          # «Проекты» свёрнуты: развернутся сами
             app._start_tab_chosen = False                                     # как будто это первый поиск после запуска
             app._scan_projects()
             self.pump(root, lambda: app._mine_scanned and not app.mine)       # проектов в папке нет
-            self.assertEqual(app.notebook.select(), str(app.download_tab))
-            app.notebook.select(app.mine_tab)
-            app._scan_projects()                                              # повторный поиск вкладку не переключает
+            self.assertEqual(app._list_mode(), "download")
+            self.assertFalse(app.mine_col2.collapsed or app.mine_col3.collapsed)
+            self.assertEqual(app.download_form.winfo_manager(), "grid")      # справа форма скачивания
+            app.select_list_mode("mine")
+            self.assertEqual(app.mine_empty.winfo_manager(), "grid")         # пустое состояние с путём к скачиванию
+            app._scan_projects()                                              # повторный поиск подвкладку не переключает
             self.pump(root, lambda: app._mine_scanned and not app.mine)
             root.update()
-            self.assertEqual(app.notebook.select(), str(app.mine_tab))
+            self.assertEqual(app._list_mode(), "mine")
         finally:
             root.destroy()
 
@@ -2353,7 +2608,8 @@ class BranchesGuiTests(unittest.TestCase):
             self.assertEqual(app.project_tabs.select(), str(app.project_tab_frames["lines"]))
             app._on_download_separately()
             root.update()
-            self.assertEqual(app.notebook.select(), str(app.download_tab))
+            self.assertEqual(app._list_mode(), "download")
+            self.assertEqual(app.download_form.winfo_manager(), "grid")
             self.assertEqual(app.url_var.get(), f"{self.project_url}/branches/{self.BRANCH}")
             self.assertEqual(app.line, branch)
             self.assertTrue(app.line_combo.get().startswith(f"Ветка «{self.BRANCH}»"))
@@ -2382,7 +2638,7 @@ class BranchesGuiTests(unittest.TestCase):
         try:
             root.deiconify()
             root.geometry(f"{app.px(780)}x{app.px(640)}")                # самое узкое окно
-            app.notebook.select(app.mine_tab)
+            app.select_list_mode("mine")
             item = self.by_name(app)["br_project"]
             self.select(root, app, item)
             root.update()
@@ -2399,8 +2655,8 @@ class BranchesGuiTests(unittest.TestCase):
                 self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
                 self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(),
                                      root.winfo_rooty() + root.winfo_height(), widget)
-            # «Что скачать» помещается в первую вкладку: шаги 2 и 3 не обрезаны
-            app.notebook.select(app.download_tab)
+            # «Что скачать» помещается в форму скачивания: шаги 2 и 3 не обрезаны
+            app.select_list_mode("download")
             app.url_var.set(self.project_url)
             self.pump(root, lambda: app.line_combo.winfo_ismapped())
             self.assertLessEqual(app.download_btn.winfo_rooty() + app.download_btn.winfo_height(),
@@ -3146,7 +3402,7 @@ class CommitFlowFakeTests(unittest.TestCase):
         self.iid = self.app._insert_mine_row(self.item)
         self.app.mine[self.iid] = self.item
         self.app._mine_dirty = False                # список проектов собран руками: вкладка не должна искать заново
-        self.app.notebook.select(self.app.mine_tab)
+        self.app.select_list_mode("mine")
         self.app.mine_tree.selection_set(self.iid)
         self.root.update()
         self.pump(lambda: not self.app._checking)   # переход на вкладку сам проверяет проекты: ждём, пока закончит
@@ -4052,7 +4308,7 @@ class ColumnOneButtonsTests(unittest.TestCase):
                     if action is not None:
                         action.assert_called_once_with()
             app.goto_download_btn.invoke()
-            self.assertEqual(app.notebook.select(), str(app.download_tab))
+            self.assertEqual(app._list_mode(), "download")
             # настоящая вкладка колонки 3 разворачивается и выбирается
             app.mine_col3.collapse()
             app.open_project_tab("locks")
@@ -4076,7 +4332,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
     def ready(self, name):
         """Окно на «Мои проекты», проект выбран и проверен; возвращает (root, app, item)."""
         root, app, _base = self.make_app(name)
-        app.notebook.select(app.mine_tab)
+        app.select_list_mode("mine")
         root.update()
         iid, item = self.select_first(root, app)
         self.pump(root, lambda: not app._checking and not item.checking and item.status is not None)
@@ -4388,7 +4644,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
                 root, app, _base = self.make_app(f"p_side_scale_{scale}", visible=True, scale=scale)
                 try:
                     root.geometry("1410x950")
-                    app.notebook.select(app.mine_tab)
+                    app.select_list_mode("mine")
                     iid, item = self.select_first(root, app)
                     self.pump(root, lambda: not app._checking and not item.checking and item.status is not None)
                     for key in ("locks", "lines"):
@@ -4654,7 +4910,7 @@ class NewProjectDialogTests(unittest.TestCase):
                 root, app = self.make_app(scale=scale, visible=True)
                 os.makedirs(os.path.join(self.base, "обычная"), exist_ok=True)
                 root.geometry("1410x950")
-                app.notebook.select(app.mine_tab)
+                app.select_list_mode("mine")
                 root.update()
                 col1 = [w for w in app.actions_row._items if w not in app.actions_row._hidden]
                 self.assertIn(app.new_project_btn, col1)
