@@ -602,6 +602,13 @@ class CollapsibleColumn(ttk.Frame):
         if not self._collapsed:
             self.configure(width=width)
 
+    def set_title(self, title: str, collapsed_title: str = "") -> None:
+        """Новое название колонки (заголовок, подсказка полосы и подпись свёрнутой полосы, сразу перерисованная)."""
+        self.title = title
+        self.collapsed_title = collapsed_title or title
+        self.title_label.configure(text=title)
+        self.redraw()
+
     def toggle(self) -> None:
         self.set_collapsed(not self._collapsed)
 

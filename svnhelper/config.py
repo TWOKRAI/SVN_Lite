@@ -485,6 +485,7 @@ class Settings:
     mine_col2_collapsed: bool = False                      # «Мои проекты»: свёрнута колонка «Проекты»
     mine_col3_collapsed: bool = False                      # «Мои проекты»: свёрнута колонка «Состояние проекта»
     mine_col2_width: int = 0                               # ширина колонки «Проекты» (px до масштаба экрана); 0 - по умолчанию
+    mine_col2_download_width: int = 0                      # она же на подвкладке «Скачать проект» (там дерево сервера)
     tray_on_close: bool = True                             # крестик окна сворачивает программу в трей, а не закрывает
     tray_hint_shown: bool = False                          # подсказка «программа продолжает работать у часов» уже показана
     # уведомления и фоновая проверка (Task E.2); допустимые значения и проверка - clean_notify
@@ -698,6 +699,9 @@ def _parse_settings(data: dict) -> Settings:
         mine_col3_collapsed=flag("mine_col3_collapsed") or False,
         mine_col2_width=data["mine_col2_width"] if type(data.get("mine_col2_width")) is int
         and 100 <= data["mine_col2_width"] <= 2000 else 0,
+        mine_col2_download_width=data["mine_col2_download_width"]
+        if type(data.get("mine_col2_download_width")) is int and 100 <= data["mine_col2_download_width"] <= 2000
+        else 0,
         tray_on_close=flag("tray_on_close") is not False,
         tray_hint_shown=flag("tray_hint_shown") is True,
         local_histories={k: v for k, v in data["local_histories"].items()
