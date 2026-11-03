@@ -1,5 +1,8 @@
 """Task AG.3: MCP-сервер (чтение). Клиентская сессия SDK в памяти, запуск по stdio через subprocess, параллельные
-вызовы на зависшем фейковом svn, канареечный пароль. Без пакета `mcp` тесты пропускаются (requirements-mcp.txt)."""
+вызовы на зависшем фейковом svn, канареечный пароль. Без пакета `mcp` тесты пропускаются (requirements-mcp.txt).
+
+Запуск: `python -m pip install -r requirements-mcp.txt`, затем `python -m unittest tests.test_mcp_server`. Переменная
+окружения SVNLITE_REQUIRE_MCP=1 (для сборки и проверки перед выпуском) превращает отсутствие пакета в падение."""
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +26,7 @@ try:
     HAVE_MCP = True
 except ImportError:
     HAVE_MCP = False
+REQUIRE_MCP = os.environ.get("SVNLITE_REQUIRE_MCP") == "1"
 
 from svnhelper import agentlog, mcp_server                        # noqa: E402
 from svnhelper.config import Config, SettingsStore, protect_text  # noqa: E402
@@ -73,6 +77,13 @@ class McpBase(unittest.IsolatedAsyncioTestCase):
         from mcp.shared.memory import create_connected_server_and_client_session
         server = mcp_server.build_server(ctx or self.make_ctx(), guard_seconds=guard_seconds)
         return create_connected_server_and_client_session(server, client_info=client_info)
+
+
+class McpPackageTests(unittest.TestCase):
+    @unittest.skipUnless(REQUIRE_MCP, "SVNLITE_REQUIRE_MCP=1 не задана: отсутствие пакета mcp допустимо")
+    def test_mcp_package_is_installed_when_required(self):
+        self.assertTrue(HAVE_MCP, "SVNLITE_REQUIRE_MCP=1, но пакет mcp не установлен: "
+                                  "python -m pip install -r requirements-mcp.txt")
 
 
 class HelperTests(unittest.TestCase):
