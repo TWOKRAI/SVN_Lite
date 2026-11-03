@@ -69,10 +69,10 @@ class McpBase(unittest.IsolatedAsyncioTestCase):
         return make_context(client=SvnClient(FAKE), store=self.store, config=Config(repos=["konstruktor"]),
                             client_name="mcp", timeout=timeout)
 
-    def session(self, ctx=None, guard_seconds=None):
+    def session(self, ctx=None, guard_seconds=None, client_info=None):
         from mcp.shared.memory import create_connected_server_and_client_session
         server = mcp_server.build_server(ctx or self.make_ctx(), guard_seconds=guard_seconds)
-        return create_connected_server_and_client_session(server)
+        return create_connected_server_and_client_session(server, client_info=client_info)
 
 
 class HelperTests(unittest.TestCase):
@@ -134,6 +134,20 @@ class SessionTests(McpBase):
                          ("status", NAME, "conflict", 1, 1))
         self.assertIn("«" + NAME + "»", row["message"])
         self.assertNotIn("svn", out)                       # подробностей без details нет
+
+    async def test_audit_records_client_name_from_the_session(self):
+        import mcp.types as types
+        from svnhelper.ops import audit
+        ctx = self.make_ctx()
+        info = types.Implementation(name="Claude Desktop", version="1.4.2")
+        async with self.session(ctx, client_info=info) as client:
+            await client.call_tool("list_projects", {})
+            await client.read_resource("svnlite://projects")
+        rows = audit.read_entries()
+        self.assertEqual([r["operation"] for r in rows], ["projects", "projects"])
+        for row in rows:
+            self.assertEqual((row["client"], row["client_info"]), ("mcp", "Claude Desktop 1.4.2"))
+        self.assertEqual(ctx.client_info, "")                       # общий контекст сервера не менялся
 
     async def test_details_flag_adds_technical_block_and_is_not_passed_to_operation(self):
         async with self.session() as client:

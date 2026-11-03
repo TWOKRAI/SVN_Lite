@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import sys
@@ -147,6 +148,16 @@ def _timeout_result(op_name: str):
     return Result.failure(op_name, from_exception(SvnError(ErrorKind.TIMEOUT, "Время операции вышло")))
 
 
+def client_label(server) -> str:
+    """Имя и версия клиента из сессии MCP (clientInfo при initialize) для журнала действий, например «claude-ai 0.1».
+    Вне запроса или без initialize пусто."""
+    try:
+        info = server.request_context.session.client_params.clientInfo
+        return f"{info.name} {info.version}".strip()
+    except (LookupError, AttributeError):
+        return ""
+
+
 def _run_blocking(ctx, op_name: str, params: dict):
     """Тело потока: подтянуть правки окна (папки проектов, история на компьютере) и выполнить операцию. Процесс
     живёт долго, окно за это время меняет settings.json."""
@@ -158,8 +169,11 @@ def _run_blocking(ctx, op_name: str, params: dict):
     return ops.run(ctx, op_name, **params)
 
 
-async def execute(ctx, op_name: str, params: dict, guard_seconds: float):
-    """Операция реестра в потоке с общим ограничением времени. Всегда возвращает Result."""
+async def execute(ctx, op_name: str, params: dict, guard_seconds: float, client_info: str = ""):
+    """Операция реестра в потоке с общим ограничением времени. Всегда возвращает Result. client_info: клиент MCP из
+    сессии; кладётся в копию контекста (общий контекст сервера не меняется: вызовы идут параллельно)."""
+    if client_info:
+        ctx = dataclasses.replace(ctx, client_info=client_info)
     try:
         return await asyncio.wait_for(_in_daemon_thread(lambda: _run_blocking(ctx, op_name, params)), guard_seconds)
     except asyncio.TimeoutError:
@@ -202,7 +216,7 @@ def build_server(ctx=None, guard_seconds: Optional[float] = None):
             from .ops.result import Result
             error = errors.from_exception(errors.invalid_args(texts.ARG_NO_OPERATION.format(name=name)))
             return tool_result(types, Result.failure(name, error), details)
-        return tool_result(types, await execute(ctx, op_name, params, guard), details)
+        return tool_result(types, await execute(ctx, op_name, params, guard, client_label(server)), details)
 
     @server.list_resources()
     async def list_resources() -> list:
@@ -219,7 +233,7 @@ def build_server(ctx=None, guard_seconds: Optional[float] = None):
     @server.read_resource()
     async def read_resource(uri) -> list:
         op_name, params = parse_resource_uri(uri)
-        result = await execute(ctx, op_name, params, guard)
+        result = await execute(ctx, op_name, params, guard, client_label(server))
         return [ReadResourceContents(content=json.dumps(result.to_dict(), ensure_ascii=False), mime_type=JSON_MIME)]
 
     return server
