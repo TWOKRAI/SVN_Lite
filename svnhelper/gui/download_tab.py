@@ -1,4 +1,4 @@
-"""Вкладка «Скачать проект»: дерево сервера, поиск, ссылка, выбор ветки или версии, скачивание."""
+"""Подвкладка «Скачать проект» колонки «Проекты»: дерево сервера, поиск, ссылка, выбор ветки или версии, скачивание."""
 from __future__ import annotations
 
 import os
@@ -13,88 +13,42 @@ from ..progress import EtaTracker, format_eta
 from ..svn_core import CheckoutProgress, ErrorKind, Estimate, SvnError
 from .create_dialog import CreateProjectDialog
 from .models import (CLIPBOARD_MAX_LEN, DownloadJob, FAV_ADD_TEXT, FAV_REMOVE_TEXT, JobStamp,
-                     line_choice_label, LINES_DELAY_MS, LIST_BTN_HIDE, LIST_BTN_SHOW, log, LONG_TASK_SEC,
-                     Node, PROGRESS_MS, same_url, SEARCH_DELAY_MS, search_projects, shorten_path,
-                     TREE_EXTRA_HEIGHT, TREE_HINT, TRUNK_CHOICE)
+                     line_choice_label, LINES_DELAY_MS, log, LONG_TASK_SEC, Node, PROGRESS_MS, same_url,
+                     SEARCH_DELAY_MS, search_projects, shorten_path, TREE_HINT, TRUNK_CHOICE)
 from .server_tree import ServerTree
-from .widgets import AuditDialog
+from .widgets import AuditDialog, button_column_width, ButtonRow, SideButtons, Tooltip
 
 LOCAL_OUTSIDE = "Эта папка не входит в проекты на сервере."
 LOCAL_MISSING = "Этого проекта ещё нет на сервере."
 
 
 class DownloadTabMixin:
-    """Вкладка «Скачать проект»: дерево сервера, поиск, ссылка, выбор ветки или версии, скачивание."""
+    """Подвкладка «Скачать проект»: дерево сервера, поиск, ссылка, выбор ветки или версии, скачивание."""
 
-    # -- вкладка «Скачать проект» ---------------------------------------------------------
+    # -- подвкладка «Скачать проект» колонки «Проекты» -------------------------------------------
+    # Две части в разных колонках окна (docs/PLAN_ui_v4.md, раздел 3, вариант A): в колонке 2 вместо списка своих
+    # проектов - поиск и дерево сервера (_build_server_browser), в колонке 3 вместо «Состояния проекта» - форма
+    # «Скачивание» со своей колонкой кнопок справа (_build_download_form). Переключает их ProjectsTabMixin
+    # (_apply_list_mode).
 
-    def _build_download_tab(self, notebook: ttk.Notebook) -> None:
+    def _build_server_browser(self, parent: tk.Misc) -> None:
+        """Колонка 2 на «Скачать проект»: поиск по названию, дерево папок сервера, список найденного, строка состояния."""
         px = self.px
-        self.download_tab = outer = ttk.Frame(notebook, padding=(px(16), px(12)))
-        notebook.add(outer, text="Скачать проект")
-        outer.columnconfigure(0, weight=1)
-
-        # 1. Какой проект
-        self.step1 = step1 = ttk.LabelFrame(outer, text="1. Какой проект", style="Step.TLabelframe")
-        step1.grid(row=0, column=0, sticky="nsew", pady=(0, px(12)))
-        step1.columnconfigure(1, weight=1)
-        ttk.Label(step1, text="Вставьте ссылку на проект или выберите его из списка.", style="Hint.TLabel", justify="left").grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, px(8)))
-        step1.rowconfigure(6, weight=1)
-        ttk.Label(step1, text="Ссылка на проект:").grid(row=1, column=0, sticky="w")
-        self.url_var = tk.StringVar()
-        self.url_entry = ttk.Entry(step1, textvariable=self.url_var)
-        self.url_entry.grid(row=1, column=1, sticky="ew", padx=px(10))
-        self.list_btn = ttk.Button(step1, text=LIST_BTN_SHOW, command=self._toggle_tree)
-        self.list_btn.grid(row=1, column=2)
-        tools = ttk.Frame(step1)
-        tools.grid(row=2, column=1, sticky="w", padx=(px(6), 0), pady=(px(2), 0))
-        self.recent_menu = tk.Menu(step1, tearoff=False, postcommand=self._fill_recent_menu)
-        self.recent_btn = self._menu_button(tools, "Недавние ▾", self.recent_menu, style="Link.TButton")
-        self.recent_btn.pack(side="left")
-        self.fav_btn = ttk.Button(tools, text=FAV_ADD_TEXT, style="Link.TButton", command=self._toggle_favorite,
-                                  state="disabled")
-        self.fav_btn.pack(side="left", padx=(px(8), 0))
-        ttk.Button(tools, text="Выбрать папку на диске…", style="Link.TButton",
-                   command=self._on_browse_disk).pack(side="left", padx=(px(8), 0))
-        # появляется, когда введён путь к папке, которой ещё нет в хранилище
-        self.create_btn = ttk.Button(tools, text="Создать проект из этой папки…", command=self._on_create_project)
-        self.url_status = ttk.Label(step1, text="", style="Hint.TLabel", justify="left")
-        self.url_status.grid(row=3, column=0, columnspan=3, sticky="w", pady=(px(8), 0))
-        self._autowrap(self.url_status, step1, px(40))
-        self.url_var.trace_add("write", lambda *_: self._on_url_changed())
-
-        # «Что скачать»: есть только у проектов с ветками или версиями
-        self.line_row = line_row = ttk.Frame(step1)
-        line_row.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(px(8), 0))
-        line_row.columnconfigure(1, weight=1)
-        ttk.Label(line_row, text="Что скачать:").grid(row=0, column=0, sticky="w")
-        self.line_var = tk.StringVar(value=TRUNK_CHOICE)
-        self.line_combo = ttk.Combobox(line_row, textvariable=self.line_var, state="disabled", values=[TRUNK_CHOICE])
-        self.line_combo.grid(row=0, column=1, sticky="ew", padx=px(10))
-        self.line_combo.bind("<<ComboboxSelected>>", self._on_line_selected)
-        line_row.grid_remove()
-        self.line_info = ttk.Label(step1, text="", style="Hint.TLabel", justify="left")
-        self.line_info.grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
-        self._autowrap(self.line_info, step1, px(40))
-        self.line_info.grid_remove()
-
-        self.tree_frame = tree_frame = ttk.Frame(step1)
-        tree_frame.grid(row=6, column=0, columnspan=3, sticky="nsew", pady=(px(10), 0))
-        tree_frame.columnconfigure(0, weight=1)
-        tree_frame.rowconfigure(1, weight=1)
-        search = ttk.Frame(tree_frame)
+        self.server_browser = browser = ttk.Frame(parent)
+        browser.columnconfigure(0, weight=1)
+        browser.rowconfigure(1, weight=1)
+        search = ttk.Frame(browser)
         search.grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         search.columnconfigure(1, weight=1)
-        ttk.Label(search, text="Найти проект…").grid(row=0, column=0, sticky="w")
+        ttk.Label(search, text="Найти проект:").grid(row=0, column=0, sticky="w", padx=(0, px(6)))
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(search, textvariable=self.search_var)
-        self.search_entry.grid(row=0, column=1, sticky="ew", padx=px(10))
+        self.search_entry.grid(row=0, column=1, sticky="ew")
         self.search_entry.bind("<Escape>", lambda _e: self.search_var.set(""))
         self.search_var.trace_add("write", lambda *_: self._on_search_changed())
 
         # дерево и список результатов поиска лежат друг на друге: виден один из них
-        stack = ttk.Frame(tree_frame, style="Card.TFrame", padding=1)
+        stack = ttk.Frame(browser, style="Card.TFrame", padding=1)
         stack.grid(row=1, column=0, sticky="nsew")
         stack.columnconfigure(0, weight=1)
         stack.rowconfigure(0, weight=1)
@@ -111,8 +65,8 @@ class DownloadTabMixin:
         self.results_pane.rowconfigure(0, weight=1)
         self.results = ttk.Treeview(self.results_pane, columns=("path",), show="tree", selectmode="browse",
                                     height=7)
-        self.results.column("#0", width=px(260), stretch=False)
-        self.results.column("path", width=px(340), stretch=True)
+        self.results.column("#0", width=px(180), stretch=True)
+        self.results.column("path", width=px(160), stretch=True)
         rscroll = ttk.Scrollbar(self.results_pane, orient="vertical", command=self.results.yview)
         self.results.configure(yscrollcommand=rscroll.set)
         self.results.grid(row=0, column=0, sticky="nsew")
@@ -120,65 +74,127 @@ class DownloadTabMixin:
         self._tag_project_rows(self.results)
         self.results.bind("<<TreeviewSelect>>", self._on_result_select)
         self.results_pane.grid_remove()
-        bar = ttk.Frame(tree_frame)
+        bar = ttk.Frame(browser)
         bar.grid(row=2, column=0, sticky="ew", pady=(px(8), 0))
         bar.columnconfigure(1, weight=1)
-        self.refresh_btn = ttk.Button(bar, text="⟳ Обновить", style="Ghost.TButton", command=self._on_refresh)
-        self.refresh_btn.grid(row=0, column=0, sticky="w")
+        # «⟳», а не «Обновить»: слово «Обновить» в программе не используется для разных вещей (PLAN_v3)
+        self.refresh_btn = ttk.Button(bar, text="⟳", style="Ghost.TButton", width=2, command=self._on_refresh)
+        self.refresh_btn.grid(row=0, column=0, sticky="nw")
+        Tooltip(self.refresh_btn, lambda: "Перечитать список с сервера")
         self.tree_status = ttk.Label(bar, text=TREE_HINT, style="Hint.TLabel", justify="left")
-        self.tree_status.grid(row=0, column=1, sticky="w", padx=px(12))
-        self._autowrap(self.tree_status, bar, px(180))
-        tree_frame.grid_remove()
+        self.tree_status.grid(row=0, column=1, sticky="w", padx=(px(8), 0))
+        self._autowrap(self.tree_status, bar, px(60))
+
+    def _build_download_form(self, parent: tk.Misc) -> None:
+        """Колонка 3 на «Скачать проект»: какой проект, что скачать, куда; ход скачивания. Кнопки - колонкой справа
+        (self.download_actions): «Скачать», «Отмена» (пока идёт скачивание), «Создать проект из этой папки…» и
+        «Удалить недокачанную папку» (когда они нужны)."""
+        px = self.px
+        self.download_form = form = ttk.Frame(parent)
+        form.columnconfigure(0, weight=1)
+        form.rowconfigure(0, weight=1)
+        steps = ttk.Frame(form)
+        steps.grid(row=0, column=0, sticky="nsew")
+        steps.columnconfigure(0, weight=1)
+
+        # 1. Какой проект
+        self.step1 = step1 = ttk.LabelFrame(steps, text="1. Какой проект", style="Step.TLabelframe")
+        step1.grid(row=0, column=0, sticky="ew", pady=(0, px(10)))
+        step1.columnconfigure(0, weight=1)
+        step1_hint = ttk.Label(step1, text="Выберите проект в списке слева или вставьте ссылку на него.",
+                               style="Hint.TLabel", justify="left")
+        step1_hint.grid(row=0, column=0, sticky="w", pady=(0, px(6)))
+        self._autowrap(step1_hint, step1, px(40))
+        ttk.Label(step1, text="Ссылка на проект:").grid(row=1, column=0, sticky="w")
+        self.url_var = tk.StringVar()
+        self.url_entry = ttk.Entry(step1, textvariable=self.url_var)
+        self.url_entry.grid(row=2, column=0, sticky="ew", pady=(px(2), 0))
+        tools = ButtonRow(step1, px(8), px(2))     # в узкой колонке ссылки переходят на вторую строку
+        tools.grid(row=3, column=0, sticky="ew", pady=(px(2), 0))
+        self.recent_menu = tk.Menu(step1, tearoff=False, postcommand=self._fill_recent_menu)
+        self.recent_btn = self._menu_button(tools, "Недавние ▾", self.recent_menu, style="Link.TButton")
+        self.fav_btn = ttk.Button(tools, text=FAV_ADD_TEXT, style="Link.TButton", command=self._toggle_favorite,
+                                  state="disabled")
+        self.browse_disk_btn = ttk.Button(tools, text="Выбрать папку на диске…", style="Link.TButton",
+                                          command=self._on_browse_disk)
+        for widget in (self.recent_btn, self.fav_btn, self.browse_disk_btn):
+            tools.add(widget)
+        self.url_status = ttk.Label(step1, text="", style="Hint.TLabel", justify="left")
+        self.url_status.grid(row=4, column=0, sticky="w", pady=(px(6), 0))
+        self._autowrap(self.url_status, step1, px(40))
+        self.url_var.trace_add("write", lambda *_: self._on_url_changed())
+
+        # «Что скачать»: есть только у проектов с ветками или версиями
+        self.line_row = line_row = ttk.Frame(step1)
+        line_row.grid(row=5, column=0, sticky="ew", pady=(px(8), 0))
+        line_row.columnconfigure(1, weight=1)
+        ttk.Label(line_row, text="Что скачать:").grid(row=0, column=0, sticky="w")
+        self.line_var = tk.StringVar(value=TRUNK_CHOICE)
+        self.line_combo = ttk.Combobox(line_row, textvariable=self.line_var, state="disabled", values=[TRUNK_CHOICE])
+        self.line_combo.grid(row=0, column=1, sticky="ew", padx=(px(10), 0))
+        self.line_combo.bind("<<ComboboxSelected>>", self._on_line_selected)
+        line_row.grid_remove()
+        self.line_info = ttk.Label(step1, text="", style="Hint.TLabel", justify="left")
+        self.line_info.grid(row=6, column=0, sticky="w", pady=(px(4), 0))
+        self._autowrap(self.line_info, step1, px(40))
+        self.line_info.grid_remove()
 
         # 2. Куда скачать
-        step2 = ttk.LabelFrame(outer, text="2. Куда скачать", style="Step.TLabelframe")
-        step2.grid(row=1, column=0, sticky="ew", pady=(0, px(12)))
-        step2.columnconfigure(1, weight=1)
-        ttk.Label(step2, text="Выберите папку на компьютере, куда сохранится проект.", style="Hint.TLabel", justify="left").grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, px(8)))
-        ttk.Label(step2, text="Папка для проектов:").grid(row=1, column=0, sticky="w")
+        step2 = ttk.LabelFrame(steps, text="2. Куда скачать", style="Step.TLabelframe")
+        step2.grid(row=1, column=0, sticky="ew", pady=(0, px(10)))
+        step2.columnconfigure(0, weight=1)
+        ttk.Label(step2, text="Папка для проектов:").grid(row=0, column=0, columnspan=2, sticky="w")
         self.dir_var = tk.StringVar(value=self.settings.last_dir or self.config.work_dir)
         # тот же список папок, что над «Мои проекты»; можно вписать новую: в список она попадёт при скачивании
         self.dir_entry = ttk.Combobox(step2, textvariable=self.dir_var, values=list(self.settings.project_dirs))
-        self.dir_entry.grid(row=1, column=1, sticky="ew", padx=px(10))
+        self.dir_entry.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
         self.dir_entry.bind("<<ComboboxSelected>>", lambda _e: self._remember_project_dir(self.dir_var.get()))
         self.browse_btn = ttk.Button(step2, text="Выбрать…", command=self._on_browse)
-        self.browse_btn.grid(row=1, column=2)
+        self.browse_btn.grid(row=1, column=1, sticky="e", padx=(px(8), 0), pady=(px(2), 0))
         self.dest_var = tk.StringVar()
         dest_label = ttk.Label(step2, textvariable=self.dest_var, style="Hint.TLabel", justify="left")
-        dest_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(px(8), 0))
+        dest_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         self._autowrap(dest_label, step2, px(40))
         self._hide_when_empty(dest_label, self.dest_var)
         self.dir_var.trace_add("write", lambda *_: self._update_dest_label())
 
-        # 3. Скачать
-        step3 = ttk.LabelFrame(outer, text="3. Скачать", style="Step.TLabelframe")
+        # 3. Скачать: кнопка в колонке справа, здесь ход работы и итог
+        step3 = ttk.LabelFrame(steps, text="3. Скачать", style="Step.TLabelframe")
         step3.grid(row=2, column=0, sticky="ew")
         step3.columnconfigure(0, weight=1)
-        ttk.Label(step3, text="Нажмите кнопку, и проект скачается в выбранную папку.", style="Hint.TLabel", justify="left").grid(
-            row=0, column=0, columnspan=1, sticky="w", pady=(0, px(8)))
-        buttons = ttk.Frame(step3)
-        buttons.grid(row=1, column=0, sticky="w")
-        self.download_btn = ttk.Button(buttons, text="Скачать проект", style="Big.TButton",
-                                       command=self._on_download, state="disabled")
-        self.download_btn.pack(side="left")
-        # «Отмена» видна только во время скачивания
-        self.cancel_btn = ttk.Button(buttons, text="Отмена", command=self._on_cancel, state="disabled")
-        # появляется только после отмены или ошибки, если на диске осталась недокачанная папка
-        self.cleanup_btn = ttk.Button(buttons, text="Удалить недокачанную папку", command=self._on_remove_partial)
+        step3_hint = ttk.Label(step3, text="Нажмите «Скачать» справа, и проект скачается в выбранную папку.",
+                               style="Hint.TLabel", justify="left")
+        step3_hint.grid(row=0, column=0, sticky="w")
+        self._autowrap(step3_hint, step3, px(40))
         self.progress = ttk.Progressbar(step3, mode="determinate", maximum=100)
-        self.progress.grid(row=2, column=0, sticky="ew", pady=(px(12), px(4)))
+        self.progress.grid(row=1, column=0, sticky="ew", pady=(px(10), px(4)))
         self.progress.grid_remove()
         self.status_var = tk.StringVar()
         status = ttk.Label(step3, textvariable=self.status_var, justify="left")
-        status.grid(row=3, column=0, sticky="w")
+        status.grid(row=2, column=0, sticky="w", pady=(px(4), 0))
         self._autowrap(status, step3, px(40))
         self._hide_when_empty(status, self.status_var)
         self.info_var = tk.StringVar()
         info = ttk.Label(step3, textvariable=self.info_var, style="Hint.TLabel", justify="left")
-        info.grid(row=4, column=0, sticky="w")
+        info.grid(row=3, column=0, sticky="w")
         self._autowrap(info, step3, px(40))
         self._hide_when_empty(info, self.info_var)
+
+        # колонка кнопок справа, как у «Состояния проекта»: одна главная кнопка, остальные появляются по делу
+        self.download_actions = actions = SideButtons(form, px(6), button_column_width(form, ["Скачать проект"], px))
+        actions.grid(row=0, column=1, sticky="n", padx=(px(12), 0))
+        self.download_btn = ttk.Button(actions, text="Скачать", style="Accent.TButton", command=self._on_download,
+                                       state="disabled")
+        # «Отмена» видна только во время скачивания
+        self.cancel_btn = ttk.Button(actions, text="Отмена", command=self._on_cancel, state="disabled")
+        # появляется, когда введён путь к папке, которой ещё нет в хранилище
+        self.create_btn = ttk.Button(actions, text="Создать проект из этой папки…", command=self._on_create_project)
+        # появляется только после отмены или ошибки, если на диске осталась недокачанная папка
+        self.cleanup_btn = ttk.Button(actions, text="Удалить недокачанную папку", command=self._on_remove_partial)
+        actions.add(self.download_btn)
+        actions.add(self.cancel_btn, visible=False)
+        actions.add(self.create_btn, visible=False, separator=True)
+        actions.add(self.cleanup_btn, visible=False, separator=True)
 
     def _tag_project_rows(self, tree: ttk.Treeview) -> None:
         """Цвета строк дерева: проект (✔) зелёный и полужирный, служебные строки серые."""
@@ -340,22 +356,6 @@ class DownloadTabMixin:
         if chosen:
             self.url_var.set(os.path.normpath(chosen))
 
-    def _toggle_tree(self) -> None:
-        self.tree_visible = not self.tree_visible
-        extra = self.px(TREE_EXTRA_HEIGHT)
-        height = self.root.winfo_height()
-        if self.tree_visible:
-            self.tree_frame.grid()
-            self.step1.master.rowconfigure(0, weight=1)
-            self.list_btn.configure(text=LIST_BTN_HIDE)
-            self.root.geometry(f"{self.root.winfo_width()}x"
-                               f"{min(height + extra, max(height, self.root.winfo_screenheight() - 80))}")
-        else:
-            self.tree_frame.grid_remove()
-            self.step1.master.rowconfigure(0, weight=0)
-            self.list_btn.configure(text=LIST_BTN_SHOW)
-            self.root.geometry(f"{self.root.winfo_width()}x{max(self._base_height, height - extra)}")
-
     # -- ссылка: буфер обмена, недавние и избранное -------------------------------------
 
     def _on_focus_in(self, event) -> None:
@@ -486,10 +486,7 @@ class DownloadTabMixin:
     def _set_create_target(self, target: Optional[tuple]) -> None:
         """(путь на диске, адрес сервера, сегменты проекта) — тогда видна кнопка «Создать проект из этой папки…»."""
         self._create_target = target
-        if target is None:
-            self.create_btn.pack_forget()
-        elif not self.create_btn.winfo_manager():
-            self.create_btn.pack(side="left", padx=(self.px(12), 0))
+        self._show(self.create_btn, target is not None)
         self._update_buttons()
 
     def _local_status(self, text: str, error: bool = False) -> None:
@@ -754,19 +751,14 @@ class DownloadTabMixin:
         any_busy = busy or self.upd is not None
         self.download_btn.configure(
             state="normal" if (self.project and not any_busy and self.client) else "disabled")
-        if busy:     # «Отмена» видна только во время скачивания
-            if not self.cancel_btn.winfo_manager():
-                self.cancel_btn.pack(side="left", padx=(self.px(12), 0), after=self.download_btn)
-            self.cancel_btn.configure(state="normal")
-        else:
-            self.cancel_btn.pack_forget()
-            self.cancel_btn.configure(state="disabled")
+        self._show(self.cancel_btn, busy)       # «Отмена» видна только во время скачивания
+        self.cancel_btn.configure(state="normal" if busy else "disabled")
         other = "disabled" if any_busy else "normal"
         self.browse_btn.configure(state=other)
         self.refresh_btn.configure(state=other)
         self.dir_entry.configure(state=other)
         self.url_entry.configure(state=other)
-        self.list_btn.configure(state=other)
+        self.browse_disk_btn.configure(state=other)
         self.recent_btn.configure(state=other)
         self.create_btn.configure(state="normal" if (self._create_target and not any_busy and self.client)
                                   else "disabled")
@@ -990,7 +982,7 @@ class DownloadTabMixin:
 
     def _hide_cleanup(self) -> None:
         self._partial_job = None
-        self.cleanup_btn.pack_forget()
+        self._show(self.cleanup_btn, False)
 
     def _offer_cleanup(self, job: DownloadJob) -> None:
         """Показывает кнопку удаления, если на диске осталась папка, которую создала эта программа."""
@@ -1004,12 +996,12 @@ class DownloadTabMixin:
         if partial:
             self._partial_job = job
             self.cleanup_btn.configure(state="normal")
-            self.cleanup_btn.pack(side="left")
+            self._show(self.cleanup_btn, True)
 
     def _partial_note(self, job: DownloadJob) -> str:
         if self._partial_job is job:
             return (f"\n\nЧасть файлов уже скачана в папку:\n{job.dest}\n"
-                    "Нажмите «Удалить недокачанную папку» на шаге 3, если она не нужна.")
+                    "Нажмите «Удалить недокачанную папку» справа, если она не нужна.")
         return ""
 
     def _on_remove_partial(self) -> None:
@@ -1086,7 +1078,7 @@ class DownloadTabMixin:
         text = "Скачивание остановлено."
         if self._partial_job is job:
             text += (f" Папка\n{job.dest}\nосталась заполненной частично. Нажмите «Удалить недокачанную папку» "
-                     "на шаге 3, если она не нужна.")
+                     "справа, если она не нужна.")
         messagebox.showinfo("Скачивание отменено", text, parent=self.root)
 
     def _finish_error(self, job: DownloadJob, kind: ErrorKind, raw: str = "") -> None:

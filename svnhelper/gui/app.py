@@ -1,4 +1,4 @@
-"""Главное окно: шапка, меню, фоновые задачи, вход, тема. Вкладки подмешаны из соседних модулей."""
+"""Главное окно: шапка, меню, фоновые задачи, вход, тема. Колонки и подвкладки подмешаны из соседних модулей."""
 from __future__ import annotations
 
 import ctypes
@@ -98,7 +98,8 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self.upd: Optional[UpdateJob] = None
         self.mine: dict[str, MineItem] = {}
         self._mine_dirty = True
-        self._start_tab_chosen = False             # первый поиск проектов уже решил, с какой вкладки начинать
+        self._start_tab_chosen = False             # первый поиск проектов уже решил, с какой подвкладки начинать
+        self._list_mode_shown = ""                 # подвкладка колонки «Проекты», под которую уже разложено окно
         self._offline = False                      # последняя проверка не достучалась до сервера (полоса «Нет связи»)
         self._auto_selected = ""                   # строка, выделенная программой после поиска проектов
         self._conn_checking = False                # идёт «Проверить подключение» по щелчку на индикаторе
@@ -159,7 +160,6 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self._search_after: Optional[str] = None
         self._search_hits: dict[str, list[str]] = {}
         self._load_cache()
-        self.tree_visible = False
         self.job: Optional[DownloadJob] = None
         self._queue: queue.Queue = queue.Queue()
         self._probe_pool = ThreadPoolExecutor(max_workers=server.PROBE_THREADS,
@@ -677,14 +677,10 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             label.bind("<Button-1>", lambda _e: self._open_settings())
         Tooltip(self.login_name_label, lambda: "Сменить пользователя")
 
-        self.notebook = notebook = ttk.Notebook(root)
-        notebook.pack(fill="both", expand=True, padx=px(12), pady=(0, px(12)))
-        self._build_download_tab(notebook)
+        # рабочая область прямо в окне, без ряда вкладок: «Скачать проект» - подвкладка колонки «Проекты»
         self._update_login_label()
-        self._build_projects_tab(notebook)   # строится после «Скачать проект» (берёт его папку), но стоит первой
-        notebook.insert(0, self.mine_tab)
-        notebook.select(self.mine_tab)
-        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self._build_projects_tab(root)
+        self.mine_tab.pack(fill="both", expand=True, padx=px(12), pady=(px(4), px(12)))
 
         menu = tk.Menu(root, tearoff=False)
         menu.add_command(label="Параметры…\tF12", command=self._open_settings)
@@ -736,7 +732,7 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self._offline = offline
         gap = self.px(6)
         if offline:
-            self.offline_bar.pack(fill="x", padx=self.px(12), pady=(0, gap), before=self.notebook)
+            self.offline_bar.pack(fill="x", padx=self.px(12), pady=(0, gap), before=self.mine_tab)
         else:
             self.offline_bar.pack_forget()
             self._tab_loads.retry_failed()      # связь вернулась: вкладки, которые не прочитались, читаются заново
@@ -1375,16 +1371,6 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             os.startfile(self.log_path)  # type: ignore[attr-defined]
         except (OSError, AttributeError):
             messagebox.showinfo("Журнал", f"Журнал находится здесь:\n{self.log_path}", parent=self.root)
-
-    def _on_tab_changed(self, _event) -> None:
-        if self.notebook.select() != str(self.mine_tab):
-            return
-        if self._mine_dirty:
-            self._scan_projects()
-        else:
-            self._auto_auth_failed = False
-            self._load_project_tab()   # колонка 3 показывает открытую вкладку проекта
-            self._on_check_all()       # при открытии вкладки состояние всегда свежее
 
     def run_auth(self, work: Callable, ok: Callable, fail: Callable) -> None:
         """Фоновая задача с общим окном входа: ok(результат) или fail(ErrorKind)."""

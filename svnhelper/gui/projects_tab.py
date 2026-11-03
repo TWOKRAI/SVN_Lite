@@ -59,18 +59,30 @@ class ProjectsTabMixin:
 
     # -- вкладка «Мои проекты» ---------------------------------------------------------
 
-    # Раскладка вкладки «Мои проекты» - три колонки (docs/PLAN_v3_ui.md, «Целевой вид»):
+    # Раскладка окна (self.mine_tab, лежит прямо в окне; вкладок окна нет) - три колонки (docs/PLAN_v3_ui.md,
+    # «Целевой вид»; docs/PLAN_ui_v4.md, раздел 3, вариант A):
     #   1. self.actions_row   - кнопки по выбранному проекту, фиксированной ширины; прячется и показывается вместе
-    #                           с колонкой «Проекты» (_layout_mine_columns);
-    #   2. self.mine_col2     - CollapsibleColumn «Проекты»: папка для проектов, сортировка, таблица mine_tree;
+    #                           с колонкой «Проекты» (_layout_mine_columns), на подвкладке «Скачать проект» скрыта;
+    #   2. self.mine_col2     - CollapsibleColumn «Проекты» с подвкладками self.list_tabs (_list_mode):
+    #                           «Мои проекты» - папка для проектов, поиск, таблица mine_tree (или пустое состояние);
+    #                           «Скачать проект» - поиск и дерево сервера (DownloadTabMixin._build_server_browser);
     #   3. self.mine_col3     - CollapsibleColumn «Состояние проекта»: ProjectPanel (self.project_panel) - шапка и
     #                           внутренние вкладки self.project_tabs (рамки в self.project_tab_frames, открывает
     #                           open_project_tab): Изменения (CommitPanel), Новое, История, Занятые, Ветки.
     #                           Справа в панели - вертикальная колонка кнопок выбранной вкладки (ProjectPanel.side),
     #                           она прячется и показывается вместе с панелью.
+    #                           На «Скачать проект» в той же ячейке вместо панели форма «Скачивание»
+    #                           (DownloadTabMixin._build_download_form) со своей колонкой кнопок.
     # Колонка 3 свёрнута - колонка 2 занимает её место (вес 1). Свёрнутость хранится в settings.
 
     MINE_COL2_WIDTH = 260     # ширина колонки «Проекты», пока колонка 3 развёрнута (px до масштаба экрана)
+    MINE_COL2_DOWNLOAD_WIDTH = 340    # она же на «Скачать проект»: в 260 px дерево сервера обрезает длинные имена
+    # подвкладки колонки «Проекты»: ключ для select_list_mode → подпись на ярлыке
+    LIST_MODES = (("mine", "Мои проекты"), ("download", "Скачать проект"))
+    MINE_EMPTY_TEXT = "В этой папке пока нет проектов."
+    # неразрывные пробелы: название кнопки не разрывается переносом строки
+    MINE_EMPTY_HINT = "Скачайте проект с сервера или создайте новый кнопкой «＋\u00a0Новый\u00a0проект…»."
+    MINE_EMPTY_BUTTON = "Скачать проект с сервера"
     MINE_COL3_WIDTH = 360     # запрошенная ширина колонки 3 (дальше растягивается весом)
     MINE_STRIP_WIDTH = 28     # ширина свёрнутой колонки
     MINE_SASH_WIDTH = 8       # разделитель колонок 2 и 3 (он же промежуток между ними)
@@ -85,11 +97,11 @@ class ProjectsTabMixin:
     MINE_SORT_MODES = ("name", "opened", "created", "changed")   # прежние значения settings.mine_sort остаются рабочими
     PROJECT_DIR_REMOVE = "Убрать эту папку из списка"     # последний пункт выпадающего списка папок
 
-    def _build_projects_tab(self, notebook: ttk.Notebook) -> None:
+    def _build_projects_tab(self, parent: tk.Misc) -> None:
+        """Строит рабочую область окна self.mine_tab в parent; разместить её (pack) должен вызывающий."""
         px = self.px
         p = self.palette
-        self.mine_tab = tab = ttk.Frame(notebook, padding=(px(16), px(12)))
-        notebook.add(tab, text="Мои проекты")
+        self.mine_tab = tab = ttk.Frame(parent, style="Card.TFrame", padding=(px(16), px(12)))
         tab.rowconfigure(1, weight=1)
 
         # предупреждение о давно занятых файлах (скрыто, пока нечего напоминать)
@@ -174,10 +186,7 @@ class ProjectsTabMixin:
         self._expert_idx: dict[str, int] = {}
 
         # колонки 2 и 3
-        if not self.settings.project_dirs and self.dir_var.get().strip():   # первый запуск: папка по умолчанию
-            self.settings.project_dirs = add_project_dir([], self.dir_var.get())
-        self.mine_col2 = CollapsibleColumn(tab, "Проекты", side="left",
-                                           width=px(self.settings.mine_col2_width or self.MINE_COL2_WIDTH),
+        self.mine_col2 = CollapsibleColumn(tab, "Проекты", side="left", width=px(self._col2_width("mine")),
                                            strip_width=px(self.MINE_STRIP_WIDTH),
                                            collapsed=self.settings.mine_col2_collapsed)
         self.mine_col3 = CollapsibleColumn(tab, "Состояние проекта", side="right", width=px(self.MINE_COL3_WIDTH),
@@ -185,8 +194,14 @@ class ProjectsTabMixin:
                                            collapsed=self.settings.mine_col3_collapsed)
         for column in (self.mine_col2, self.mine_col3):
             column.bind(CollapsibleColumn.EVENT, self._on_mine_column_toggled)
-        self._build_mine_projects_column(self.mine_col2.body)
+        # форма скачивания первой: в ней папка для проектов (dir_var), её берёт и список своих проектов
+        self._build_download_form(self.mine_col3.body)
+        if not self.settings.project_dirs and self.dir_var.get().strip():   # первый запуск: папка по умолчанию
+            self.settings.project_dirs = add_project_dir([], self.dir_var.get())
+        self._build_list_tabs(self.mine_col2.body)
         self._build_mine_state_column(self.mine_col3.body)
+        self.download_form.grid(row=0, column=0, sticky="nsew")     # та же ячейка, что у ProjectPanel
+        self.download_form.grid_remove()
         self._build_mine_sash(tab)
         self._layout_mine_columns()
 
@@ -197,8 +212,31 @@ class ProjectsTabMixin:
         self.dir_var.trace_add("write", lambda *_: self._on_dir_var_changed())
         self._apply_tortoise()
 
+    def _build_list_tabs(self, body: ttk.Frame) -> None:
+        """Колонка 2: подвкладки «Мои проекты» (свои проекты) и «Скачать проект» (дерево сервера)."""
+        px = self.px
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.list_tabs = tabs = ttk.Notebook(body, style="Inner.TNotebook")
+        tabs.grid(row=0, column=0, sticky="nsew")
+        self.list_frames: dict[str, ttk.Frame] = {}
+        for key, title in self.LIST_MODES:
+            frame = ttk.Frame(tabs, padding=(px(6), px(8), px(6), px(6)))
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(0, weight=1)
+            tabs.add(frame, text=title)
+            self.list_frames[key] = frame
+        mine = ttk.Frame(self.list_frames["mine"])
+        mine.grid(row=0, column=0, sticky="nsew")
+        self._build_mine_projects_column(mine)
+        self._build_server_browser(self.list_frames["download"])
+        self.server_browser.grid(row=0, column=0, sticky="nsew")
+        # первое событие придёт само (ярлык выбран при добавлении): с него начинается поиск проектов при запуске
+        tabs.bind("<<NotebookTabChanged>>", self._on_list_tab_changed)
+
     def _build_mine_projects_column(self, body: ttk.Frame) -> None:
-        """Колонка 2: папка для проектов (список сохранённых папок), сортировка и таблица проектов."""
+        """Подвкладка «Мои проекты»: папка для проектов (список сохранённых папок), поиск и таблица проектов;
+        если в папке проектов нет, вместо поиска и таблицы - пустое состояние с путём к скачиванию."""
         px = self.px
         body.columnconfigure(0, weight=1)
         body.rowconfigure(2, weight=1)
@@ -220,7 +258,7 @@ class ProjectsTabMixin:
         self._fill_project_dir_lists()
 
         # поиск по названию проекта (без учёта регистра); порядок задаёт щелчок по заголовку в широком виде
-        find_row = ttk.Frame(body)
+        self.mine_find_row = find_row = ttk.Frame(body)
         find_row.grid(row=1, column=0, sticky="ew", pady=(0, px(6)))
         find_row.columnconfigure(1, weight=1)
         ttk.Label(find_row, text="Найти проект:").grid(row=0, column=0, sticky="w", padx=(0, px(6)))
@@ -229,10 +267,11 @@ class ProjectsTabMixin:
         self.mine_filter_entry.grid(row=0, column=1, sticky="ew")
         self.mine_filter_var.trace_add("write", lambda *_: self._apply_mine_sort())
 
-        frame = ttk.Frame(body, style="Card.TFrame", padding=1)
+        self.mine_table = frame = ttk.Frame(body, style="Card.TFrame", padding=1)
         frame.grid(row=2, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
+        self._build_mine_empty(body)
         # "brief" - узкий вид: название и под ним строка состояния; остальные столбцы - в широком виде и в подробностях
         self.mine_tree = ttk.Treeview(frame, columns=("name", "line", "status", "todo", "desc", "by", "created", "mark", "path",
                                                "opened", "changed", "brief"),
@@ -257,6 +296,36 @@ class ProjectsTabMixin:
         self.mine_tree._col_state.pop("brief", None)   # type: ignore[attr-defined]  # узкий столбец не подгоняется по тексту
         theme.configure_tree_tags(self.mine_tree)
         self.mine_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_mine_select())
+
+    def _build_mine_empty(self, body: ttk.Frame) -> None:
+        """Пустое состояние «Мои проекты»: в папке нет проектов - текст и одна подсвеченная кнопка к скачиванию.
+        Лежит на месте поиска и таблицы (ряды 1-2), видно только после поиска, не нашедшего ни одного проекта."""
+        px = self.px
+        self.mine_empty = empty = ttk.Frame(body, style="Card.TFrame", padding=(px(12), px(12)))
+        empty.grid(row=1, column=0, rowspan=2, sticky="nsew")
+        empty.columnconfigure(0, weight=1)
+        self.mine_empty_label = ttk.Label(empty, text=self.MINE_EMPTY_TEXT, style="Section.TLabel", justify="left")
+        self.mine_empty_label.grid(row=0, column=0, sticky="w")
+        hint = ttk.Label(empty, text=self.MINE_EMPTY_HINT, style="Hint.TLabel", justify="left")
+        hint.grid(row=1, column=0, sticky="w", pady=(px(4), px(12)))
+        self.mine_empty_btn = ttk.Button(empty, text=self.MINE_EMPTY_BUTTON, style="Accent.TButton",
+                                         command=lambda: self.select_list_mode("download"))
+        self.mine_empty_btn.grid(row=2, column=0, sticky="ew")
+
+        def wrap(event) -> None:      # колонка узкая: _autowrap с его наименьшей шириной здесь не подходит
+            width = max(px(80), event.width - px(28))
+            for label in (self.mine_empty_label, hint):
+                if str(label.cget("wraplength")) != str(width):
+                    label.configure(wraplength=width)
+
+        empty.bind("<Configure>", wrap, add="+")
+        empty.grid_remove()
+
+    def _set_mine_empty(self, empty: bool) -> None:
+        """Пустое состояние вместо поиска и таблицы (empty=True) или обратно."""
+        for widget in (self.mine_find_row, self.mine_table):
+            self._show(widget, not empty)
+        self._show(self.mine_empty, empty)
 
     def _build_mine_state_column(self, body: ttk.Frame) -> None:
         """Колонка 3: ProjectPanel (шапка и вкладки выбранного проекта). Вкладку «Ветки» наполняет LinesTabMixin."""
@@ -290,7 +359,8 @@ class ProjectsTabMixin:
         def move(event) -> None:
             if "x" not in drag:
                 return
-            room = tab.winfo_width() - self.actions_row.winfo_width() - sash.winfo_width() - px(self.MINE_COL3_MIN + 40)
+            left = self.actions_row.winfo_width() if self.actions_row.winfo_ismapped() else 0
+            room = tab.winfo_width() - left - sash.winfo_width() - px(self.MINE_COL3_MIN + 40)
             width = drag["width"] + event.x_root - drag["x"]
             self.mine_col2.set_width(max(px(self.MINE_COL2_MIN), min(width, max(px(self.MINE_COL2_MIN), room))))
 
@@ -299,8 +369,10 @@ class ProjectsTabMixin:
                 return
             scale = px(1000) / 1000
             width = max(self.MINE_COL2_MIN, round(self.mine_col2.width / scale))
-            if self.settings.mine_col2_width != width:
-                self.settings.mine_col2_width = width
+            # у каждой подвкладки своя ширина: дереву сервера нужно больше места, чем списку своих проектов
+            key = "mine_col2_download_width" if self._list_mode() == "download" else "mine_col2_width"
+            if getattr(self.settings, key) != width:
+                setattr(self.settings, key, width)
                 self.settings_store.save()
 
         sash.bind("<ButtonPress-1>", press)
@@ -314,7 +386,9 @@ class ProjectsTabMixin:
         Свёрнуты обе - полоса «Состояние» прижата к правому краю. Пока развёрнуты обе, между ними разделитель."""
         tab, col2, col3 = self.mine_tab, self.mine_col2, self.mine_col3
         px = self.px
-        if col2.collapsed:                      # кнопки левой колонки уходят вместе с панелью «Проекты»
+        # кнопки левой колонки уходят вместе с панелью «Проекты»; на «Скачать проект» они не нужны (в них только
+        # действия над выбранным своим проектом), там их место отдано дереву и форме
+        if col2.collapsed or self._list_mode() == "download":
             self.actions_row.grid_remove()
         else:
             self.actions_row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
@@ -378,19 +452,87 @@ class ProjectsTabMixin:
         frame = self.project_tab_frames.get(name)
         if frame is None:
             raise ValueError(f"нет вкладки «{name}» в колонке «Состояние проекта»")
-        if self.notebook.select() != str(self.mine_tab):
-            self.notebook.select(self.mine_tab)
+        if self._list_mode() != "mine":
+            self.select_list_mode("mine")
         self.mine_col3.expand()            # событие <<ColumnToggled>> само поправит раскладку и settings
         self.project_tabs.select(frame)
         self._load_project_tab()
 
-    # -- папки для проектов (общий список с вкладкой «Скачать проект») -----------------
+    # -- подвкладки колонки «Проекты»: «Мои проекты» | «Скачать проект» ----------------------
+
+    def _list_mode(self) -> str:
+        """Какая подвкладка колонки «Проекты» выбрана: "mine" | "download"."""
+        tabs = getattr(self, "list_tabs", None)
+        if tabs is None:
+            return "mine"
+        return "download" if tabs.select() == str(self.list_frames["download"]) else "mine"
+
+    def select_list_mode(self, mode: str) -> None:
+        """Открывает подвкладку колонки «Проекты» (ключ из LIST_MODES). Вызывают кнопки, уведомления, первый запуск.
+        Для «Скачать проект» колонка «Проекты» разворачивается: подвкладки видны только в ней."""
+        frame = self.list_frames.get(mode)
+        if frame is None:
+            raise ValueError(f"нет подвкладки «{mode}» в колонке «Проекты»")
+        if mode == "download":
+            self.mine_col2.expand()
+        self.list_tabs.select(frame)
+        self._on_list_tab_changed()      # раскладка сразу; событие от ярлыков придёт позже и ничего не повторит
+
+    def _col2_width(self, mode: str) -> int:
+        """Ширина колонки «Проекты» на подвкладке mode (px до масштаба экрана): запомненная или по умолчанию."""
+        if mode == "download":
+            return self.settings.mine_col2_download_width or self.MINE_COL2_DOWNLOAD_WIDTH
+        return self.settings.mine_col2_width or self.MINE_COL2_WIDTH
+
+    def _apply_list_mode(self, mode: str) -> None:
+        """Раскладка под подвкладку: в колонке 3 «Состояние проекта» или форма «Скачивание», ширина колонки 2,
+        левая колонка (на «Скачать проект» скрыта). Можно вызывать повторно."""
+        download = mode == "download"
+        self._show(self.project_panel, not download)
+        self._show(self.download_form, download)
+        title = ("Скачивание", "Скачивание") if download else ("Состояние проекта", "Состояние")
+        if (self.mine_col3.title, self.mine_col3.collapsed_title) != title:
+            self.mine_col3.set_title(*title)
+        self.mine_col2.set_width(self.px(self._col2_width(mode)))
+        self._layout_mine_columns()
+
+    def _on_list_tab_changed(self, _event=None) -> None:
+        """Выбрана подвкладка колонки «Проекты» (щелчком или select_list_mode). Вход в «Скачать проект» разворачивает
+        колонку 3 (форма скачивания); вход в «Мои проекты» освежает список, как прежде открытие вкладки окна."""
+        mode = self._list_mode()
+        entered = mode != self._list_mode_shown
+        self._list_mode_shown = mode
+        self._apply_list_mode(mode)
+        if not entered:
+            return
+        if mode == "download":
+            self.mine_col3.expand()            # событие <<ColumnToggled>> само поправит раскладку и settings
+        else:
+            self._on_mine_shown()
+
+    def _on_mine_shown(self) -> None:
+        """Видна подвкладка «Мои проекты» (и при запуске): список устарел - ищем проекты, иначе состояние свежее."""
+        if self._mine_dirty:
+            self._scan_projects()
+        else:
+            self._auto_auth_failed = False
+            self._load_project_tab()   # колонка 3 показывает открытую вкладку проекта
+            self._on_check_all()       # при открытии подвкладки состояние всегда свежее
+
+    def _open_download_on_first_scan(self) -> None:
+        """Первый поиск после запуска не нашёл проектов: новичок сразу попадает на «Скачать проект». Повторные
+        поиски подвкладку не переключают."""
+        first_scan, self._start_tab_chosen = not self._start_tab_chosen, True
+        if first_scan and self._list_mode() == "mine":
+            self.select_list_mode("download")
+
+    # -- папки для проектов (общий список «Мои проекты» и «Скачать проект») ----------------------
 
     def _project_dir_values(self) -> list[str]:
         return list(self.settings.project_dirs)
 
     def _fill_project_dir_lists(self) -> None:
-        """Список папок в выпадающих списках обеих вкладок; на «Мои проекты» последний пункт - «Убрать…»."""
+        """Список папок в выпадающих списках обеих подвкладок; на «Мои проекты» последний пункт - «Убрать…»."""
         dirs = self._project_dir_values()
         if hasattr(self, "mine_dir_combo"):
             self.mine_dir_combo.configure(values=dirs + [self.PROJECT_DIR_REMOVE] if dirs else [])
@@ -687,6 +829,9 @@ class ProjectsTabMixin:
         self._mine_scanned = True
         if error is not None:
             self._mine_hint(f"Папка {base} не найдена или недоступна. Выберите другую папку в списке «Папка» выше.")
+            # папки ещё нет (первый запуск: её создаст скачивание) - тот же путь к скачиванию, что у пустой папки;
+            # подвкладку сами не переключаем: папка могла пропасть на миг (сетевой диск), а человек работает
+            self._set_mine_empty(isinstance(error, FileNotFoundError))
             self._update_mine_buttons()
             self._update_lock_warning()
             self._refresh_project_panel()
@@ -701,13 +846,13 @@ class ProjectsTabMixin:
             if old and old.checking and item.state == "svn":
                 interrupted.append(item)  # проверка шла для старой строки: её результат придёт, но проверим и новую
             self.mine[self._insert_mine_row(item)] = item
-        first_scan, self._start_tab_chosen = not self._start_tab_chosen, True
+        self._set_mine_empty(not items)
         if not items:
             self._mine_hint(f"В папке {base} пока нет проектов. Скачайте проект на вкладке «Скачать проект» "
                             "или создайте новый: ＋ Новый проект.")
-            if first_scan and self.notebook.select() == str(self.mine_tab):
-                self.notebook.select(self.download_tab)      # первый запуск: проектов ещё нет, начинаем со скачивания
+            self._open_download_on_first_scan()      # первый запуск: проектов ещё нет, начинаем со скачивания
         else:
+            self._start_tab_chosen = True
             if self._offline:
                 self._mine_hint("Нет связи с сервером. Выберите проект, чтобы увидеть подробности.")
             else:
@@ -1025,8 +1170,8 @@ class ProjectsTabMixin:
     # вкладки «Новое» и «История»: читаются, когда их открывают, и заново, когда у проекта что-то поменялось
 
     def _project_tab_shown(self, key: str) -> bool:
-        """Вкладка колонки 3 сейчас на виду: окно на «Мои проекты», колонка развёрнута, выбрана эта вкладка."""
-        return (not self.mine_col3.collapsed and self.notebook.select() == str(self.mine_tab)
+        """Вкладка колонки 3 сейчас на виду: выбрана подвкладка «Мои проекты», колонка развёрнута, выбрана эта вкладка."""
+        return (not self.mine_col3.collapsed and self._list_mode() == "mine"
                 and self.project_panel.current_tab() == key)
 
     def _load_project_tab(self) -> None:
@@ -1216,7 +1361,7 @@ class ProjectsTabMixin:
         self.open_project_tab("lines")
 
     def _on_goto_download(self) -> None:
-        self.notebook.select(self.download_tab)
+        self.select_list_mode("download")
 
     def _on_open_mine(self) -> None:
         self._touch_opened(self._selected_item())
@@ -1471,7 +1616,7 @@ class ProjectsTabMixin:
             return
         if self.login.dialog_open or self.login.waiters or self.error_open:
             return
-        if self.notebook.select() != str(self.mine_tab):
+        if self._list_mode() != "mine":
             return
         self._check_status([i for i in self.mine.values()
                             if i.state == "svn" and not i.checking and not self._path_busy(i.path)])

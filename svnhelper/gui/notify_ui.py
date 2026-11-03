@@ -191,8 +191,8 @@ class NotifyMixin:
         item = next((i for i in self.mine.values() if same_dir(i.path, path)), None)
         if item is None:
             if attempt == 0:
-                if self.notebook.select() != str(self.mine_tab):
-                    self.notebook.select(self.mine_tab)      # список проектов построится при открытии вкладки
+                if self._list_mode() != "mine":
+                    self.select_list_mode("mine")      # список проектов построится при открытии подвкладки
                 if not same_dir(self.dir_var.get(), os.path.dirname(path)):
                     self._switch_project_dir(os.path.dirname(path))
             if attempt < OPEN_RETRIES:
@@ -206,5 +206,5 @@ class NotifyMixin:
             self._on_mine_select()
         if tab in self.project_tab_frames:
             self.open_project_tab(tab)
-        elif self.notebook.select() != str(self.mine_tab):
-            self.notebook.select(self.mine_tab)
+        elif self._list_mode() != "mine":
+            self.select_list_mode("mine")

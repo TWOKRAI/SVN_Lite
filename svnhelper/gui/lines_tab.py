@@ -639,7 +639,7 @@ class LinesTabMixin:
         self._prepare_line_op(item, lambda _lines, status: self._begin_switch(item, target, status))
 
     def _on_download_separately(self) -> None:
-        """«Скачать отдельно»: вкладка «Скачать проект» со ссылкой на проект и выбранной линией в «Что скачать»."""
+        """«Скачать отдельно»: подвкладка «Скачать проект» со ссылкой на проект и выбранной линией в «Что скачать»."""
         item, selected = self._lines_folder_item(), self._selected_line()
         if item is None or selected is None or self.job or self.upd:
             return
@@ -647,7 +647,7 @@ class LinesTabMixin:
         project = server.ProjectRef(item.project_prefix, tuple(item.project_segments), line)
         text = self._display_line_url(project, line)
         self._tree_pick = (text, project)       # проект известен точно: ссылку заново разбирать не нужно
-        self.notebook.select(self.download_tab)
+        self.select_list_mode("download")
         self.url_var.set(text)
 
     # «Отличия» выбранной ветки от Основной
