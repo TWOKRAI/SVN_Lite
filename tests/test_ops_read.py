@@ -890,8 +890,10 @@ class SafetyTests(OpsBase):
         for name, params in self.ALL:
             self.call(name, **params)
         self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
-        self.assertEqual(sorted(p.name for p in self.root.iterdir()), sorted(names_before + ["calls.jsonl"]))
-        self.assertFalse(self.data_dir.exists())
+        # чтение пишет только краткий журнал действий помощника (AG.4): папка данных с agent/ и замками
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), sorted(names_before + ["calls.jsonl", "data"]))
+        self.assertLessEqual({p.name for p in self.data_dir.iterdir()}, {"agent", "locks"})
+        self.assertEqual([p.suffix for p in (self.data_dir / "agent").iterdir()], [".jsonl"])
 
     def test_reading_does_not_create_settings(self):
         path = self.root / "settings.json"

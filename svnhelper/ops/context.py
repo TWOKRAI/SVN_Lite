@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
+from ..agent_policy import Policy
 from ..config import Config, SettingsStore, build_config, find_svn, load_shared_cache
 from ..svn_core import CancelToken, ErrorKind, SvnClient, SvnError
 
@@ -32,14 +33,9 @@ def is_url(text: str) -> bool:
     return bool(_URL_RE.match((text or "").strip()))
 
 
-class ReadOnlyPolicy:
-    """Заглушка политики: помощник только смотрит. Настоящую политику (режим, папки, лимиты) подключает AG.4."""
-
-    mode = "read_only"
-    allowed_dirs: tuple = ()
-
-    def describe(self) -> dict:
-        return {"mode": self.mode}
+class ReadOnlyPolicy(Policy):
+    """Политика «только чтение» без чтения файла (для тестов и потребителей, которым запись не нужна). Настоящая
+    политика (режим, папки, лимиты, подпись) - `agent_policy.Policy.load`, её make_context берёт по умолчанию."""
 
 
 @dataclass
@@ -52,6 +48,8 @@ class OpsContext:
     timeout: float = OP_TIMEOUT
     connect_timeout: float = CONNECT_TIMEOUT
     started: float = 0.0                        # когда началась текущая операция (monotonic); 0 - не началась
+    client_info: str = ""                       # имя клиента из clientInfo MCP (для журнала действий)
+    audit: dict = field(default_factory=dict)   # сведения для журнала, которые операция кладёт сама (files, rev_after...)
 
     @property
     def settings(self):
@@ -65,8 +63,10 @@ class OpsContext:
 
     def begin(self) -> "OpsContext":
         """Копия контекста с отметкой начала операции: общий бюджет времени считается от неё. Копия нужна, потому что
-        один контекст (сервер MCP) обслуживает несколько операций одновременно."""
-        return dataclasses.replace(self, started=time.monotonic())
+        один контекст (сервер MCP) обслуживает несколько операций одновременно. Политика из файла перечитывается:
+        сервер живёт долго, а сотрудник меняет политику в окне. У копии свой словарь `audit`."""
+        policy = self.policy.reload() if getattr(self.policy, "reloadable", False) else self.policy
+        return dataclasses.replace(self, started=time.monotonic(), policy=policy, audit={})
 
     def remaining(self) -> float:
         """Сколько секунд осталось на операцию (без отметки начала - весь бюджет)."""
@@ -77,7 +77,7 @@ class OpsContext:
 
 def make_context(client: Optional[SvnClient] = None, store: Optional[SettingsStore] = None,
                  config: Optional[Config] = None, policy: object = None, client_name: str = "cli",
-                 timeout: float = OP_TIMEOUT) -> OpsContext:
+                 timeout: float = OP_TIMEOUT, client_info: str = "") -> OpsContext:
     """Собирает контекст. Всё, что не передано, берётся по умолчанию. svn.exe не найден: client=None, операции со
     svn отвечают кодом 9. Ничего не записывает на диск. Клиент с логином и паролем не принимается (ValueError)."""
     store = store or SettingsStore()
@@ -93,7 +93,9 @@ def make_context(client: Optional[SvnClient] = None, store: Optional[SettingsSto
             client.store_auth = False
         else:
             log.warning("svn.exe не найден: операции со svn недоступны")
-    return OpsContext(store, config, client, policy if policy is not None else ReadOnlyPolicy(), client_name, timeout)
+    if policy is None:
+        policy = Policy.load(ceiling=config.agent_max_mode)         # файл политики и потолок администратора
+    return OpsContext(store, config, client, policy, client_name, timeout, client_info=client_info)
 
 
 @contextlib.contextmanager

@@ -10,13 +10,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from . import texts
+from ..agent_policy import deny
+from . import audit, texts
 from .errors import OpsError, from_exception, invalid_args, no_svn
 from .result import Result
 
 log = logging.getLogger("svnhelper.ops")
 
 PARAM_TYPES = ("string", "integer", "boolean", "list")
+ALWAYS_ALLOWED = frozenset({"doctor"})      # при agent_max_mode=off отвечает только doctor: администратор должен видеть причину
 
 
 @dataclass(frozen=True)
@@ -40,18 +42,38 @@ class Operation:
     func: Optional[Callable] = None
 
     def __call__(self, ctx, **params) -> Result:
+        run_ctx = ctx.begin()
+        values: dict = {}
         try:
+            self._check_enabled(run_ctx)
             values = self._check_params(params)
             if self.needs_svn and ctx.client is None:
                 raise no_svn()
-            result = self.func(ctx.begin(), **values)
+            result = self.func(run_ctx, **values)
         except Exception as exc:                     # операции не бросают исключений: ответ всегда Result
             error = from_exception(exc)
             data = exc.data if isinstance(exc, OpsError) else {}
             fields = exc.untrusted_fields if isinstance(exc, OpsError) else []
-            return Result.failure(self.name, error, data, untrusted_fields=fields)
+            result = Result.failure(self.name, error, data, untrusted_fields=fields)
         result.tool = self.name
+        self._record_audit(run_ctx, values or params, result)
         return result
+
+    def _check_enabled(self, ctx) -> None:
+        """Администратор выключил помощника (agent_max_mode=off): все операции, кроме doctor, отвечают кодом 6."""
+        if self.name not in ALWAYS_ALLOWED and getattr(ctx.policy, "mode", "") == "off":
+            deny("off")
+
+    def _record_audit(self, ctx, values: dict, result: Result) -> None:
+        """Одна строка в журнал действий помощника на каждый вызов (и чтение, и отказ). Ошибка журнала операцию не
+        ломает. Операция записи может дополнить строку через `ctx.audit` (files, rev_before, rev_after, op_id...)."""
+        try:
+            extra = dict(ctx.audit)
+            extra.setdefault("project", _project_label(values))
+            outcome = "ok" if result.ok else (result.error.kind if result.error else "failed")
+            audit.record(ctx, self.name, outcome, read_only=self.read_only, exit_code=result.exit_code, **extra)
+        except Exception:                            # на случай, если сам разбор сведений ломается
+            log.exception("Не удалось подготовить запись журнала действий помощника")
 
     def _check_params(self, params: dict) -> dict:
         known = {p.name: p for p in self.params}
@@ -84,6 +106,18 @@ class Operation:
                 "examples_ru": list(self.examples_ru), "read_only": self.read_only,
                 "params": [{"name": p.name, "type": p.type, "required": p.required,
                             "description_ru": p.description_ru, "default": p.default} for p in self.params]}
+
+
+def _project_label(values: dict) -> str:
+    """Какой проект затронут: по параметрам вызова (в журнале то, что попросил помощник, не результат поиска)."""
+    if values.get("project"):
+        return str(values["project"])
+    projects = values.get("projects")
+    if isinstance(projects, (list, tuple)) and projects:
+        return ", ".join(str(p) for p in projects[:5])
+    if values.get("all_projects"):
+        return "*"
+    return str(values.get("path") or values.get("folder") or "")
 
 
 def _type_ok(kind: str, value: Any) -> bool:

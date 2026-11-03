@@ -22,6 +22,23 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 CONFIG_NAME = "svn_helper.json"
+
+# Потолок прав ИИ-помощника, который задаёт администратор (agent_max_mode): от самого строгого к самому свободному
+AGENT_MODES = ("off", "read_only", "write")
+DEFAULT_AGENT_MAX_MODE = "read_only"
+
+
+def clean_agent_mode(value: object) -> Optional[str]:
+    """Режим помощника из настроек (off, read_only, write; регистр и пробелы не важны) или None, если значение неверное."""
+    mode = value.strip().lower() if isinstance(value, str) else ""
+    return mode if mode in AGENT_MODES else None
+
+
+def stricter_mode(first: str, second: str) -> str:
+    """Меньший из двух режимов (off меньше read_only, он меньше write). Неизвестный режим считается самым строгим."""
+    def rank(mode: str) -> int:
+        return AGENT_MODES.index(mode) if mode in AGENT_MODES else 0
+    return first if rank(first) <= rank(second) else second
 APP_DIR_NAME = "SvnHelper"
 
 DEFAULT_SERVER = "svn://192.168.11.11"
@@ -132,6 +149,8 @@ class Config:
     tortoise_installer_path: str = ""  # msi TortoiseSVN на сервере: программа предложит поставить его, если нет svn.exe
     templates_root: str = ""   # ссылка на папку шаблонов проектов на сервере ("" = шаблоны не настроены)
     project_folder_format: str = DEFAULT_FOLDER_FORMAT   # формат имени главной папки: {{date}}_{{name}}
+    agent_max_mode: str = DEFAULT_AGENT_MAX_MODE   # потолок прав помощника: off | read_only | write; сильнее выбора сотрудника
+    agent_max_mode_set: bool = False   # потолок уже задан одним из файлов (из двух файлов берётся меньший)
     filter: FilterRules = field(default_factory=FilterRules)
     # готовые комментарии для кнопок в панели «Изменения»
     commit_templates: list[str] = field(default_factory=lambda: list(DEFAULT_COMMIT_TEMPLATES))
@@ -231,6 +250,15 @@ def apply_config_data(cfg: Config, data: dict, shared: bool = False) -> None:
                     cfg.project_folder_format = value
             else:
                 cfg.warnings.append(f'В файле настроек "{key}" должен быть строкой. Поле пропущено.')
+    if "agent_max_mode" in data:
+        mode = clean_agent_mode(data["agent_max_mode"])
+        if mode is None:
+            cfg.warnings.append(f'В файле настроек "agent_max_mode" должно быть off, read_only или write. '
+                                f"Использовано {DEFAULT_AGENT_MAX_MODE}.")
+            mode = DEFAULT_AGENT_MAX_MODE
+        # локальный и общий файлы: действует меньший, чтобы один из них не мог поднять потолок другого
+        cfg.agent_max_mode = stricter_mode(cfg.agent_max_mode, mode) if cfg.agent_max_mode_set else mode
+        cfg.agent_max_mode_set = True
     cfg.filter = _parse_filter(data.get("filter"), cfg.warnings, cfg.filter)
     if "commit_templates" in data:
         templates = data["commit_templates"]
