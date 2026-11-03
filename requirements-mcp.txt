@@ -1,0 +1,10 @@
+# Зависимости MCP-сервера SVN-lite (svnhelper/mcp_server.py, команда `svnlite.exe mcp`).
+# Нужны только для сборки exe и для запуска `python -m svnhelper.mcp_server`; окно и консольная программа без них работают.
+#
+# Версия закреплена точно. Выбрана 1.30.0: последняя стабильная 1.x (проверено 2026-11-03 по `pip index versions mcp`:
+# 1.30.0 и 2.3.0). 2.x не взята: другая раскладка пакета (MCPServer, отдельный пакет mcp-types, новые зависимости
+# httpx2 и opentelemetry-api), для сервера на чтение выгоды нет. API, которым пользуется код, описан в шапке
+# svnhelper/mcp_server.py (низкоуровневый Server, types.Tool/ToolAnnotations с полями в camelCase, CallToolResult с
+# isError, stdio_server, mcp.shared.memory.create_connected_server_and_client_session).
+# Установка: python -m pip install -r requirements-mcp.txt   (Python 3.10 и новее)
+mcp==1.30.0
