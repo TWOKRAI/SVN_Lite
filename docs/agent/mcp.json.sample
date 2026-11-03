@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "svnlite": {
+      "command": "C:\\Program Files\\SVN-lite\\svnlite.exe",
+      "args": ["mcp"]
+    }
+  }
+}
