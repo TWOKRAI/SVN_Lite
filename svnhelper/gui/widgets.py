@@ -479,15 +479,28 @@ class ButtonRow(ttk.Frame):
 
 
 class SideButtons(ttk.Frame):
-    """Левая колонка кнопок вкладки: кнопки друг под другом одной ширины. Те же add/set_visible, что у ButtonRow."""
+    """Колонка кнопок: кнопки друг под другом одной ширины. Те же add/set_visible, что у ButtonRow.
+
+    Ширину колонки задаёт распорка (width в конструкторе или set_width): кнопки везде одного размера и не зависят
+    от ширины окна. on_change() вызывается, когда набор показанных кнопок изменился (колонка с пустым набором
+    не должна занимать место: это решает владелец колонки).
+    """
 
     def __init__(self, parent: tk.Misc, gap: int, width: int = 0):
         super().__init__(parent)
         self._gap = gap
         self._items: list[tk.Misc] = []
         self._hidden: set = set()
+        self.on_change: Optional[Callable[[], None]] = None
         # распорка задаёт одну ширину колонки на всех вкладках: кнопки везде одного размера
-        tk.Frame(self, width=width, height=1).pack(side="top")
+        self._spacer = tk.Frame(self, width=width, height=1)
+        self._spacer.pack(side="top")
+
+    def set_width(self, width: int) -> None:
+        self._spacer.configure(width=width)
+
+    def has_visible(self) -> bool:
+        return any(widget not in self._hidden for widget in self._items)
 
     def add(self, widget: tk.Misc, visible: bool = True, separator: bool = False) -> None:
         self._items.append(widget)
@@ -510,6 +523,16 @@ class SideButtons(ttk.Frame):
             if widget not in self._hidden:
                 widget.pack(side="top", fill="x", pady=(0 if first else widget._side_gap, 0))   # type: ignore[attr-defined]
                 first = False
+        if self.on_change is not None:
+            self.on_change()
+
+
+def button_column_width(parent: tk.Misc, texts: list[str], px: Callable[[int], int]) -> int:
+    """Ширина колонки кнопок по самому длинному тексту (шрифт и отступы кнопок темы, масштаб экрана учтён)."""
+    # «font measure» напрямую: объект tkfont.Font удаляется сборщиком мусора, а из чужого потока это роняет Tcl
+    spec = (FONT_FAMILY, 10, "bold")
+    widest = max((int(parent.tk.call("font", "measure", spec, text)) for text in texts), default=0)
+    return widest + 2 * px(14) + px(8)
 
 
 class CollapsibleColumn(ttk.Frame):

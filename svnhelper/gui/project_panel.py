@@ -15,6 +15,7 @@ from tkinter import ttk
 from .. import messages, theme
 from ..svn_core import CancelToken, LockInfo, LogEntry
 from .commit_panel import CommitPanel
+from .widgets import SideButtons, button_column_width
 
 # ключ вкладки -> подпись на ярлыке
 PROJECT_TABS = (("changes", "Изменения"), ("incoming", "Новое"), ("history", "История"),
@@ -190,7 +191,14 @@ class ProjectPanel(ttk.Frame):
     Публичные виджеты: title_label, status_label, branch_label, todo_label, note_label; tabs (Notebook),
     frames[ключ вкладки], commit_panel, incoming_view, history_view, locks_tree, locks_message,
     release_btn, lock_btn. Кнопки «Занятых» вызывают on_release(пути своих файлов) и on_lock().
+
+    Кнопки вкладок стоят не под таблицей, а вертикальной колонкой справа от панели (self.side): у каждой вкладки
+    своя колонка SideButtons (actions_for(ключ)), показывается колонка выбранной вкладки. У вкладки без кнопок
+    (Новое, История) колонки нет, и места она не занимает. Колонка лежит в самой панели, поэтому прячется и
+    показывается вместе с ней при сворачивании «Состояния проекта».
     """
+
+    SIDE_GAP = 6
 
     TAG_COLOR = {"ok": "success", "new": "warning", "bad": "danger", "plain": "muted", "frozen": "frozen"}
 
@@ -203,6 +211,10 @@ class ProjectPanel(ttk.Frame):
         self._local_view = False
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
+
+        # колонка кнопок справа: ряд 0..1, видна, только когда у выбранной вкладки есть кнопки (sync_actions)
+        self.side = ttk.Frame(self)
+        self._side_bars: dict[str, SideButtons] = {}
 
         # шапка
         head = ttk.Frame(self, style="Card.TFrame", padding=(px(14), px(8)))
@@ -230,14 +242,53 @@ class ProjectPanel(ttk.Frame):
             self.tabs.add(frame, text=title)
             self.frames[key] = frame
 
+        self.tabs.bind("<<NotebookTabChanged>>", lambda _e: self.sync_actions())
         self.commit_panel = CommitPanel(self.frames["changes"], templates=templates, recent_comments=recent_comments,
-                                        on_save=on_save)
+                                        on_save=on_save, actions=self.actions_for("changes"))
         self.commit_panel.grid(row=0, column=0, sticky="nsew")
         self.incoming_view = LogView(self.frames["incoming"], px, names=True, note=messages.INCOMING_NOTE)
         self.incoming_view.grid(row=0, column=0, sticky="nsew")
         self.history_view = LogView(self.frames["history"], px, names=False)
         self.history_view.grid(row=0, column=0, sticky="nsew")
         self._build_locks(self.frames["locks"])
+        self.sync_actions()
+
+    # -- колонка кнопок справа ------------------------------------------------------
+
+    def actions_for(self, key: str) -> SideButtons:
+        """Колонка кнопок вкладки key (создаётся при первом обращении); кнопки создают с ней как с родителем."""
+        bar = self._side_bars.get(key)
+        if bar is None:
+            if key not in self.frames:
+                raise ValueError(f"нет вкладки «{key}»")
+            bar = self._side_bars[key] = SideButtons(self.side, self.px(self.SIDE_GAP))
+            bar.on_change = self.sync_actions
+        return bar
+
+    def sync_actions(self) -> None:
+        """Колонка перестраивается по выбранной вкладке: показана колонка этой вкладки, ширина у всех одна
+        (по самому длинному тексту), нет кнопок - нет и колонки."""
+        px = self.px
+        width = button_column_width(self, [str(b.cget("text")) for bar in self._side_bars.values()
+                                           for b in bar._items], px)
+        for bar in self._side_bars.values():
+            bar.set_width(width)
+        current = self._side_bars.get(self.current_tab())
+        for bar in self._side_bars.values():
+            if bar is not current:
+                bar.grid_remove()
+        if current is not None and current.has_visible():
+            current.grid(row=0, column=0, sticky="n")
+            self.side.grid(row=0, column=1, rowspan=2, sticky="n", padx=(px(12), 0))
+        else:
+            self.side.grid_remove()
+
+    def side_buttons(self) -> list[tk.Misc]:
+        """Кнопки колонки справа сверху вниз (только показанные); пусто, если колонки нет."""
+        current = self._side_bars.get(self.current_tab())
+        if current is None or not self.side.winfo_manager():
+            return []
+        return [b for b in current._items if b not in current._hidden]
 
     # -- шапка ----------------------------------------------------------------------
 
@@ -297,6 +348,7 @@ class ProjectPanel(ttk.Frame):
                 self.tabs.hide(self.frames[key])
             else:
                 self.tabs.add(self.frames[key])      # скрытая вкладка возвращается на прежнее место
+        self.sync_actions()
 
     def current_tab(self) -> str:
         """Ключ выбранной вкладки."""
@@ -327,12 +379,11 @@ class ProjectPanel(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         theme.configure_tree_tags(self.locks_tree)
         self.locks_tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_lock_buttons())
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=2, column=0, sticky="w", pady=(px(8), 0))
-        self.release_btn = ttk.Button(buttons, text="Освободить", command=self._release_clicked, state="disabled")
-        self.release_btn.pack(side="left")
-        self.lock_btn = ttk.Button(buttons, text="Занять файл…", command=self._on_lock, state="disabled")
-        self.lock_btn.pack(side="left", padx=(px(6), 0))
+        bar = self.actions_for("locks")        # «Освободить» работает с выбранной строкой таблицы - она выше
+        self.release_btn = ttk.Button(bar, text="Освободить", command=self._release_clicked, state="disabled")
+        self.lock_btn = ttk.Button(bar, text="Занять файл…", command=self._on_lock, state="disabled")
+        bar.add(self.release_btn)
+        bar.add(self.lock_btn)
         self._own_locks: dict[str, str] = {}      # строка таблицы -> путь файла, занятого вами
         self._release_allowed = False
 

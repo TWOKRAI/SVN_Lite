@@ -60,11 +60,14 @@ class ProjectsTabMixin:
     # -- вкладка «Мои проекты» ---------------------------------------------------------
 
     # Раскладка вкладки «Мои проекты» - три колонки (docs/PLAN_v3_ui.md, «Целевой вид»):
-    #   1. self.actions_row   - кнопки по выбранному проекту, фиксированной ширины, не сворачивается;
+    #   1. self.actions_row   - кнопки по выбранному проекту, фиксированной ширины; прячется и показывается вместе
+    #                           с колонкой «Проекты» (_layout_mine_columns);
     #   2. self.mine_col2     - CollapsibleColumn «Проекты»: папка для проектов, сортировка, таблица mine_tree;
     #   3. self.mine_col3     - CollapsibleColumn «Состояние проекта»: ProjectPanel (self.project_panel) - шапка и
     #                           внутренние вкладки self.project_tabs (рамки в self.project_tab_frames, открывает
     #                           open_project_tab): Изменения (CommitPanel), Новое, История, Занятые, Ветки.
+    #                           Справа в панели - вертикальная колонка кнопок выбранной вкладки (ProjectPanel.side),
+    #                           она прячется и показывается вместе с панелью.
     # Колонка 3 свёрнута - колонка 2 занимает её место (вес 1). Свёрнутость хранится в settings.
 
     MINE_COL2_WIDTH = 260     # ширина колонки «Проекты», пока колонка 3 развёрнута (px до масштаба экрана)
@@ -121,7 +124,8 @@ class ProjectsTabMixin:
         self.publish_note_btn = ttk.Button(self.publish_warn, text="Понятно", command=self._on_dismiss_created_notes)
         self.publish_warn.grid_remove()
 
-        # колонка 1: кнопки в порядке плана; главное действие по состоянию проекта - Accent.TButton (_update_mine_buttons)
+        # колонка 1: кнопки по частоте использования; главное действие по состоянию проекта - Accent.TButton
+        # (_update_mine_buttons). Относится к панели «Проекты»: сворачивается и разворачивается вместе с ней
         self.actions_row = row = SideButtons(tab, px(6), px(230))
         row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
         self.mine_name_label = ttk.Label(row, text="", style="Hint.TLabel", anchor="w", wraplength=px(220))
@@ -148,6 +152,8 @@ class ProjectsTabMixin:
         self.new_project_btn = ttk.Button(row, text="＋ Новый проект…", style="Accent.TButton",
                                           command=self._on_new_project)
         self.goto_download_btn = ttk.Button(row, text="Скачать проект", command=self._on_goto_download)
+        # порядок сверху вниз по частоте использования, группы разделены промежутком; «Ветки и версии» и «Ещё»
+        # (редкое) - в самом низу
         row.add(self.mine_name_label)
         row.add(self.check_btn)
         row.add(self.special_btn, visible=False)
@@ -155,15 +161,15 @@ class ProjectsTabMixin:
         row.add(self.commit_btn)
         row.add(self.publish_btn, visible=False)
         row.add(self.continue_btn, visible=False)       # второе действие при потерянной истории
+        row.add(self.mine_cancel_btn, visible=False)    # видна только пока идёт получение нового
         row.add(self.lock_btn, separator=True)
         row.add(self.unlock_btn)
-        row.add(self.lines_nav_btn, separator=True)
         row.add(self.open_btn, separator=True)
         row.add(self.server_btn)
-        row.add(self.more_btn)
-        row.add(self.mine_cancel_btn, visible=False)
         row.add(self.new_project_btn, separator=True)
         row.add(self.goto_download_btn)
+        row.add(self.lines_nav_btn, separator=True)
+        row.add(self.more_btn)
         self._more_idx: dict[str, int] = {}
         self._expert_idx: dict[str, int] = {}
 
@@ -264,7 +270,7 @@ class ProjectsTabMixin:
         self.project_tab_frames: dict[str, ttk.Frame] = panel.frames
         self._commit_panel: CommitPanel = panel.commit_panel
         self._build_lines_view(self.project_tab_frames["lines"])
-        self.project_tabs.bind("<<NotebookTabChanged>>", lambda _e: self._load_project_tab())
+        self.project_tabs.bind("<<NotebookTabChanged>>", lambda _e: self._load_project_tab(), add="+")
 
     # -- колонки: сворачивание и раскладка -------------------------------------------------
 
@@ -308,6 +314,10 @@ class ProjectsTabMixin:
         Свёрнуты обе - полоса «Состояние» прижата к правому краю. Пока развёрнуты обе, между ними разделитель."""
         tab, col2, col3 = self.mine_tab, self.mine_col2, self.mine_col3
         px = self.px
+        if col2.collapsed:                      # кнопки левой колонки уходят вместе с панелью «Проекты»
+            self.actions_row.grid_remove()
+        else:
+            self.actions_row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
         wide2 = col3.collapsed and not col2.collapsed
         both = not col2.collapsed and not col3.collapsed
         tab.columnconfigure(1, weight=1 if wide2 else 0)

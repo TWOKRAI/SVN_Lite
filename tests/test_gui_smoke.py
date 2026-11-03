@@ -2178,8 +2178,9 @@ class BranchesGuiTests(unittest.TestCase):
             # своего выбора папки нет: вкладка показывает проект, выделенный в колонке 2
             self.assertFalse(hasattr(app, "lines_folder_combo"))
             self.assertEqual(app._lines_folder_item(), items[f"br_project__{self.BRANCH}"])
-            self.assertEqual([app.lines_buttons._items[i].cget("text") for i in range(4)],
-                             ["Перейти", "Скачать отдельно", "Новая ветка…", "Зафиксировать версию…"])
+            self.assertEqual([button.cget("text") for button in app.lines_buttons._items],
+                             ["Перейти", "Отличия", "Перенести правки…", "Новая ветка…", "Скачать отдельно",
+                              "Зафиксировать версию…"])
             # таблица: Основная, потом ветки, потом версии; в строке, где сейчас папка, «вы здесь»
             self.assertEqual([app.lines_tree.heading(c, "text") for c in app.lines_tree["columns"]],
                              ["Название", "Создал", "Создана", "Последнее изменение", "Описание", "", "Путь на сервере"])
@@ -3820,12 +3821,12 @@ class ColumnOneButtonsTests(unittest.TestCase):
             row = app.actions_row
             shown = [w for w in row._items if w not in row._hidden]
             self.assertEqual(shown, [app.mine_name_label, app.check_btn, app.update_btn, app.commit_btn, app.lock_btn,
-                                     app.unlock_btn, app.lines_nav_btn, app.open_btn, app.server_btn, app.more_btn,
-                                     app.new_project_btn, app.goto_download_btn])
+                                     app.unlock_btn, app.open_btn, app.server_btn, app.new_project_btn,
+                                     app.goto_download_btn, app.lines_nav_btn, app.more_btn])
             self.assertEqual([w.cget("text") for w in shown[2:]],
                              ["Получить новое", "Сохранить на сервер", "Занять файл…", "Освободить файл…",
-                              "Ветки и версии", "Открыть папку", "Открыть на сервере", "Ещё ▾", "＋ Новый проект…",
-                              "Скачать проект"])
+                              "Открыть папку", "Открыть на сервере", "＋ Новый проект…", "Скачать проект",
+                              "Ветки и версии", "Ещё ▾"])
         finally:
             root.destroy()
 
@@ -4054,12 +4055,139 @@ class ProjectPanelTabsTests(unittest.TestCase):
             with mock.patch.object(app, "_run_locks") as run:
                 panel.release_btn.invoke()
             run.assert_called_once_with(item, [mine_file], lock=False)
-            with mock.patch.object(app, "_on_get_lock") as get_lock:                # «Занять файл…» внизу вкладки
+            with mock.patch.object(app, "_on_get_lock") as get_lock:                # «Занять файл…» в колонке кнопок
                 panel.lock_btn.invoke()
             get_lock.assert_called_once_with()
         finally:
             real.run("svn", "unlock", other_file, "--username", "petrov")
             root.destroy()
+
+    # колонка кнопок справа в панели «Состояние проекта»
+
+    def side_texts(self, app):
+        return [str(b.cget("text")) for b in app.project_panel.side_buttons()]
+
+    def test_side_column_is_rebuilt_per_tab_and_has_documented_order(self):
+        from svnhelper.gui.widgets import SideButtons
+        root, app, item = self.ready("p_side_tabs")
+        try:
+            panel = app.project_panel
+            root.update()
+            expected = {
+                "changes": ["Сохранить отмеченное"],
+                "incoming": [],
+                "history": [],
+                "locks": ["Освободить", "Занять файл…"],
+                "lines": ["Перейти", "Отличия", "Перенести правки…", "Новая ветка…", "Скачать отдельно",
+                          "Зафиксировать версию…"],
+            }
+            for key, texts in expected.items():
+                with self.subTest(tab=key):
+                    app.open_project_tab(key)
+                    root.update()
+                    if key == "changes":      # у проекта без правок кнопки сохранения нет (как раньше)
+                        self.assertEqual(self.side_texts(app), [])
+                        panel.commit_panel.set_changes([self.make_change()])
+                        root.update()
+                    self.assertEqual(self.side_texts(app), texts)
+                    if texts:
+                        self.assertEqual(panel.side.winfo_manager(), "grid")
+                        ys = [b.winfo_y() for b in panel.side_buttons()]
+                        self.assertEqual(ys, sorted(ys))                  # кнопки друг под другом
+                        self.assertEqual(len({b.winfo_x() for b in panel.side_buttons()}), 1)
+                    else:                                                  # нет кнопок - нет колонки
+                        self.assertEqual(panel.side.winfo_manager(), "")
+            # «Перейти» - главная кнопка вкладки «Ветки»
+            self.assertEqual(str(app.switch_here_btn.cget("style")), "Accent.TButton")
+            self.assertEqual(str(panel.commit_panel.save_button.cget("style")), "Accent.TButton")
+            # под таблицами вкладок кнопок действий не осталось: они только в колонке (шаблоны комментария - не действия)
+            actions = {text for texts_ in expected.values() for text in texts_}
+            for key in ("changes", "locks", "lines"):
+                outside = [str(w.cget("text")) for w in self.all_buttons(app.project_tab_frames[key])
+                           if not isinstance(w.master, SideButtons)]
+                self.assertFalse(actions & set(outside), (key, outside))
+        finally:
+            root.destroy()
+
+    @staticmethod
+    def make_change():
+        from svnhelper.svn_core import LocalChange
+        return LocalChange(path="a.txt", kind="modified")
+
+    @staticmethod
+    def all_buttons(widget):
+        from tkinter import ttk
+        found = []
+        for child in widget.winfo_children():
+            if isinstance(child, ttk.Button):
+                found.append(child)
+            found.extend(ProjectPanelTabsTests.all_buttons(child))
+        return found
+
+    def test_side_columns_hide_together_with_their_panels(self):
+        root, app, item = self.ready("p_side_collapse")
+        try:
+            root.deiconify()
+            root.geometry("1300x800")
+            app.open_project_tab("lines")
+            root.update()
+            panel, left = app.project_panel, app.actions_row
+            self.assertTrue(left.winfo_ismapped() and panel.side.winfo_ismapped())
+            self.assertTrue(app.switch_here_btn.winfo_ismapped() and app.update_btn.winfo_ismapped())
+            app.mine_col3.collapse()                       # «Состояние проекта» ›: уходит и правая колонка
+            root.update()
+            self.assertFalse(panel.side.winfo_ismapped() or app.switch_here_btn.winfo_ismapped())
+            self.assertTrue(left.winfo_ismapped())         # а левая остаётся с «Проектами»
+            app.mine_col2.collapse()                       # «Проекты» ‹: уходит и левая колонка
+            root.update()
+            self.assertFalse(left.winfo_ismapped() or app.update_btn.winfo_ismapped())
+            app.mine_col2.expand()
+            app.mine_col3.expand()
+            root.update()
+            self.assertTrue(left.winfo_ismapped() and panel.side.winfo_ismapped())
+            self.assertEqual(panel.side.master, panel)     # правая колонка лежит внутри панели
+        finally:
+            root.destroy()
+
+    def test_side_column_width_does_not_depend_on_window_width(self):
+        root, app, item = self.ready("p_side_width")
+        try:
+            root.deiconify()
+            panel = app.project_panel
+            widths = {}
+            for window in ("1000x700", "1500x800"):
+                root.geometry(window)
+                for key in ("locks", "lines"):
+                    app.open_project_tab(key)
+                    root.update()
+                    widths[(window, key)] = [b.winfo_width() for b in panel.side_buttons()]
+            self.assertEqual(len({w for ws in widths.values() for w in ws}), 1)    # везде одна ширина
+            longest = max(b.winfo_reqwidth() for b in panel.side_buttons())
+            self.assertGreaterEqual(panel.side_buttons()[0].winfo_width(), longest)  # самый длинный текст не обрезан
+        finally:
+            root.destroy()
+
+    def test_side_buttons_fit_at_every_scale(self):
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                root, app, _base = self.make_app(f"p_side_scale_{scale}", visible=True, scale=scale)
+                try:
+                    root.geometry("1410x950")
+                    app.notebook.select(app.mine_tab)
+                    iid, item = self.select_first(root, app)
+                    self.pump(root, lambda: not app._checking and not item.checking and item.status is not None)
+                    for key in ("locks", "lines"):
+                        app.open_project_tab(key)
+                        root.update()
+                        buttons = app.project_panel.side_buttons()
+                        self.assertTrue(buttons)
+                        for button in buttons:
+                            self.assertTrue(button.winfo_ismapped(), button.cget("text"))
+                            self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), button.cget("text"))
+                            self.assertLessEqual(button.winfo_rootx() + button.winfo_width(),
+                                                 root.winfo_rootx() + root.winfo_width(), button.cget("text"))
+                finally:
+                    root.destroy()
 
     def test_broken_hint_matches_button(self):
         from svnhelper import messages

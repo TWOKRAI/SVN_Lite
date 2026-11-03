@@ -10,7 +10,6 @@ from .. import messages, server, theme
 from ..dialogs import NewLineDialog
 from ..svn_core import CancelToken, ErrorKind, WcStatus
 from .models import JobStamp, LINES_PREFETCH, log, MineItem, UpdateJob
-from .widgets import ButtonRow
 
 
 class LinesTabMixin:
@@ -247,22 +246,25 @@ class LinesTabMixin:
         self.lines_hint.grid(row=2, column=0, sticky="w", pady=(px(8), 0))
         self._autowrap(self.lines_hint, body, px(30))
 
-        self.lines_buttons = row = ButtonRow(body, px(6), px(6))
-        row.grid(row=3, column=0, sticky="ew", pady=(px(8), 0))
-        self.switch_here_btn = ttk.Button(row, text="Перейти", command=self._on_switch_here, state="disabled")
+        # кнопки стоят в колонке справа от панели «Состояние проекта» (project_panel.actions_for), по частоте
+        # использования сверху вниз: «Перейти» (главная), «Отличия», «Перенести правки…», «Новая ветка…»,
+        # «Скачать отдельно», «Зафиксировать версию…»
+        self.lines_buttons = row = self.project_panel.actions_for("lines")
+        self.switch_here_btn = ttk.Button(row, text="Перейти", style="Accent.TButton", command=self._on_switch_here,
+                                          state="disabled")
+        self.diff_btn = ttk.Button(row, text="Отличия", command=self._on_show_diff, state="disabled")
+        self.merge_btn = ttk.Button(row, text="Перенести правки…", command=self._on_merge, state="disabled")
+        self.new_branch_btn = ttk.Button(row, text="Новая ветка…", command=self._on_make_branch, state="disabled")
         self.download_other_btn = ttk.Button(row, text="Скачать отдельно", command=self._on_download_separately,
                                              state="disabled")
-        self.new_branch_btn = ttk.Button(row, text="Новая ветка…", command=self._on_make_branch, state="disabled")
         self.new_tag_btn = ttk.Button(row, text="Зафиксировать версию…", command=self._on_make_tag, state="disabled")
-        self.merge_btn = ttk.Button(row, text="Перенести правки…", command=self._on_merge, state="disabled")
-        self.diff_btn = ttk.Button(row, text="Отличия", command=self._on_show_diff, state="disabled")
-        for button in (self.switch_here_btn, self.download_other_btn, self.new_branch_btn, self.new_tag_btn,
-                       self.merge_btn, self.diff_btn):
+        for button in (self.switch_here_btn, self.diff_btn, self.merge_btn, self.new_branch_btn,
+                       self.download_other_btn, self.new_tag_btn):
             row.add(button)
 
-        # «Отличия» выбранной ветки от Основной: подпись и список файлов под кнопками
+        # «Отличия» выбранной ветки от Основной: подпись и список файлов под карточкой и подсказкой
         self.diff_box = box = ttk.Frame(body)
-        box.grid(row=4, column=0, sticky="ew", pady=(px(8), 0))
+        box.grid(row=3, column=0, sticky="ew", pady=(px(8), 0))
         box.columnconfigure(0, weight=1)
         self.diff_label = ttk.Label(box, text="", justify="left")
         self.diff_label.grid(row=0, column=0, sticky="w")
