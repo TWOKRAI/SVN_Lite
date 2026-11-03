@@ -16,7 +16,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Optional
+from typing import Callable, Optional
 
 from .. import agent_policy, selfupdate, theme
 from ..config import data_dir
@@ -56,11 +56,15 @@ FOLDERS_EXTRA_TEXT = "Дополнительные папки, разрешён�
 NO_FOLDERS_TEXT = "не заданы"
 FOLDERS_LOCKED_TEXT = "Список папок изменить нельзя, пока настройки помощника не включены заново."
 FOLDER_PICK_TITLE = "Папка для помощника"
+FOLDERS_CHANGED_TEXT = ("Папки не изменены: настройки помощника изменились, пока это окно было открыто. "
+                        "Окно показало их заново.")
+FOLDER_NETWORK_TEXT = ("Папку по сетевому адресу (вида \\\\сервер\\папка) помощнику открыть нельзя. "
+                       "Выберите папку на этом компьютере или на подключённом диске.")
 COPIED_CODE_TEXT = "Команда скопирована. Вставьте её в окно командной строки, где работает Claude Code."
 COPIED_DESKTOP_TEXT = ("Настройка скопирована. Добавьте её в файл настроек Claude Desktop "
                        "(%APPDATA%\\Claude\\claude_desktop_config.json) и перезапустите Claude Desktop.")
-CLI_MISSING_TEXT = ("Файл svnlite.exe рядом с программой не найден. Обновите SVN-lite или возьмите файл "
-                    "у администратора.")
+CLI_MISSING_TEXT = ("Файл svnlite.exe рядом с программой не найден. Возьмите его у администратора: "
+                    "без него подключить помощника нельзя.")
 SAVE_ERROR_TEXT = "Не удалось записать настройки помощника"
 LOG_FOLDER_TEXT = "Журнал действий помощника находится здесь:"
 
@@ -74,7 +78,16 @@ def cli_command() -> list:
     Продолжение команды: аргумент `mcp`."""
     if getattr(sys, "frozen", False):
         return [str(Path(sys.executable).resolve().with_name(selfupdate.CLI_EXE_NAME))]
-    return [sys.executable, str(Path(__file__).resolve().parents[2] / "svnlite_cli.py")]
+    return [console_python(), str(Path(__file__).resolve().parents[2] / "svnlite_cli.py")]
+
+
+def console_python() -> str:
+    """python.exe для помощника: у pythonw.exe нет консоли, а сервер помощника общается через стандартный ввод и вывод.
+    Окно из исходников запускают через pythonw.exe, поэтому берём соседний python.exe, если он есть."""
+    path = Path(sys.executable)
+    if path.name.lower() == "pythonw.exe" and path.with_name("python.exe").is_file():
+        return str(path.with_name("python.exe"))
+    return str(path)
 
 
 def claude_code_command(parts: Optional[list] = None) -> str:
@@ -100,6 +113,16 @@ def policy_values(policy: agent_policy.Policy) -> dict:
 def folders_editable(policy: agent_policy.Policy) -> bool:
     """Список папок можно менять, если настройки в порядке или их ещё нет (запись заново подпишет файл)."""
     return policy.signature in (agent_policy.SIG_OK, agent_policy.SIG_NO_FILE)
+
+
+def cli_available() -> bool:
+    """Есть ли что запускать: у собранной программы рядом с окном должен лежать svnlite.exe."""
+    return os.path.isfile(cli_command()[0])
+
+
+def is_network_path(path: str) -> bool:
+    """Сетевой путь вида \\\\сервер\\папка (в том числе с прямыми слешами, как отдаёт окно выбора папки)."""
+    return path.replace("/", "\\").startswith("\\\\")
 
 
 def journal_folder() -> Path:
@@ -233,14 +256,30 @@ class AgentDialog(tk.Toplevel):
             self.folders_hint.grid_remove()
         else:
             self.folders_hint.grid()
-        parts = cli_command()
-        self.cli_label.configure(text="Программа для помощника: " + parts[0]
-                                 + ("" if os.path.isfile(parts[0]) else "\n" + CLI_MISSING_TEXT))
+        available = cli_available()
+        self.cli_label.configure(text="Программа для помощника: " + cli_command()[0]
+                                 + ("" if available else "\n" + CLI_MISSING_TEXT))
+        for button in (self.copy_code_btn, self.copy_desktop_btn):
+            button.configure(state="normal" if available else "disabled")
 
     # -- папки ---------------------------------------------------------------------
 
-    def _write_dirs(self, dirs: list) -> bool:
-        """Записывает список дополнительных папок (остальные значения политики сохраняются). True, если записано."""
+    def _write_dirs(self, change: Callable[[list], list]) -> bool:
+        """Меняет список дополнительных папок и записывает политику. True, если записано.
+
+        Администратор мог изменить политику, пока окно было открыто: перед записью она читается заново, `change`
+        получает СВЕЖИЙ список папок, а режим, разрешения и пределы берутся из свежей политики (правку
+        администратора окно не откатывает). Подпись стала неверной, чужой или файл не прочитан: ничего не пишется."""
+        self.policy = self._load_policy()
+        if not folders_editable(self.policy):
+            self._refresh()
+            messagebox.showwarning(TITLE, f"{FOLDERS_CHANGED_TEXT} {FOLDERS_LOCKED_TEXT}", parent=self)
+            return False
+        current = list(self.policy.allowed_dirs)
+        dirs = change(list(current))
+        if dirs == current:                         # уже так: другой человек или повторное нажатие
+            self._refresh()
+            return True
         values = policy_values(self.policy)
         values["allowed_dirs"] = dirs
         try:
@@ -259,18 +298,27 @@ class AgentDialog(tk.Toplevel):
         chosen = filedialog.askdirectory(parent=self, title=FOLDER_PICK_TITLE, mustexist=True)
         if not chosen:
             return
+        if is_network_path(chosen):
+            messagebox.showwarning(TITLE, FOLDER_NETWORK_TEXT, parent=self)
+            return
         folder = os.path.normpath(chosen)
-        known = {os.path.normcase(d) for d in self.policy.allowed_dirs}
-        if os.path.normcase(folder) not in known:
-            self._write_dirs([*self.policy.allowed_dirs, folder])
+
+        def add(dirs: list) -> list:
+            known = {os.path.normcase(d) for d in dirs}
+            return dirs if os.path.normcase(folder) in known else [*dirs, folder]
+
+        self._write_dirs(add)
 
     def _on_remove_folder(self) -> None:
         selected = self.folder_list.curselection()
         if not selected or not folders_editable(self.policy):
             return
-        dirs = list(self.policy.allowed_dirs)
-        del dirs[selected[0]]
-        self._write_dirs(dirs)
+        folder = self.folder_list.get(selected[0])      # по значению: список в окне мог устареть
+
+        def remove(dirs: list) -> list:
+            return [d for d in dirs if os.path.normcase(d) != os.path.normcase(folder)]
+
+        self._write_dirs(remove)
 
     # -- подключение и журнал --------------------------------------------------------
 

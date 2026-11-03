@@ -6348,6 +6348,90 @@ class AgentDialogTests(unittest.TestCase):
         self.assertEqual(agent_policy.Policy.load().allowed_dirs, ())
         self.assertEqual(agent_policy.Policy.load().allow, ("lock",))
 
+    def test_admin_change_after_dialog_opened_is_not_rolled_back(self):
+        """Администратор изменил политику (режим, разрешения, пределы, список папок), пока окно открыто: окно добавляет
+        и убирает папку в свежем списке и не возвращает старые значения."""
+        from svnhelper import agent_policy
+        first, second, added = (os.path.join(self.tmp.name, name) for name in ("первая", "вторая", "новая"))
+        for folder in (first, second, added):
+            os.makedirs(folder)
+        agent_policy.write({"mode": "read_only", "allow": [], "allowed_dirs": [first], "max_writes_per_hour": 7})
+        root, app, dialog = self.open_dialog()
+        self.assertEqual(dialog.folder_list.get(0, "end"), (first,))
+        agent_policy.write({"mode": "write", "allow": ["lock"], "allowed_dirs": [first, second],
+                            "max_writes_per_hour": 3})               # правка администратора после открытия окна
+        with mock.patch("tkinter.filedialog.askdirectory", return_value=added):
+            dialog.add_btn.invoke()
+        policy = agent_policy.Policy.load()
+        self.assertEqual(policy.allowed_dirs, (first, second, os.path.normpath(added)))     # вторая папка не потеряна
+        self.assertEqual((policy.file_mode, policy.allow, policy.max_writes_per_hour), ("write", ("lock",), 3))
+        self.assertEqual(dialog.folder_list.get(0, "end"), policy.allowed_dirs)              # окно показало свежее
+        agent_policy.write({"mode": "write", "allow": ["lock"], "allowed_dirs": [second, os.path.normpath(added)],
+                            "max_writes_per_hour": 3})               # администратор убрал первую папку
+        dialog.folder_list.selection_clear(0, "end")
+        dialog.folder_list.selection_set(1)                          # в окне это «вторая» (индекс 1 устаревшего списка)
+        dialog.remove_btn.invoke()
+        self.assertEqual(agent_policy.Policy.load().allowed_dirs, (os.path.normpath(added),))   # убрана именно «вторая»
+
+    def test_folder_change_is_refused_when_policy_became_invalid_after_dialog_opened(self):
+        from svnhelper import agent_policy
+        agent_policy.write({"mode": "write", "allow": ["lock"]})
+        root, app, dialog = self.open_dialog()
+        path = self.data / "agent_policy.json"
+        data = self.json.loads(path.read_text("utf-8"))
+        data["allow"] = ["lock", "publish"]                                    # правка не через программу
+        raw = self.json.dumps(data)
+        path.write_text(raw, encoding="utf-8")
+        with mock.patch("tkinter.filedialog.askdirectory", return_value=self.tmp.name),                 mock.patch("tkinter.messagebox.showwarning") as warning:
+            self.assertEqual(str(dialog.add_btn.cget("state")), "normal")      # окно ещё не знало о правке
+            dialog.add_btn.invoke()
+        warning.assert_called_once()
+        self.assertIn("Папки не изменены", warning.call_args.args[1])
+        self.assertEqual(path.read_text("utf-8"), raw)                         # чужую правку окно не перезаписало
+        self.assertEqual(str(dialog.add_btn.cget("state")), "disabled")        # и показало состояние заново
+
+    def test_network_folder_is_refused_at_once_with_clear_message(self):
+        from svnhelper import agent_policy
+        root, app, dialog = self.open_dialog()
+        with mock.patch("tkinter.filedialog.askdirectory", return_value="//server/share/проекты"),                 mock.patch("tkinter.messagebox.showwarning") as warning,                 mock.patch("svnhelper.agent_policy.write") as write:
+            dialog.add_btn.invoke()
+        write.assert_not_called()
+        warning.assert_called_once()
+        self.assertIn("сетевому адресу", warning.call_args.args[1])
+        self.assertFalse(self.data.joinpath("agent_policy.json").exists())
+        self.assertEqual(agent_policy.Policy.load().allowed_dirs, ())
+
+    def test_source_run_uses_python_exe_not_pythonw(self):
+        from svnhelper.gui import agent_dialog
+        scripts = Path(self.tmp.name) / "Python"
+        scripts.mkdir()
+        (scripts / "python.exe").write_bytes(b"")
+        (scripts / "pythonw.exe").write_bytes(b"")
+        with mock.patch.object(sys, "executable", str(scripts / "pythonw.exe")):
+            self.assertEqual(agent_dialog.cli_command()[0], str(scripts / "python.exe"))
+        with mock.patch.object(sys, "executable", str(scripts / "python.exe")):
+            self.assertEqual(agent_dialog.cli_command()[0], str(scripts / "python.exe"))
+        (scripts / "python.exe").unlink()
+        with mock.patch.object(sys, "executable", str(scripts / "pythonw.exe")):
+            self.assertEqual(agent_dialog.cli_command()[0], str(scripts / "pythonw.exe"))   # соседа нет: что есть
+
+    def test_copy_buttons_are_disabled_when_cli_exe_is_missing(self):
+        from svnhelper.gui import agent_dialog
+        root, app, dialog = self.open_dialog()
+        self.assertEqual(str(dialog.copy_code_btn.cget("state")), "normal")          # из исходников: python есть
+        exe_dir = Path(self.tmp.name) / "SVN-lite"
+        exe_dir.mkdir()
+        (exe_dir / "SVN-lite.exe").write_bytes(b"")
+        with mock.patch.object(sys, "frozen", True, create=True),                 mock.patch.object(sys, "executable", str(exe_dir / "SVN-lite.exe")):
+            dialog._refresh()
+            for button in (dialog.copy_code_btn, dialog.copy_desktop_btn):
+                self.assertEqual(str(button.cget("state")), "disabled")
+            self.assertIn(agent_dialog.CLI_MISSING_TEXT, dialog.cli_label.cget("text"))
+            (exe_dir / "svnlite.exe").write_bytes(b"")                                # администратор положил файл
+            dialog._refresh()
+            for button in (dialog.copy_code_btn, dialog.copy_desktop_btn):
+                self.assertEqual(str(button.cget("state")), "normal")
+
     def test_add_folder_without_policy_file_signs_view_only_policy(self):
         from svnhelper import agent_policy
         folder = os.path.join(self.tmp.name, "общая")
