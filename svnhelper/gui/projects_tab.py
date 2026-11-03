@@ -83,6 +83,10 @@ class ProjectsTabMixin:
     # неразрывные пробелы: название кнопки не разрывается переносом строки
     MINE_EMPTY_HINT = "Скачайте проект с сервера или создайте новый кнопкой «＋\u00a0Новый\u00a0проект…»."
     MINE_EMPTY_BUTTON = "Скачать проект с сервера"
+    # папки нет (отключился сетевой диск, папку переименовали): скачивать рано, нужна другая папка
+    MINE_MISSING_TEXT = "Папка «{path}» не найдена."
+    MINE_MISSING_HINT = "Проверьте, подключён ли сетевой диск, или выберите другую папку."
+    MINE_MISSING_BUTTON = "Выбрать…"
     MINE_COL3_WIDTH = 360     # запрошенная ширина колонки 3 (дальше растягивается весом)
     MINE_STRIP_WIDTH = 28     # ширина свёрнутой колонки
     MINE_SASH_WIDTH = 8       # разделитель колонок 2 и 3 (он же промежуток между ними)
@@ -96,6 +100,10 @@ class ProjectsTabMixin:
     MINE_HEADINGS = {"name": "Проект", "changed": "Изменён"}
     MINE_SORT_MODES = ("name", "opened", "created", "changed")   # прежние значения settings.mine_sort остаются рабочими
     PROJECT_DIR_REMOVE = "Убрать эту папку из списка"     # последний пункт выпадающего списка папок
+    # двойной щелчок по проекту разворачивает «Состояние проекта» на вкладке главного действия (main_action);
+    # у остальных действий (починить, отправить, восстановить) вкладки своей нет: остаётся открытая
+    MAIN_ACTION_TAB = {"commit": "changes", "resolve": "changes", "update": "incoming"}
+    _auto_tab_key = ""        # проект, для которого решение «открыть Изменения» ещё не принято (ждём проверку)
 
     def _build_projects_tab(self, parent: tk.Misc) -> None:
         """Строит рабочую область окна self.mine_tab в parent; разместить её (pack) должен вызывающий."""
@@ -145,14 +153,10 @@ class ProjectsTabMixin:
         Tooltip(self.check_btn, lambda: "Проверить состояние")
         self.special_btn = ttk.Button(row, text="", state="disabled")  # «Починить папку» / «Разобрать конфликт»
         self.update_btn = ttk.Button(row, text="Получить новое", command=self._on_update_selected, state="disabled")
-        self.commit_btn = ttk.Button(row, text="Сохранить на сервер", command=self._on_commit_clicked, state="disabled")
         self.publish_btn = ttk.Button(row, text=localrepo.PUBLISH_BUTTON, command=self._on_publish_project,
                                       state="disabled")       # у проекта без сервера: с историей на компьютере или без неё
         Tooltip(self.publish_btn, lambda: messages.PLAIN_OFFLINE_TODO if self._offline else "")
         self.continue_btn = ttk.Button(row, text=localrepo.CONTINUE_BUTTON, command=self._on_continue_without_history)
-        self.lock_btn = ttk.Button(row, text="Занять файл…", command=self._on_lock_clicked, state="disabled")
-        self.unlock_btn = ttk.Button(row, text="Освободить файл…", command=self._on_unlock_clicked, state="disabled")
-        self.lines_nav_btn = ttk.Button(row, text="Ветки и версии", command=self._on_lines_clicked, state="disabled")
         self.open_btn = ttk.Button(row, text="Открыть папку", command=self._on_open_mine, state="disabled")
         self.server_btn = ttk.Button(row, text="Открыть на сервере", command=self._on_open_server, state="disabled")
         self.more_menu = tk.Menu(tab, tearoff=False)
@@ -160,28 +164,22 @@ class ProjectsTabMixin:
         self.more_btn = self._menu_button(row, "Ещё ▾", self.more_menu)
         self.more_btn.configure(state="disabled")
         self.mine_cancel_btn = ttk.Button(row, text="Отмена", command=self._on_cancel_update, state="disabled")
-        # «Новый проект» стоит в колонке 1, а не в колонке 2: там при любом масштабе экрана ей не хватало места
-        self.new_project_btn = ttk.Button(row, text="＋ Новый проект…", style="Accent.TButton",
-                                          command=self._on_new_project)
-        self.goto_download_btn = ttk.Button(row, text="Скачать проект", command=self._on_goto_download)
-        # порядок сверху вниз по частоте использования, группы разделены промежутком; «Ветки и версии» и «Ещё»
-        # (редкое) - в самом низу
+        # «Новый проект» стоит в колонке 1, а не в колонке 2: там при любом масштабе экрана ей не хватало места.
+        # Обычного стиля: подсвечена на экране только одна кнопка - главное действие (_update_mine_buttons)
+        self.new_project_btn = ttk.Button(row, text="＋ Новый проект…", style="TButton", command=self._on_new_project)
+        # порядок сверху вниз: действия над выбранным проектом целиком по частоте, потом «Открыть…» и «Ещё»;
+        # сохранение, занятые файлы и ветки - справа, на вкладках «Состояния проекта»
         row.add(self.mine_name_label)
         row.add(self.check_btn)
         row.add(self.special_btn, visible=False)
         row.add(self.update_btn)
-        row.add(self.commit_btn)
         row.add(self.publish_btn, visible=False)
         row.add(self.continue_btn, visible=False)       # второе действие при потерянной истории
         row.add(self.mine_cancel_btn, visible=False)    # видна только пока идёт получение нового
-        row.add(self.lock_btn, separator=True)
-        row.add(self.unlock_btn)
         row.add(self.open_btn, separator=True)
         row.add(self.server_btn)
-        row.add(self.new_project_btn, separator=True)
-        row.add(self.goto_download_btn)
-        row.add(self.lines_nav_btn, separator=True)
         row.add(self.more_btn)
+        row.add(self.new_project_btn, separator=True)
         self._more_idx: dict[str, int] = {}
         self._expert_idx: dict[str, int] = {}
 
@@ -296,6 +294,7 @@ class ProjectsTabMixin:
         self.mine_tree._col_state.pop("brief", None)   # type: ignore[attr-defined]  # узкий столбец не подгоняется по тексту
         theme.configure_tree_tags(self.mine_tree)
         self.mine_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_mine_select())
+        self.mine_tree.bind("<Double-1>", self._on_mine_double_click)
 
     def _build_mine_empty(self, body: ttk.Frame) -> None:
         """Пустое состояние «Мои проекты»: в папке нет проектов - текст и одна подсвеченная кнопка к скачиванию.
@@ -306,7 +305,7 @@ class ProjectsTabMixin:
         empty.columnconfigure(0, weight=1)
         self.mine_empty_label = ttk.Label(empty, text=self.MINE_EMPTY_TEXT, style="Section.TLabel", justify="left")
         self.mine_empty_label.grid(row=0, column=0, sticky="w")
-        hint = ttk.Label(empty, text=self.MINE_EMPTY_HINT, style="Hint.TLabel", justify="left")
+        self.mine_empty_hint = hint = ttk.Label(empty, text=self.MINE_EMPTY_HINT, style="Hint.TLabel", justify="left")
         hint.grid(row=1, column=0, sticky="w", pady=(px(4), px(12)))
         self.mine_empty_btn = ttk.Button(empty, text=self.MINE_EMPTY_BUTTON, style="Accent.TButton",
                                          command=lambda: self.select_list_mode("download"))
@@ -321,11 +320,26 @@ class ProjectsTabMixin:
         empty.bind("<Configure>", wrap, add="+")
         empty.grid_remove()
 
-    def _set_mine_empty(self, empty: bool) -> None:
-        """Пустое состояние вместо поиска и таблицы (empty=True) или обратно."""
+    def _set_mine_empty(self, empty: bool, missing_path: str = "") -> None:
+        """Пустое состояние вместо поиска и таблицы (empty=True) или обратно.
+
+        missing_path - папки проектов нет: вместо «нет проектов» и «Скачать проект с сервера» текст про пропавшую папку
+        и подсвеченная «Выбрать…» (скачивать в несуществующую папку не предлагаем)."""
         for widget in (self.mine_find_row, self.mine_table):
             self._show(widget, not empty)
         self._show(self.mine_empty, empty)
+        if not empty:
+            return
+        if missing_path:
+            texts = (self.MINE_MISSING_TEXT.format(path=missing_path), self.MINE_MISSING_HINT,
+                     self.MINE_MISSING_BUTTON, self._on_browse_mine)
+        else:
+            texts = (self.MINE_EMPTY_TEXT, self.MINE_EMPTY_HINT, self.MINE_EMPTY_BUTTON,
+                     lambda: self.select_list_mode("download"))
+        label, hint, button, command = texts
+        self.mine_empty_label.configure(text=label)
+        self.mine_empty_hint.configure(text=hint)
+        self.mine_empty_btn.configure(text=button, command=command)
 
     def _build_mine_state_column(self, body: ttk.Frame) -> None:
         """Колонка 3: ProjectPanel (шапка и вкладки выбранного проекта). Вкладку «Ветки» наполняет LinesTabMixin."""
@@ -333,13 +347,16 @@ class ProjectsTabMixin:
         body.rowconfigure(0, weight=1)
         self.project_panel = panel = ProjectPanel(
             body, self.px, templates=self.config.commit_templates, recent_comments=self.settings.recent_comments,
-            on_save=self._on_panel_save, on_release=self._on_panel_release, on_lock=lambda: self._on_get_lock())
+            on_save=self._on_panel_save, on_release=self._on_panel_release, on_lock=lambda: self._on_get_lock(),
+            on_save_local=self._on_save_local_clicked)
         panel.grid(row=0, column=0, sticky="nsew")
         self.project_tabs = panel.tabs
         self.project_tab_frames: dict[str, ttk.Frame] = panel.frames
         self._commit_panel: CommitPanel = panel.commit_panel
         self._build_lines_view(self.project_tab_frames["lines"])
         self.project_tabs.bind("<<NotebookTabChanged>>", lambda _e: self._load_project_tab(), add="+")
+        # человек сам выбрал вкладку: автоматически «Изменения» после проверки уже не открываем
+        self.project_tabs.bind("<ButtonPress-1>", lambda _e: setattr(self, "_auto_tab_key", ""), add="+")
 
     # -- колонки: сворачивание и раскладка -------------------------------------------------
 
@@ -587,8 +604,8 @@ class ProjectsTabMixin:
             self._scan_projects()
 
     def _apply_tortoise(self) -> None:
-        """Пункты TortoiseSVN в «Ещё ▾» есть, только если TortoiseProc найден. «Сохранить на сервер…» от него не зависит."""
-        if not hasattr(self, "commit_btn"):
+        """Пункты TortoiseSVN в «Ещё ▾» есть, только если TortoiseProc найден. «Сохранить отмеченное» от него не зависит."""
+        if not hasattr(self, "update_btn"):
             return
         menu, experts = self.more_menu, self.expert_menu
         menu.delete(0, "end")
@@ -829,9 +846,11 @@ class ProjectsTabMixin:
         self._mine_scanned = True
         if error is not None:
             self._mine_hint(f"Папка {base} не найдена или недоступна. Выберите другую папку в списке «Папка» выше.")
-            # папки ещё нет (первый запуск: её создаст скачивание) - тот же путь к скачиванию, что у пустой папки;
-            # подвкладку сами не переключаем: папка могла пропасть на миг (сетевой диск), а человек работает
-            self._set_mine_empty(isinstance(error, FileNotFoundError))
+            # папки нет. Первый запуск (папку ещё никто не выбирал, её создаст скачивание) - тот же путь к скачиванию,
+            # что у пустой папки. Иначе папка пропала (отключён сетевой диск): предлагаем выбрать другую, а не скачивать.
+            # Подвкладку сами не переключаем: папка могла пропасть на миг, а человек работает
+            missing = isinstance(error, FileNotFoundError)
+            self._set_mine_empty(missing, missing_path=base if missing and self.settings.last_dir else "")
             self._update_mine_buttons()
             self._update_lock_warning()
             self._refresh_project_panel()
@@ -1108,15 +1127,44 @@ class ProjectsTabMixin:
             panel.history_view.set_message("")
             self._commit_panel.entry.delete(0, "end")        # комментарий относится к прежнему проекту
             self._shown_changes = self._shown_locks = None
+            self._auto_tab_key = key                         # открыть ли «Изменения», решит первая проверка проекта
         if item is None:
             panel.clear_header(self._mine_hint_text)
         else:
             panel.set_header(*self._header_fields(item), local=item.local)
         panel.set_local_view(item is not None and item.local)
+        panel.set_incoming_count(item.status.incoming if item is not None and item.state == "svn" and not item.local
+                                 and item.status is not None else 0)
         self._sync_commit_view(item)
         self._sync_locks_view(item)
         self._sync_lines_view()
+        self._open_changes_if_needed(item)
         self._load_project_tab()
+
+    def _typing_comment(self) -> bool:
+        """Курсор в поле комментария на «Изменениях»: человек печатает, вкладки у него под руками не меняются."""
+        return str(self.root.tk.call("focus")) == str(self._commit_panel.entry)
+
+    def _open_changes_if_needed(self, item: Optional[MineItem]) -> None:
+        """Выбрали другой проект, и у него конфликт или несохранённые правки: открывается вкладка «Изменения».
+        Решение принимается один раз на выбор проекта, по первой проверке (автопроверка раз в несколько секунд вкладку
+        не трогает), и не мешает вводу: пока курсор в поле комментария или человек сам выбрал вкладку, ничего не меняется."""
+        if item is None or not self._auto_tab_key or self._auto_tab_key != os.path.normcase(item.path):
+            return
+        if item.state != "svn":
+            self._auto_tab_key = ""
+            return
+        status = item.status
+        if status is None:
+            if item.error and not item.checking:      # проверка не удалась: больше ждать нечего
+                self._auto_tab_key = ""
+            return
+        self._auto_tab_key = ""
+        if not (status.conflicts or status.local_changes):
+            return
+        if self._typing_comment():
+            return
+        self.project_tabs.select(self.project_tab_frames["changes"])
 
     # вкладка «Изменения»: панель постоянная, список правок берётся из последней проверки проекта
 
@@ -1133,12 +1181,15 @@ class ProjectsTabMixin:
         self._sync_commit_enabled()
 
     def _sync_commit_enabled(self) -> None:
-        """«Сохранить отмеченное» недоступно, пока идёт сохранение и когда проект - версия (в неё сохранять нельзя)."""
+        """«Сохранить отмеченное» недоступно, пока идёт сохранение, получение нового, занятие файлов или работает
+        TortoiseSVN в этой папке, и когда проект - версия (в неё сохранять нельзя). Других кнопок сохранения нет."""
         item = self._commit_item
         if self._committing:
             self._commit_panel.set_enabled(False, messages.COMMIT_SAVING)
         elif item is not None and item.line is not None and item.line.read_only:
             self._commit_panel.set_enabled(False, messages.COMMIT_TAG_REFUSED)
+        elif item is not None and (self._path_busy(item.path) or self.upd or self.job or self._locking):
+            self._commit_panel.set_enabled(False, messages.COMMIT_BUSY)
         else:
             self._commit_panel.set_enabled(True)
 
@@ -1260,7 +1311,6 @@ class ProjectsTabMixin:
         local = bool(item and item.local)                        # история на этом компьютере: упрощённая карточка
         plain = bool(item and item.state == "plain")             # папка без истории и без сервера
         missing = bool(local and item.history_missing)
-        found = bool(missing and item.history_found)             # пропавшая история лежит на диске в другом месте
         on = lambda flag: "normal" if flag else "disabled"  # noqa: E731
         free = bool(item) and not self._path_busy(item.path)   # папку не держит TortoiseSVN или починка
         # получение нового, занятие и освобождение файлов меняют рабочую копию: при открытом TortoiseSVN
@@ -1268,14 +1318,11 @@ class ProjectsTabMixin:
         can_change = ready and is_svn and free and not self._locking and not self._committing
         read_only = bool(is_svn and item.line is not None and item.line.read_only)   # версия (тег): только чтение
         self.update_btn.configure(state=on(can_change))
-        self.lock_btn.configure(state=on(can_change and not read_only))
-        self.unlock_btn.configure(state=on(can_change))
-        self.commit_btn.configure(state=on(can_change and not read_only and not missing),
-                                  text=localrepo.SAVE_BUTTON if local else "Сохранить на сервер")
-        # у проекта без сервера (история на компьютере или обычная папка) нет занятых файлов, веток и адреса сервера
-        for button in (self.update_btn, self.lock_btn, self.unlock_btn, self.lines_nav_btn, self.server_btn):
+        # у проекта без сервера (история на компьютере или обычная папка) нет нового на сервере и адреса сервера
+        for button in (self.update_btn, self.server_btn):
             self._show(button, not (local or plain))
-        self._show(self.commit_btn, not missing and not plain)
+        # «Сохранить у себя» живёт справа, на «Изменениях» (сохраняются все правки, а не отмеченные)
+        self.project_panel.set_local_save(local and not missing, can_change and not missing)
         self._show(self.publish_btn, local or plain)
         self._show(self.continue_btn, missing)
         can_send = (ready and free and not self._locking and not self._committing and not self._publish_running()
@@ -1289,11 +1336,14 @@ class ProjectsTabMixin:
 
         has_conflicts = bool(is_svn and item.status and item.status.conflicts)
         # главное действие по состоянию: одна кнопка в стиле Accent.TButton, остальные обычные
-        main = main_action(item.state if item else None, item.status if item else None, read_only, local, missing, found)
+        main = self._main_action_of(item)
+        # на экране подсвечена одна кнопка: слева (разобрать, починить, восстановить, получить, отправить) или
+        # справа, где сохранение (на «Изменениях»)
         main_buttons = {"resolve": self.special_btn, "repair": self.special_btn, "restore": self.special_btn,
-                        "commit": self.commit_btn, "update": self.update_btn, "publish": self.publish_btn}
-        for button in (self.special_btn, self.update_btn, self.commit_btn, self.publish_btn):
+                        "update": self.update_btn, "publish": self.publish_btn}
+        for button in (self.special_btn, self.update_btn, self.publish_btn):
             button.configure(style="Accent.TButton" if main_buttons.get(main) is button else "TButton")
+        self.project_panel.set_save_accent(main == "commit")
         # особая кнопка видна, только когда она и есть главное действие (конфликт, повреждённая папка, пропавшая история)
         if main == "restore":
             self.special_btn.configure(text=localrepo.RESTORE_BUTTON, command=self._on_restore_history,
@@ -1309,7 +1359,6 @@ class ProjectsTabMixin:
         incoming = item.status.incoming if is_svn and item.status else 0
         self.update_btn.configure(text=f"Получить новое ({incoming})" if incoming else "Получить новое")
         self.mine_name_label.configure(text=item.display_name if item else "")
-        self.lines_nav_btn.configure(state=on(is_svn and item.line is not None))
         self.more_btn.configure(state=on(item))
         self.open_btn.configure(state=on(item))
         self.server_btn.configure(state=on(item and self._server_dir(item)))
@@ -1330,6 +1379,28 @@ class ProjectsTabMixin:
         if hasattr(self, "switch_here_btn"):
             self._update_lines_buttons()
 
+    def _main_action_of(self, item: Optional[MineItem]) -> Optional[str]:
+        """Главное действие выбранного проекта (main_action по его состоянию) или None, если проект не выбран."""
+        if item is None:
+            return None
+        read_only = bool(item.state == "svn" and item.line is not None and item.line.read_only)
+        missing = bool(item.local and item.history_missing)
+        return main_action(item.state, item.status, read_only, item.local, missing, bool(missing and item.history_found))
+
+    def _on_mine_double_click(self, event: tk.Event) -> None:
+        """Двойной щелчок по проекту: разворачивается «Состояние проекта» на вкладке главного действия. Это путь
+        к сохранению, когда «Состояние» свёрнуто: кнопка сохранения живёт в нём."""
+        if self.mine_tree.identify_row(event.y) == "" or self.mine_tree.identify_region(event.x, event.y) != "cell":
+            return
+        item = self._selected_item()
+        if item is None:
+            return
+        tab = self.MAIN_ACTION_TAB.get(self._main_action_of(item) or "")
+        if tab is not None:
+            self.open_project_tab(tab)
+        else:
+            self.mine_col3.expand()
+
     def _sync_archive_entry(self, item: Optional[MineItem], state: str) -> None:
         """Пункт «Ещё → Удалить прежние сохранения…» есть, только когда у проекта на сервере остались прежние
         сохранения на этом компьютере (архив после отправки): удаляются они только по этой явной команде."""
@@ -1343,28 +1414,11 @@ class ProjectsTabMixin:
         if self._archive_idx is not None:
             self.more_menu.entryconfigure(self._archive_idx, state=state)
 
-    # кнопки колонки 1, ведущие во вкладки колонки 3: открывают вкладку и запускают своё действие
-    def _on_commit_clicked(self) -> None:
-        item = self._selected_item()
+    def _on_save_local_clicked(self) -> None:
+        """«Сохранить у себя» на «Изменениях»: проект, чей список правок сейчас показан."""
+        item = self._commit_item
         if item is not None and item.local:
             self._save_locally(item)
-            return
-        self.open_project_tab("changes")
-        self._on_commit()
-
-    def _on_lock_clicked(self) -> None:
-        self.open_project_tab("locks")
-        self._on_get_lock()
-
-    def _on_unlock_clicked(self) -> None:
-        self.open_project_tab("locks")
-        self._on_release_lock()
-
-    def _on_lines_clicked(self) -> None:
-        self.open_project_tab("lines")
-
-    def _on_goto_download(self) -> None:
-        self.select_list_mode("download")
 
     def _on_open_mine(self) -> None:
         self._touch_opened(self._selected_item())
@@ -1839,7 +1893,7 @@ class ProjectsTabMixin:
         return ""
 
     def _on_commit(self) -> None:
-        """«Сохранить на сервер…»: находит правки выбранного проекта и показывает панель «Изменения»."""
+        """Находит правки выбранного проекта и показывает панель «Изменения»."""
         item = self._selected_item()
         client = self.client
         if not item or item.state != "svn" or not client:
@@ -2097,14 +2151,24 @@ class ProjectsTabMixin:
             messagebox.showinfo("Нечего освобождать", "Вы сейчас не занимали ни одного файла в этом проекте.",
                                 parent=self.root)
             return
+        # файлы с несохранёнными правками заранее не отмечаем: освободив их, человек даст коллеге занять файл,
+        # и две версии (двоичный файл не объединить) разойдутся
+        changed = {os.path.normcase(os.path.abspath(c.path)) for c in status.local_changes}
         shown: dict[str, str] = {}  # подпись в списке → путь файла
+        preselect: list[int] = []
         for lock in sorted(status.my_locks, key=lambda lk: lk.path):
             rel = os.path.relpath(lock.path, item.path) if os.path.isabs(lock.path) else lock.path
-            age = lock.age_days
-            shown[rel if age is None else f"{rel}   (занят {messages.format_age(age)})"] = lock.path
-        dialog = PickDialog(self.root, "Освободить файлы",
-                            "Эти файлы заняты вами. Выберите те, которые больше не правите "
-                            "(сначала сохраните правки: кнопка «Сохранить на сервер…»).", list(shown))
+            full = lock.path if os.path.isabs(lock.path) else os.path.join(item.path, lock.path)
+            notes = []
+            if lock.age_days is not None:
+                notes.append(f"занят {messages.format_age(lock.age_days)}")
+            unsaved = os.path.normcase(os.path.abspath(full)) in changed
+            if unsaved:
+                notes.append(messages.UNLOCK_UNSAVED)
+            else:
+                preselect.append(len(shown))
+            shown[f"{rel}   ({', '.join(notes)})" if notes else rel] = lock.path
+        dialog = PickDialog(self.root, "Освободить файлы", messages.UNLOCK_PROMPT, list(shown), preselect=preselect)
         self.root.wait_window(dialog)
         if dialog.result:
             paths = [p if os.path.isabs(p) else os.path.join(item.path, p)
@@ -2170,7 +2234,7 @@ class ProjectsTabMixin:
             lines.append(("Заняты, теперь их можно править:" if lock else "Освобождены:"))
             lines += [f"  {n}" for n in ok[:15]]
             if lock:
-                lines.append("\nКогда закончите, сохраните изменения (кнопка «Сохранить на сервер…») "
+                lines.append("\nКогда закончите, сохраните изменения (вкладка «Изменения», «Сохранить отмеченное») "
                              "и освободите файлы.")
         failed = [r for r in results if r.error is not None]
         stale = [r for r in failed if r.error.kind is ErrorKind.OUT_OF_DATE]

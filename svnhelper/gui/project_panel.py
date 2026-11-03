@@ -12,7 +12,7 @@ from typing import Callable, Hashable
 import tkinter as tk
 from tkinter import ttk
 
-from .. import messages, theme
+from .. import localrepo, messages, theme
 from ..svn_core import CancelToken, LockInfo, LogEntry
 from .commit_panel import CommitPanel
 from .widgets import button_column_width, button_padding, fit_text, SideButtons, Tooltip
@@ -189,15 +189,16 @@ class ProjectPanel(ttk.Frame):
     """Шапка (название, ● статус, «Ветка: …», что сделать, результат последнего действия) и вкладки проекта.
 
     Публичные виджеты: title_label, status_label, branch_label, todo_label, note_label; tabs (Notebook),
-    frames[ключ вкладки], commit_panel, incoming_view, history_view, locks_tree, locks_message,
-    release_btn, lock_btn. Кнопки «Занятых» вызывают on_release(пути выбранных своих файлов; пустой список, если
+    frames[ключ вкладки], commit_panel, save_local_btn («Сохранить у себя» на «Изменениях»), incoming_view,
+    history_view, locks_tree, locks_message, release_btn, lock_btn. Кнопки «Занятых» вызывают on_release(пути выбранных своих файлов; пустой список, если
     ничего не выбрано: тогда окно спросит, какие свои файлы освободить) и on_lock().
 
-    Кнопки вкладок стоят не под таблицей, а вертикальной колонкой справа от панели (self.side): у каждой вкладки
-    своя колонка SideButtons (actions_for(ключ)), показывается колонка выбранной вкладки. У вкладки без кнопок
-    (Новое, История) колонки нет, и места она не занимает. Колонка лежит в самой панели, поэтому прячется и
-    показывается вместе с ней при сворачивании «Состояния проекта». Колонка не шире SIDE_MAX_WIDTH: подпись
-    длиннее (шаблон комментария) укорачивается с «…», полный текст виден во всплывающей подсказке.
+    Кнопки вкладок стоят не под таблицей, а вертикальной колонкой справа: у каждой вкладки своя колонка
+    SideButtons (actions_for(ключ)), она лежит внутри вкладки (ярлыки вкладок занимают всю ширину панели, колонка
+    не отнимает её у них); self.side - колонка выбранной вкладки. У вкладки без кнопок (Новое, История) колонки
+    нет, и места она не занимает. Колонка лежит в панели, поэтому прячется и показывается вместе с ней при
+    сворачивании «Состояния проекта». Колонка не шире SIDE_MAX_WIDTH: подпись длиннее (шаблон комментария)
+    укорачивается с «…», полный текст виден во всплывающей подсказке.
     """
 
     SIDE_GAP = 6
@@ -207,16 +208,17 @@ class ProjectPanel(ttk.Frame):
 
     def __init__(self, parent: tk.Misc, px: Callable[[int], int], *, templates, recent_comments,
                  on_save: Callable[[list[str], str], None], on_release: Callable[[list[str]], None],
-                 on_lock: Callable[[], None]):
+                 on_lock: Callable[[], None], on_save_local: Callable[[], None] = lambda: None):
         super().__init__(parent)
         self.px = px
         self._on_release, self._on_lock = on_release, on_lock
         self._local_view = False
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
+        self._no_side = ttk.Frame(self)      # «колонка» вкладки без кнопок (side): не показана
 
-        # колонка кнопок справа: ряд 0..1, видна, только когда у выбранной вкладки есть кнопки (sync_actions)
-        self.side = ttk.Frame(self)
+        # колонки кнопок: у каждой вкладки своя, лежит в самой вкладке справа и видна, только когда в ней есть кнопки
+        # (sync_actions). Не в панели рядом с блокнотом: колонка отнимала бы ширину у ярлыков вкладок
         self._side_bars: dict[str, SideButtons] = {}
 
         # шапка
@@ -249,6 +251,9 @@ class ProjectPanel(ttk.Frame):
         self.commit_panel = CommitPanel(self.frames["changes"], templates=templates, recent_comments=recent_comments,
                                         on_save=on_save, actions=self.actions_for("changes"))
         self.commit_panel.grid(row=0, column=0, sticky="nsew")
+        # проект с историей на компьютере: вместо «Сохранить отмеченное» одна кнопка, сохраняет все правки
+        self.save_local_btn = ttk.Button(self.actions_for("changes"), text=localrepo.SAVE_BUTTON, command=on_save_local)
+        self.actions_for("changes").add(self.save_local_btn, visible=False, before=self.commit_panel.save_button)
         self.incoming_view = LogView(self.frames["incoming"], px, names=True, note=messages.INCOMING_NOTE)
         self.incoming_view.grid(row=0, column=0, sticky="nsew")
         self.history_view = LogView(self.frames["history"], px, names=False)
@@ -264,13 +269,18 @@ class ProjectPanel(ttk.Frame):
         if bar is None:
             if key not in self.frames:
                 raise ValueError(f"нет вкладки «{key}»")
-            bar = self._side_bars[key] = SideButtons(self.side, self.px(self.SIDE_GAP))
+            bar = self._side_bars[key] = SideButtons(self.frames[key], self.px(self.SIDE_GAP))
             bar.on_change = self.sync_actions
         return bar
 
+    @property
+    def side(self) -> tk.Misc:
+        """Колонка кнопок выбранной вкладки (пока в ней нет кнопок, она не показана: winfo_manager() пуст)."""
+        return self._side_bars.get(self.current_tab()) or self._no_side
+
     def sync_actions(self) -> None:
-        """Колонка перестраивается по выбранной вкладке: показана колонка этой вкладки, ширина у всех одна
-        (по самому длинному тексту, но не больше SIDE_MAX_WIDTH), нет кнопок - нет и колонки."""
+        """Колонки перестраиваются: у каждой вкладки колонка показана, когда в ней есть кнопки; ширина у всех одна
+        (по самому длинному тексту, но не больше SIDE_MAX_WIDTH). Нет кнопок - нет и колонки."""
         px = self.px
         buttons = [b for bar in self._side_bars.values() for b in bar._items]
         width = min(button_column_width(self, [self._full_text(b) for b in buttons], px), px(self.SIDE_MAX_WIDTH))
@@ -278,15 +288,10 @@ class ProjectPanel(ttk.Frame):
             self._fit_button(button, width - button_padding(px))
         for bar in self._side_bars.values():
             bar.set_width(width)
-        current = self._side_bars.get(self.current_tab())
-        for bar in self._side_bars.values():
-            if bar is not current:
+            if bar.has_visible():
+                bar.grid(row=0, column=1, rowspan=2, sticky="n", padx=(px(12), 0))
+            else:
                 bar.grid_remove()
-        if current is not None and current.has_visible():
-            current.grid(row=0, column=0, sticky="n")
-            self.side.grid(row=0, column=1, rowspan=2, sticky="n", padx=(px(12), 0))
-        else:
-            self.side.grid_remove()
 
     @staticmethod
     def _full_text(button: tk.Misc) -> str:
@@ -308,7 +313,7 @@ class ProjectPanel(ttk.Frame):
     def side_buttons(self) -> list[tk.Misc]:
         """Кнопки колонки справа сверху вниз (только показанные); пусто, если колонки нет."""
         current = self._side_bars.get(self.current_tab())
-        if current is None or not self.side.winfo_manager():
+        if current is None or not current.winfo_manager():
             return []
         return [b for b in current._items if b not in current._hidden]
 
@@ -369,12 +374,23 @@ class ProjectPanel(ttk.Frame):
         if local == self._local_view:
             return
         self._local_view = local
+        self.commit_panel.set_save_hidden(local)
         for key in LOCAL_HIDDEN_TABS:
             if local:
                 self.tabs.hide(self.frames[key])
             else:
                 self.tabs.add(self.frames[key])      # скрытая вкладка возвращается на прежнее место
         self.sync_actions()
+
+    def set_local_save(self, visible: bool, enabled: bool) -> None:
+        """«Сохранить у себя» на «Изменениях»: видна у проекта с историей на компьютере, доступна, когда папку можно менять."""
+        self._side_bars["changes"].set_visible(self.save_local_btn, visible)
+        self.save_local_btn.configure(state="normal" if enabled else "disabled")
+
+    def set_save_accent(self, accent: bool) -> None:
+        """Подсвечена кнопка сохранения справа (сохранение - главное действие проекта), остальные обычные."""
+        self.commit_panel.set_save_accent(accent)
+        self.save_local_btn.configure(style="Accent.TButton" if accent else "TButton")
 
     def current_tab(self) -> str:
         """Ключ выбранной вкладки."""
@@ -458,6 +474,10 @@ class ProjectPanel(ttk.Frame):
         """«Освободить…» доступна, если ничего не выбрано или среди выбранного есть свои файлы; выбраны только
         чужие - освобождать нечего (чужое освободить нельзя)."""
         ok = self._release_allowed and (not self.locks_tree.selection() or bool(self.selected_own_locks()))
+        # «…» обещает окно: оно открывается, только когда ничего не выбрано; выбранные строки освобождаются сразу
+        text = "Освободить" if self.selected_own_locks() else "Освободить…"
+        if str(self.release_btn.cget("text")) != text:
+            self.release_btn.configure(text=text)
         self.release_btn.configure(state="normal" if ok else "disabled")
 
     def _release_clicked(self) -> None:

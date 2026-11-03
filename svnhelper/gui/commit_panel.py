@@ -57,6 +57,7 @@ class CommitPanel(ttk.Frame):
         self._conflicts: set[str] = set()
         self._enabled = True
         self._has_changes = False
+        self._save_hidden = False      # проект с историей на компьютере: «Сохранить отмеченное» вместо неё «Сохранить у себя»
         self._templates: list[str] = []
         self._recent_values: list[str] = []
         self._template_buttons: list[ttk.Button] = []      # шаблоны в колонке кнопок (если она есть)
@@ -207,7 +208,7 @@ class CommitPanel(ttk.Frame):
             self._body.grid_remove()
             self._empty.grid()
         if self._actions is not None:
-            self._actions.set_visible(self.save_button, has_changes)
+            self._actions.set_visible(self.save_button, has_changes and not self._save_hidden)
             self._sync_actions()
         self._clear_error()
 
@@ -218,6 +219,18 @@ class CommitPanel(ttk.Frame):
         return NEED_LOCK_TEXT if change.needs_lock and change.kind == "modified" else ""
 
     # --- состояние ------------------------------------------------------------
+
+    def set_save_hidden(self, hidden: bool) -> None:
+        """Прячет «Сохранить отмеченное» (у проекта с историей на компьютере свою кнопку ставит владелец колонки)."""
+        if hidden == self._save_hidden:
+            return
+        self._save_hidden = hidden
+        if self._actions is not None:
+            self._actions.set_visible(self.save_button, self._has_changes and not hidden)
+
+    def set_save_accent(self, accent: bool) -> None:
+        """Кнопка сохранения подсвечена, когда сохранение - главное действие проекта (на экране одна подсветка)."""
+        self.save_button.configure(style="Accent.TButton" if accent else "TButton")
 
     def set_enabled(self, enabled: bool, reason: str = "") -> None:
         self._enabled = enabled

@@ -51,6 +51,7 @@ def tearDownModule():
 
 try:
     import tkinter as tk
+    from tkinter import ttk
     _probe_root = tk.Tk()
     _probe_root.withdraw()
     _probe_root.destroy()
@@ -62,6 +63,33 @@ except Exception:
 def quiet_clipboard(root):
     """Окно само читает буфер обмена при старте и при фокусе: настоящий буфер пользователя в тестах не трогаем."""
     root.clipboard_get = mock.Mock(side_effect=tk.TclError("clipboard disabled in tests"))
+
+
+def widget_shown(widget):
+    """Виджет показан в окне: у него и у всех родителей есть менеджер геометрии, а страница вкладки выбрана.
+    Окно тестов скрыто (withdraw), поэтому winfo_viewable не годится."""
+    while widget is not widget.winfo_toplevel():
+        parent = widget.nametowidget(widget.winfo_parent())
+        if isinstance(parent, ttk.Notebook):
+            if parent.select() != str(widget):
+                return False
+        elif not widget.winfo_manager():
+            return False
+        widget = parent
+    return True
+
+
+def shown_accents(app):
+    """Показанные в главном окне кнопки в стиле Accent.TButton (диалоги не в счёте). Должна быть одна."""
+    found, stack = [], [app.root]
+    while stack:
+        for child in stack.pop().winfo_children():
+            if isinstance(child, tk.Toplevel):
+                continue
+            stack.append(child)
+            if isinstance(child, ttk.Button) and str(child.cget("style")) == "Accent.TButton" and widget_shown(child):
+                found.append(child)
+    return found
 
 
 def read_job(jobs_dir):
@@ -231,8 +259,9 @@ class GuiSmokeTests(unittest.TestCase):
             picked = []
 
             class FakePick:
-                def __init__(self, parent, title, prompt, items):
+                def __init__(self, parent, title, prompt, items, preselect=None):
                     picked.extend(items)
+                    self.preselect = preselect
                     self.result = list(items)
             with mock.patch("svnhelper.gui.projects_tab.PickDialog", FakePick),                     mock.patch.object(root, "wait_window"),                     mock.patch("tkinter.messagebox.showinfo") as info:
                 app._on_release_lock()
@@ -503,7 +532,7 @@ class MineTabTests(unittest.TestCase):
         root, app, _base = self.make_app("notort")
         try:
             self.select_first(root, app)
-            self.assertEqual(str(app.commit_btn.cget("state")), "normal")     # сохранение не зависит от TortoiseSVN
+            self.assertEqual(str(app._commit_panel.save_button.cget("state")), "normal")   # сохранение не зависит от TortoiseSVN
             self.assertFalse(hasattr(app, "no_tortoise_label"))              # подписи «Установите TortoiseSVN…» нет
             self.assertEqual(sorted(app._more_idx), ["experts", "publish"])           # пункта «через TortoiseSVN» нет
             self.assertEqual(sorted(app._expert_idx), ["cleanup"])                    # в «Для опытных» только «Починить папку»
@@ -729,8 +758,9 @@ class MineTabTests(unittest.TestCase):
             self.assertEqual(str(app.update_btn.cget("state")), "normal")
             app._tortoise_open.add(item.path.upper())      # регистр пути значения не имеет
             app._update_mine_buttons()
-            for btn in (app.update_btn, app.lock_btn, app.unlock_btn):
+            for btn in (app.update_btn, app.project_panel.lock_btn):      # «Занять файл…» справа, на «Занятых»
                 self.assertEqual(str(btn.cget("state")), "disabled")
+            self.assertEqual(str(app.project_panel.release_btn.cget("state")), "disabled")
             with mock.patch.object(app.client, "update") as upd, mock.patch.object(app.client, "lock") as lock:
                 self.assertFalse(app._begin_update(item))
                 self.assertIsNone(app.upd)
@@ -853,7 +883,7 @@ class MineTabTests(unittest.TestCase):
             with mock.patch.object(app.client, "lock", slow_lock), \
                     mock.patch("tkinter.messagebox.showinfo"):
                 app._run_locks(item, [target], lock=True)
-                self.assertEqual(str(app.lock_btn.cget("state")), "disabled")
+                self.assertEqual(str(app.project_panel.lock_btn.cget("state")), "disabled")
                 app._run_locks(item, [target], lock=True)          # повтор отклонён
                 with self.slow_status(app, 0.8):
                     app._check_status([item])                      # проверка идёт параллельно
@@ -2019,16 +2049,8 @@ class ListModeTests(unittest.TestCase):
                           app.mine_find_row.winfo_manager()), ("grid", "", ""))
         self.assertEqual(app.mine_empty_label.cget("text"), "В этой папке пока нет проектов.")
 
-        from tkinter import ttk
-
-        def accents(widget):
-            found = [widget] if isinstance(widget, ttk.Button) and str(widget.cget("style")) == "Accent.TButton" \
-                else []
-            for child in widget.winfo_children():
-                found.extend(accents(child))
-            return found
-
-        self.assertEqual(accents(app.mine_col2), [app.mine_empty_btn])         # в колонке «Проекты» одна подсветка
+        # на всём экране одна подсветка: «＋ Новый проект…» слева обычного стиля
+        self.assertEqual(shown_accents(app), [app.mine_empty_btn])
         self.assertEqual(app.mine_empty_btn.cget("text"), "Скачать проект с сервера")
         app.mine_empty_btn.invoke()
         self.assertEqual(app._list_mode(), "download")
@@ -2039,12 +2061,39 @@ class ListModeTests(unittest.TestCase):
         self.assertEqual((app.mine_empty.winfo_manager(), app.mine_table.winfo_manager()), ("", "grid"))
         self.assertEqual(app._list_mode(), "mine")
 
-    def test_missing_folder_offers_download_without_switching(self):
-        root, app, _ = self.make_app(folder=False)    # первый запуск, папки для проектов ещё нет
+    def test_missing_folder_on_first_run_offers_download_without_switching(self):
+        root, app, _ = self.make_app(folder=False)    # первый запуск: папку ещё никто не выбирал, её создаст скачивание
         self.pump(root, lambda: app._mine_scanned)
-        self.assertEqual(app._list_mode(), "mine")    # папка могла пропасть на миг: подвкладку сами не меняем
+        self.assertEqual(app._list_mode(), "mine")    # подвкладку сами не меняем
         self.assertEqual(app.mine_empty.winfo_manager(), "grid")
         self.assertIn("не найдена", app.project_panel.header_text())
+        self.assertEqual(app.mine_empty_btn.cget("text"), "Скачать проект с сервера")
+
+    def test_vanished_folder_offers_to_choose_another_not_to_download(self):
+        """Папка, которую человек уже выбирал, пропала (отключён сетевой диск): текст про папку и подсвеченная
+        «Выбрать…», без «пока нет проектов» и без совета скачивать; пока папки нет, скачивание не предлагается."""
+        root, app, work_dir = self.make_app(folder=False)
+        app.settings.last_dir = work_dir               # папка выбрана раньше, не по умолчанию
+        self.pump(root, lambda: app._mine_scanned)
+        self.assertEqual(app._list_mode(), "mine")
+        self.assertEqual(app.mine_empty.winfo_manager(), "grid")
+        texts = " ".join(str(w.cget("text")) for w in (app.mine_empty_label, app.mine_empty_hint))
+        self.assertIn(f"Папка «{work_dir}» не найдена.", texts)
+        self.assertIn("подключён ли сетевой диск", texts)
+        self.assertIn("выберите другую папку", texts)
+        for forbidden in ("пока нет проектов", "Скачайте", "Скачать"):
+            self.assertNotIn(forbidden, texts)
+        self.assertEqual(app.mine_empty_btn.cget("text"), "Выбрать…")
+        self.assertEqual(shown_accents(app), [app.mine_empty_btn])                 # одна подсветка
+        with mock.patch.object(app, "_on_browse") as browse:
+            app.mine_empty_btn.invoke()
+        browse.assert_called_once_with()
+        self.assertEqual(app._list_mode(), "mine")                                 # на «Скачать проект» не уходим
+        os.makedirs(work_dir)                                                      # диск подключили: обычная пустая папка
+        app._scan_projects()
+        self.pump(root, lambda: not app._scan_gen or app.mine_empty_label.cget("text") == app.MINE_EMPTY_TEXT)
+        self.assertEqual(app.mine_empty_btn.cget("text"), "Скачать проект с сервера")
+        self.assertIn("пока нет проектов", app.mine_empty_label.cget("text"))
 
     def test_download_form_has_own_side_buttons(self):
         root, app, _ = self.make_app()
@@ -2108,6 +2157,46 @@ class ListModeTests(unittest.TestCase):
             self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
         app.job = None
         app._update_buttons()
+
+    def test_download_side_buttons_are_not_clipped_at_minimum_window(self):
+        """«Создать проект из этой папки…» и «Удалить недокачанную папку» длиннее «Скачать проект»: колонка кнопок
+        формы растёт под показанные кнопки, подписи не обрезаны в окне 900 px при 100, 125 и 150%."""
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                root, app, _ = self.make_app(scale=scale, visible=True)
+                app._mine_dirty = False
+                root.geometry(f"{app.px(900)}x{app.px(640)}")
+                app.select_list_mode("download")
+                root.update()
+                narrow = app.download_actions.winfo_width()
+                app._set_create_target(("C:\\папка", "svn://srv", ["test", "папка"]))
+                app.download_actions.set_visible(app.cleanup_btn, True)
+                root.update()
+                self.assertGreater(app.download_actions.winfo_width(), narrow)       # колонка выросла под длинные подписи
+                right = root.winfo_rootx() + root.winfo_width()
+                for button in (app.download_btn, app.create_btn, app.cleanup_btn):
+                    self.assertTrue(button.winfo_ismapped(), button.cget("text"))
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), button.cget("text"))
+                    self.assertLessEqual(button.winfo_rootx() + button.winfo_width(), right, button.cget("text"))
+                app._set_create_target(None)
+                app.download_actions.set_visible(app.cleanup_btn, False)
+                root.update()
+                self.assertEqual(app.download_actions.winfo_width(), narrow)         # длинных нет - форме больше места
+                root.withdraw()
+
+    def test_search_labels_differ_between_subtabs(self):
+        root, app, _ = self.make_app()
+        labels = lambda frame: [str(w.cget("text")) for w in self.all_labels(frame)]   # noqa: E731
+        self.assertIn("Найти проект:", labels(app.mine_find_row))
+        self.assertIn("Найти на сервере:", labels(app.server_browser))
+
+    @staticmethod
+    def all_labels(widget):
+        from tkinter import ttk
+        found = [widget] if isinstance(widget, ttk.Label) else []
+        for child in widget.winfo_children():
+            found.extend(ListModeTests.all_labels(child))
+        return found
 
     def test_subtab_labels_tree_and_form_fit_at_every_scale(self):
         """Ярлыки «Мои проекты | Скачать проект» не обрезаны в колонке «Проекты», дерево, поля и кнопки формы
@@ -2367,13 +2456,12 @@ class BranchesGuiTests(unittest.TestCase):
             self.assertEqual(cells, {"t": "Основная", "b": self.BRANCH, "v": f"🔒 Версия {self.TAG}"})
 
             self.select(root, app, items["t"])
-            self.assertEqual(str(app.commit_btn.cget("state")), "normal")
-            self.assertEqual(str(app.lock_btn.cget("state")), "normal")
+            self.assertEqual(str(app._commit_panel.save_button.cget("state")), "normal")
+            self.assertEqual(str(app.project_panel.lock_btn.cget("state")), "normal")
             self.select(root, app, items["v"])
-            self.assertEqual(str(app.commit_btn.cget("state")), "disabled")
-            self.assertEqual(str(app.lock_btn.cget("state")), "disabled")
+            self.assertEqual(str(app._commit_panel.save_button.cget("state")), "disabled")
+            self.assertEqual(str(app.project_panel.lock_btn.cget("state")), "disabled")
             self.assertEqual(str(app.update_btn.cget("state")), "normal")
-            self.assertEqual(str(app.lines_nav_btn.cget("state")), "normal")     # кнопка колонки 1 «Ветки и версии»
 
             # «Ещё ▾»: сохранение через TortoiseSVN и подменю «Для опытных»
             menu = app.more_menu
@@ -2401,8 +2489,7 @@ class BranchesGuiTests(unittest.TestCase):
             self.assertEqual(tag, "new")
             self.assertIn("создайте ветку", values[3])
             self.assertIn("Правки в версию сохранить нельзя", app.project_panel.header_text())
-            self.assertEqual(str(app.commit_btn.cget("state")), "disabled")
-            self.assertEqual(str(app._commit_panel.save_button.cget("state")), "disabled")   # и в панели «Изменения»
+            self.assertEqual(str(app._commit_panel.save_button.cget("state")), "disabled")   # в версию не сохраняем
 
             # вкладка «Ветки»: из версии версию не делаем и перенос правок недоступен, а ветку создать можно
             self.open_lines(root, app, items["v"])
@@ -2643,7 +2730,13 @@ class BranchesGuiTests(unittest.TestCase):
             self.select(root, app, item)
             root.update()
             right = root.winfo_rootx() + root.winfo_width()
-            for widget in (app.update_btn, app.commit_btn, app.lock_btn, app.unlock_btn, app.more_btn):
+            for widget in (app.update_btn, app.more_btn, app.new_project_btn):
+                self.assertTrue(widget.winfo_ismapped(), widget)
+                self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
+            app.open_project_tab("locks")                     # «Занять файл…» и «Освободить…» справа, на «Занятых»
+            root.update()
+            self.assertEqual(len(app.project_panel.side_buttons()), 2)
+            for widget in app.project_panel.side_buttons():
                 self.assertTrue(widget.winfo_ismapped(), widget)
                 self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
             self.assertTrue(app.mine_tree.winfo_ismapped())     # столбцы шире окна листаются полосой прокрутки
@@ -3601,6 +3694,9 @@ class CommitFlowFakeTests(unittest.TestCase):
             self.save(panel, self.file("новый файл.txt"))
             self.finish()
         self.assertEqual(panel.recent_comments(), [self.COMMENT])
+        menu = panel._recent_menu                                      # и пункты настоящего меню «Последние ▾»
+        self.assertEqual([menu.entrycget(i, "label") for i in range(menu.index("end") + 1)], [self.COMMENT])
+        self.assertEqual(panel._recent_btn.cget("text"), "Последние ▾")
 
     def test_checks_wait_for_commit_and_locking(self):
         item = self.item
@@ -3629,6 +3725,13 @@ class CommitFlowFakeTests(unittest.TestCase):
         with mock.patch.object(self.app, "_on_refresh"), mock.patch.object(self.app, "_on_url_changed"),                 mock.patch.object(self.app, "_rescan_docs"):
             self.app._rebuild_config()
         self.assertEqual(self.app._commit_panel.template_texts(), ["Один", "Два"])
+        # и настоящие кнопки справа: подписи шаблонов на них, а не только внутренний список
+        from svnhelper.svn_core import LocalChange
+        self.app._commit_panel.set_changes([LocalChange("x.txt", "modified")])
+        self.root.update()
+        self.assertEqual(self.app.project_panel.current_tab(), "changes")
+        self.assertEqual([str(b.cget("text")) for b in self.app.project_panel.side_buttons()],
+                         ["Сохранить отмеченное", "Один", "Два"])
 
     def test_commit_lock_required_offers_lock_and_saves(self):
         from svnhelper.svn_core import CommitResult
@@ -3749,7 +3852,7 @@ class CommitFlowFakeTests(unittest.TestCase):
         with mock.patch("tkinter.messagebox.showinfo") as info:
             self.app._on_commit()
         self.assertEqual(info.call_args[0][1], messages.COMMIT_BUSY)
-        self.assertEqual(str(self.app.commit_btn.cget("state")), "disabled")
+        self.assertEqual(str(self.app._commit_panel.save_button.cget("state")), "disabled")
 
     def test_close_asks_about_unsaved_changes(self):
         from svnhelper.svn_core import LocalChange, WcStatus
@@ -4188,33 +4291,50 @@ class ColumnOneButtonsTests(unittest.TestCase):
 
     @staticmethod
     def accents(app):
-        """Подсвеченные кнопки главного действия; «＋ Новый проект…» подсвечена всегда и сюда не входит."""
-        return [w for w in app.actions_row._items
-                if str(w.cget("style")) == "Accent.TButton" and w is not app.new_project_btn]
+        """Все подсвеченные кнопки окна (обе колонки развёрнуты): на экране она одна, главное действие."""
+        return shown_accents(app)
+
+    def show_state(self, app, item, state, status):
+        """Проект в состоянии state/status: панель и кнопки перерисованы."""
+        item.state, item.status = state, status
+        app._refresh_project_panel()
+        app._update_mine_buttons()
 
     def test_exactly_one_accent_button_per_state(self):
-        from svnhelper.svn_core import WcStatus
+        """U4.2: для каждого главного действия на экране (обе колонки развёрнуты) ровно одна подсвеченная кнопка:
+        слева - разобрать, починить, получить, отправить; справа - сохранение на «Изменениях»."""
+        from svnhelper.svn_core import LocalChange, WcStatus
         root, app, _base = self.make_app("c4_accent")
         try:
             iid, item = self.select_first(root, app)
             self.pump(root, lambda: not app._checking and not item.checking)
             app.tortoise_exe = "C:\\fake\\TortoiseProc.exe"
             app._apply_tortoise()
-            cases = [("svn", WcStatus(), app.update_btn),
-                     ("svn", WcStatus(incoming=2), app.update_btn),
-                     ("svn", WcStatus(local_changes=[mock.Mock()]), app.commit_btn),
-                     ("svn", WcStatus(conflicts=1), app.special_btn),
-                     ("broken", None, app.special_btn)]
-            for state, status, expected in cases:
+            self.assertFalse(app.mine_col2.collapsed or app.mine_col3.collapsed)
+            panel = app.project_panel
+            panel.tabs.select(panel.frames["changes"])
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified")
+            cases = [("svn", WcStatus(), "update", app.update_btn),
+                     ("svn", WcStatus(incoming=2), "update", app.update_btn),
+                     ("svn", WcStatus(local_changes=[change]), "commit", app._commit_panel.save_button),
+                     ("svn", WcStatus(incoming=2, local_changes=[change]), "commit", app._commit_panel.save_button),
+                     ("svn", WcStatus(conflicts=1), "resolve", app.special_btn),
+                     ("broken", None, "repair", app.special_btn),
+                     ("plain", None, "publish", app.publish_btn)]
+            for state, status, main, expected in cases:
                 with self.subTest(state=state, status=status):
-                    item.state, item.status = state, status
-                    app._update_mine_buttons()
+                    self.show_state(app, item, state, status)
+                    self.assertEqual(app._main_action_of(item), main)
                     self.assertEqual(self.accents(app), [expected])
-            item.state, item.status = "broken", None
-            app._update_mine_buttons()
+            # сохранение подсвечено на любой подвкладке, где оно видно, и только у главного действия
+            self.show_state(app, item, "svn", WcStatus(local_changes=[change]))
+            self.assertEqual(str(app._commit_panel.save_button.cget("style")), "Accent.TButton")
+            self.show_state(app, item, "svn", WcStatus(conflicts=1, local_changes=[change]))
+            self.assertEqual(str(app._commit_panel.save_button.cget("style")), "TButton")   # главное - разобрать конфликт
+            self.assertEqual(self.accents(app), [app.special_btn])
+            self.show_state(app, item, "broken", None)
             self.assertEqual(app.special_btn.cget("text"), "Починить папку")
-            item.state, item.status = "svn", WcStatus(conflicts=1)
-            app._update_mine_buttons()
+            self.show_state(app, item, "svn", WcStatus(conflicts=1))
             self.assertEqual(app.special_btn.cget("text"), "Разобрать конфликт")
             # без выбранного проекта ни одной подсвеченной кнопки
             app.mine_tree.selection_set(())
@@ -4270,50 +4390,146 @@ class ColumnOneButtonsTests(unittest.TestCase):
         try:
             iid, item = self.select_first(root, app)
             self.pump(root, lambda: not app._checking and not item.checking)
-            item.status = WcStatus(incoming=4)
-            app._update_mine_buttons()
+            self.show_state(app, item, "svn", WcStatus(incoming=4))
             self.assertEqual(app.mine_name_label.cget("text"), item.display_name)
             self.assertEqual(app.update_btn.cget("text"), "Получить новое (4)")
-            item.status = WcStatus()
-            app._update_mine_buttons()
+            panel = app.project_panel                       # то же число - на ярлыке вкладки «Новое»
+            self.assertEqual(panel.tabs.tab(panel.frames["incoming"], "text"), "Новое 4")
+            self.show_state(app, item, "svn", WcStatus())
             self.assertEqual(app.update_btn.cget("text"), "Получить новое")
+            self.assertEqual(panel.tabs.tab(panel.frames["incoming"], "text"), "Новое")
             row = app.actions_row
             shown = [w for w in row._items if w not in row._hidden]
-            self.assertEqual(shown, [app.mine_name_label, app.check_btn, app.update_btn, app.commit_btn, app.lock_btn,
-                                     app.unlock_btn, app.open_btn, app.server_btn, app.new_project_btn,
-                                     app.goto_download_btn, app.lines_nav_btn, app.more_btn])
+            self.assertEqual(shown, [app.mine_name_label, app.check_btn, app.update_btn, app.open_btn, app.server_btn,
+                                     app.more_btn, app.new_project_btn])
             self.assertEqual([w.cget("text") for w in shown[2:]],
-                             ["Получить новое", "Сохранить на сервер", "Занять файл…", "Освободить файл…",
-                              "Открыть папку", "Открыть на сервере", "＋ Новый проект…", "Скачать проект",
-                              "Ветки и версии", "Ещё ▾"])
+                             ["Получить новое", "Открыть папку", "Открыть на сервере", "Ещё ▾", "＋ Новый проект…"])
+            for gone in ("commit_btn", "lock_btn", "unlock_btn", "lines_nav_btn", "goto_download_btn"):
+                self.assertFalse(hasattr(app, gone), gone)             # сохранение, занятые, ветки - справа
         finally:
             root.destroy()
 
-    def test_buttons_open_project_tabs_and_download_tab(self):
+    def test_lock_reminder_points_to_locks_tab(self):
+        from svnhelper import messages
+        self.assertIn("вкладка «Занятые» → «Занять файл…»", messages.LOCK_REMINDER)
+        self.assertNotIn("Мои проекты", messages.LOCK_REMINDER)
+
+    def test_lock_buttons_live_on_locks_tab_and_release_without_choice_opens_picker(self):
         root, app, _base = self.make_app("c4_tabs")
         try:
             iid, item = self.select_first(root, app)
             self.pump(root, lambda: not app._checking and not item.checking)
-            with mock.patch.object(app, "open_project_tab") as opened, \
-                    mock.patch.object(app, "_on_commit") as commit, \
-                    mock.patch.object(app, "_on_get_lock") as get_lock, \
+            panel = app.project_panel
+            app.open_project_tab("locks")
+            self.assertEqual([b.cget("text") for b in panel.side_buttons()], ["Занять файл…", "Освободить…"])
+            with mock.patch.object(app, "_on_get_lock") as get_lock, \
                     mock.patch.object(app, "_on_release_lock") as release:
-                for button, tab, action in ((app.commit_btn, "changes", commit), (app.lock_btn, "locks", get_lock),
-                                            (app.unlock_btn, "locks", release), (app.lines_nav_btn, "lines", None)):
-                    opened.reset_mock()
-                    if action is not None:
-                        action.reset_mock()
-                    button.invoke()
-                    opened.assert_called_once_with(tab)             # «Ветки и версии» только открывает вкладку
-                    if action is not None:
-                        action.assert_called_once_with()
-            app.goto_download_btn.invoke()
+                panel.lock_btn.invoke()
+                get_lock.assert_called_once_with()
+                panel.release_btn.invoke()                         # ничего не выбрано: окно выбора своих файлов
+                release.assert_called_once_with()
+            app.select_list_mode("download")
             self.assertEqual(app._list_mode(), "download")
             # настоящая вкладка колонки 3 разворачивается и выбирается
             app.mine_col3.collapse()
             app.open_project_tab("locks")
             self.assertFalse(app.mine_col3.collapsed)
             self.assertEqual(app.project_tabs.select(), str(app.project_tab_frames["locks"]))
+        finally:
+            root.destroy()
+
+    def deselect_and_select(self, root, app, iid):
+        """Выбор проекта заново: для панели это «другой проект» (автопроверка раз в несколько секунд им не является)."""
+        app.mine_tree.selection_set(())
+        root.update()
+        app.mine_tree.selection_set(iid)
+        root.update()
+
+    def test_selecting_project_with_changes_opens_changes_tab(self):
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, _base = self.make_app("c4_auto")
+        try:
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking and item.status is not None)
+            panel = app.project_panel
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified")
+            for status, opens in ((WcStatus(), False), (WcStatus(local_changes=[change]), True),
+                                  (WcStatus(conflicts=1, local_changes=[change]), True), (WcStatus(incoming=3), False)):
+                with self.subTest(status=status):
+                    item.status = status
+                    panel.tabs.select(panel.frames["history"])
+                    self.deselect_and_select(root, app, iid)
+                    self.assertEqual(panel.current_tab(), "changes" if opens else "history")
+            # автопроверка того же проекта вкладку не трогает
+            item.status = WcStatus(local_changes=[change])
+            panel.tabs.select(panel.frames["history"])
+            app._on_item_status(item, WcStatus(local_changes=[change]), "")
+            self.assertEqual(panel.current_tab(), "history")
+        finally:
+            root.destroy()
+
+    def test_auto_changes_tab_waits_for_first_check_and_yields_to_user(self):
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, _base = self.make_app("c4_auto2")
+        try:
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking and item.status is not None)
+            panel = app.project_panel
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified")
+            # проверки ещё не было: ждём её и открываем «Изменения» по её результату
+            item.status = None
+            panel.tabs.select(panel.frames["locks"])
+            self.deselect_and_select(root, app, iid)
+            self.assertEqual(panel.current_tab(), "locks")
+            app._on_item_status(item, WcStatus(local_changes=[change]), "")
+            self.assertEqual(panel.current_tab(), "changes")
+            # человек сам выбрал вкладку до результата проверки: не мешаем
+            item.status = None
+            panel.tabs.select(panel.frames["locks"])
+            self.deselect_and_select(root, app, iid)
+            panel.tabs.event_generate("<ButtonPress-1>", x=5, y=5)
+            app._on_item_status(item, WcStatus(local_changes=[change]), "")
+            self.assertEqual(panel.current_tab(), "locks")
+            # курсор в поле комментария: вкладку не трогаем
+            item.status = WcStatus(local_changes=[change])
+            with mock.patch.object(app, "_typing_comment", return_value=True):
+                self.deselect_and_select(root, app, iid)
+            self.assertEqual(panel.current_tab(), "locks")
+        finally:
+            root.destroy()
+
+    def test_double_click_opens_tab_of_main_action(self):
+        from types import SimpleNamespace
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, _base = self.make_app("c4_dbl")
+        try:
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking)
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified")
+            event = SimpleNamespace(x=5, y=5)
+            cases = [("svn", WcStatus(local_changes=[change]), "changes"), ("svn", WcStatus(conflicts=1), "changes"),
+                     ("svn", WcStatus(incoming=2), "incoming"), ("svn", WcStatus(), "incoming"),
+                     ("broken", None, None)]
+            with mock.patch.object(app.mine_tree, "identify_row", return_value=iid), \
+                    mock.patch.object(app.mine_tree, "identify_region", return_value="cell"), \
+                    mock.patch.object(app, "open_project_tab") as opened:
+                for state, status, tab in cases:
+                    with self.subTest(state=state, status=status):
+                        self.show_state(app, item, state, status)
+                        opened.reset_mock()
+                        app.mine_col3.collapse()
+                        app._on_mine_double_click(event)
+                        if tab is None:                              # у починки вкладки нет: «Состояние» просто разворачивается
+                            opened.assert_not_called()
+                            self.assertFalse(app.mine_col3.collapsed)
+                        else:
+                            opened.assert_called_once_with(tab)
+                app.mine_col3.collapse()
+                opened.reset_mock()
+                with mock.patch.object(app.mine_tree, "identify_region", return_value="heading"):
+                    app._on_mine_double_click(event)                 # двойной щелчок по заголовку таблицы - не проект
+                opened.assert_not_called()
+                self.assertTrue(app.mine_col3.collapsed)
         finally:
             root.destroy()
 
@@ -4482,6 +4698,44 @@ class ProjectPanelTabsTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_release_picker_does_not_preselect_files_with_unsaved_changes(self):
+        """«Освободить…» без выбора: файлы с несохранёнными правками в окне заранее не отмечены и подписаны, иначе двумя
+        щелчками освобождаются файлы, которые коллега тут же займёт, и правки разойдутся с его."""
+        from svnhelper.svn_core import LocalChange, LockInfo, WcStatus
+        root, app, item = self.ready("p_unlock_pick")
+        try:
+            saved, edited = (os.path.join(item.path, name) for name in ("сохранён.cdw", "правлю.cdw"))
+            status = WcStatus(my_locks=[LockInfo(saved, "me"), LockInfo(edited, "me")],
+                              local_changes=[LocalChange(edited, "modified", locked_by_me=True)])
+            seen = {}
+
+            class FakePick:
+                def __init__(self, parent, title, prompt, items, preselect=None):
+                    seen.update(items=list(items), preselect=preselect, prompt=prompt)
+                    self.result = []
+            with mock.patch("svnhelper.gui.projects_tab.PickDialog", FakePick), mock.patch.object(root, "wait_window"):
+                app._choose_unlock(item, status)
+            by_name = {name: label for label in seen["items"] for name in ("сохранён.cdw", "правлю.cdw") if name in label}
+            self.assertNotIn("несохранённые правки", by_name["сохранён.cdw"])
+            self.assertIn("(есть несохранённые правки)", by_name["правлю.cdw"])
+            self.assertEqual([seen["items"][i] for i in seen["preselect"]], [by_name["сохранён.cdw"]])
+            self.assertIn("не отмечены", seen["prompt"])
+        finally:
+            root.destroy()
+
+    def test_pick_dialog_preselect(self):
+        from svnhelper.gui.widgets import PickDialog
+        root, app, item = self.ready("p_pick_dialog")
+        try:
+            with mock.patch.object(tk.Toplevel, "grab_set"):
+                for preselect, expected in ((None, (0, 1, 2)), ([1], (1,)), ([], ())):
+                    dialog = PickDialog(root, "t", "p", ["а", "б", "в"], preselect=preselect)
+                    self.assertEqual(tuple(dialog._box.curselection()), expected, preselect)
+                    dialog._ok()
+                    self.assertEqual(dialog.result, [["а", "б", "в"][i] for i in expected])
+        finally:
+            root.destroy()
+
     def test_locks_tab_shows_locks_and_releases_own(self):
         root, app, item = self.ready("p_locks")
         _other_base, other = self.checkout("p_locks_other")
@@ -4510,6 +4764,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
             # ничего не выбрано: «Освободить…» доступна и открывает окно выбора своих файлов
             self.assertEqual(tree.selection(), ())
             self.assertEqual(str(panel.release_btn.cget("state")), "normal")
+            self.assertEqual(panel.release_btn.cget("text"), "Освободить…")          # «…»: откроется окно выбора
             with mock.patch.object(app, "_on_release_lock") as choose, mock.patch.object(app, "_run_locks") as run:
                 panel.release_btn.invoke()
             choose.assert_called_once_with()
@@ -4517,6 +4772,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
             tree.selection_set(row)
             root.update()
             self.assertEqual(str(panel.release_btn.cget("state")), "normal")
+            self.assertEqual(panel.release_btn.cget("text"), "Освободить")           # без «…»: окна не будет, файл освобождается сразу
             with mock.patch.object(app, "_on_release_lock") as choose, mock.patch.object(app, "_run_locks") as run:
                 panel.release_btn.invoke()
             run.assert_called_once_with(item, [mine_file], lock=False)           # выбрана своя строка: освобождает её
@@ -4537,6 +4793,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
         from svnhelper.gui.widgets import SideButtons
         root, app, item = self.ready("p_side_tabs")
         try:
+            root.deiconify()                   # колонки лежат внутри вкладок: раскладка считается, только когда окно показано
             panel = app.project_panel
             root.update()
             panel.commit_panel.set_recent_comments(["Раз", "Два"])
@@ -4565,10 +4822,13 @@ class ProjectPanelTabsTests(unittest.TestCase):
                         self.assertEqual(len({b.winfo_x() for b in panel.side_buttons()}), 1)
                     else:                                                  # нет кнопок - нет колонки
                         self.assertEqual(panel.side.winfo_manager(), "")
-            # подсвечена только «Сохранить отмеченное»; «Перейти» и остальные обычного стиля
+            # подсвечена только «Сохранить отмеченное» (когда сохранение - главное действие); «Перейти» и остальные
+            # обычного стиля
             self.assertEqual(str(app.switch_here_btn.cget("style")), "")
-            self.assertEqual(str(panel.commit_panel.save_button.cget("style")), "Accent.TButton")
-            right = [b for key in ("changes", "locks", "lines") for b in panel._side_bars[key]._items]
+            self.assertEqual(str(panel.commit_panel.save_button.cget("style")), "TButton")   # у проекта без правок
+            panel.set_save_accent(True)
+            right = [b for key in ("changes", "locks", "lines") for b in panel._side_bars[key]._items
+                     if b not in panel._side_bars[key]._hidden]
             self.assertEqual([str(b.cget("text")) for b in right if str(b.cget("style")) == "Accent.TButton"],
                              ["Сохранить отмеченное"])
             # под таблицами вкладок кнопок не осталось: все только в колонке справа, под списком правок
@@ -4616,7 +4876,8 @@ class ProjectPanelTabsTests(unittest.TestCase):
             app.mine_col3.expand()
             root.update()
             self.assertTrue(left.winfo_ismapped() and panel.side.winfo_ismapped())
-            self.assertEqual(panel.side.master, panel)     # правая колонка лежит внутри панели
+            self.assertEqual(panel.side.master, panel.frames["lines"])     # правая колонка лежит внутри своей вкладки
+            self.assertTrue(str(panel.side).startswith(str(panel)))
         finally:
             root.destroy()
 
@@ -4637,6 +4898,43 @@ class ProjectPanelTabsTests(unittest.TestCase):
             self.assertGreaterEqual(panel.side_buttons()[0].winfo_width(), longest)  # самый длинный текст не обрезан
         finally:
             root.destroy()
+
+    @staticmethod
+    def tab_widths(tabs, px):
+        """Ширина каждого ярлыка блокнота, как она нарисована (по identify вдоль строки ярлыков)."""
+        spans = {}
+        for x in range(tabs.winfo_width()):
+            if tabs.identify(x, px(10)):
+                index = tabs.index(f"@{x},{px(10)}")
+                spans[index] = spans.get(index, 0) + 1
+        return [spans[i] for i in sorted(spans)]
+
+    def test_tab_labels_with_counters_are_not_clipped_at_every_scale(self):
+        """U4.2: ярлыки «Изменения 12», «Новое 14» не обрезаны при 100/125/150% на каждой вкладке, в том числе там, где
+        справа колонка кнопок (она лежит внутри вкладки и ширину у ярлыков не отнимает). Окно px(1000): ноутбук 1366 px
+        при 125%. «Естественная» ширина ярлыка - в широком окне, где места с запасом."""
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                root, app, _base = self.make_app(f"p_tabs_scale_{scale}", visible=True, scale=scale)
+                try:
+                    app.select_list_mode("mine")
+                    iid, item = self.select_first(root, app)
+                    self.pump(root, lambda: not app._checking and not item.checking and item.status is not None)
+                    panel = app.project_panel
+                    panel.set_changes_count(12)
+                    panel.set_incoming_count(14)
+                    widths = {}
+                    for size in (1700, 1000):      # широкое окно: естественная ширина; px(1000): проверяемая
+                        root.geometry(f"{app.px(size)}x{app.px(700)}")
+                        for key in ("changes", "incoming", "history", "locks", "lines"):
+                            app.open_project_tab(key)        # выбранный ярлык шире остальных: сравниваем при том же выборе
+                            root.update()
+                            widths[size, key] = self.tab_widths(panel.tabs, app.px)
+                    for key in ("changes", "incoming", "history", "locks", "lines"):
+                        self.assertEqual(len(widths[1700, key]), 5)
+                        self.assertEqual(widths[1000, key], widths[1700, key], key)
+                finally:
+                    root.destroy()
 
     def test_side_buttons_fit_at_every_scale(self):
         for scale in (1.0, 1.25, 1.5):
@@ -4881,14 +5179,16 @@ class NewProjectDialogTests(unittest.TestCase):
             dialog.storage_var.set(storage)
         return dialog
 
-    def test_button_is_in_column_one_above_download(self):
-        """Ревью 2026-11-02, п.1: «＋ Новый проект…» в колонке кнопок, полной ширины, прямо над «Скачать проект»."""
+    def test_button_is_last_in_column_one_and_not_highlighted(self):
+        """U4.2: «＋ Новый проект…» внизу колонки кнопок, полной ширины, обычного стиля (подсвечена одна кнопка:
+        главное действие); отдельной кнопки «Скачать проект» в колонке нет, скачивание - подвкладка «Проекты»."""
         root, app = self.make_app()
         self.assertEqual(app.new_project_btn.cget("text"), "＋ Новый проект…")
         self.assertEqual(str(app.new_project_btn.nametowidget(app.new_project_btn.winfo_parent())), str(app.actions_row))
         items = app.actions_row._items
-        self.assertEqual(items.index(app.goto_download_btn), items.index(app.new_project_btn) + 1)
-        self.assertEqual(str(app.new_project_btn.cget("style")), "Accent.TButton")
+        self.assertIs(items[-1], app.new_project_btn)
+        self.assertFalse(hasattr(app, "goto_download_btn"))
+        self.assertEqual(str(app.new_project_btn.cget("style")), "TButton")
         self.assertEqual(app.new_project_btn.pack_info()["fill"], "x")
         self.assertNotIn(str(app.new_project_btn), [str(w) for w in app.rescan_btn.master.winfo_children()])
 
@@ -6339,8 +6639,13 @@ class LocalHistoryGuiTests(unittest.TestCase):
 
     @staticmethod
     def accents(app):
-        return [w for w in app.actions_row._items
-                if str(w.cget("style")) == "Accent.TButton" and w is not app.new_project_btn]
+        """Все подсвеченные кнопки окна (обе колонки): на экране она одна."""
+        return shown_accents(app)
+
+    @staticmethod
+    def save_local_shown(app):
+        """«Сохранить у себя» показана в правой колонке «Изменений»."""
+        return app.project_panel.save_local_btn not in app.project_panel.actions_for("changes")._hidden
 
     def checked(self, root, app, item):
         self.pump(root, lambda: item.status is not None and not item.checking and not app._checking)
@@ -6354,11 +6659,12 @@ class LocalHistoryGuiTests(unittest.TestCase):
         # главная кнопка: папка чистая (.git мусором не считается) - «Отправить на сервер…»
         self.assertEqual(self.accents(app), [app.publish_btn])
         self.assertEqual(app.publish_btn.cget("text"), "Отправить на сервер…")
-        self.assertEqual(app.commit_btn.cget("text"), "Сохранить у себя")
-        for button in (app.update_btn, app.lock_btn, app.unlock_btn, app.lines_nav_btn, app.server_btn):
-            self.assertIn(button, self.hidden(app))                            # нет «Занять файл…», «Ветки», адреса
+        self.assertEqual(app.project_panel.save_local_btn.cget("text"), "Сохранить у себя")
+        for button in (app.update_btn, app.server_btn):
+            self.assertIn(button, self.hidden(app))                            # нет «Получить новое» и адреса сервера
         self.assertNotIn(app.publish_btn, self.hidden(app))
-        self.assertNotIn(app.commit_btn, self.hidden(app))
+        self.assertTrue(self.save_local_shown(app))                            # «Сохранить у себя» - справа
+        self.assertIn(app._commit_panel.save_button, app.project_panel.actions_for("changes")._hidden)   # а не «отмеченное»
         self.assertEqual(str(app.publish_btn.cget("state")), "normal")
         # шапка: вместо адреса и ветки - «Хранится только на этом компьютере»
         header = app.project_panel.header_text()
@@ -6383,12 +6689,12 @@ class LocalHistoryGuiTests(unittest.TestCase):
         (self.folder / "новый файл.txt").write_text("новый", encoding="utf-8")
         app._on_refresh_tab()
         self.pump(root, lambda: item.status is not None and item.status.local_changes and not app._checking)
-        self.assertEqual(self.accents(app), [app.commit_btn])                  # есть правки - главное «Сохранить у себя»
+        self.assertEqual(self.accents(app), [app.project_panel.save_local_btn])   # есть правки - главное «Сохранить у себя»
         self.assertEqual(sorted(os.path.basename(c.path) for c in item.status.local_changes),
                          ["README.txt", "новый файл.txt"])
         self.assertIn("Есть несохранённые правки", app.project_panel.header_text())
         with mock.patch("tkinter.messagebox.showinfo") as info, mock.patch("tkinter.messagebox.showwarning") as warn:
-            app.commit_btn.invoke()
+            app.project_panel.save_local_btn.invoke()
             self.assertTrue(app._committing)
             self.pump(root, lambda: not app._committing and item.status is not None
                       and not item.status.local_changes and not app._checking)
@@ -6421,7 +6727,7 @@ class LocalHistoryGuiTests(unittest.TestCase):
         app._commit_item = item
         app._commit_panel.entry.insert(0, "Исправил описание")
         with mock.patch("tkinter.messagebox.showinfo"):
-            app.commit_btn.invoke()
+            app.project_panel.save_local_btn.invoke()
             self.pump(root, lambda: not app._committing and item.status is not None
                       and not item.status.local_changes and not app._checking)
         self.assertEqual(app.client.recent_log(str(self.folder), 1)[0].message, "Исправил описание")
@@ -6431,7 +6737,7 @@ class LocalHistoryGuiTests(unittest.TestCase):
         root, app = self.make_app()
         iid, item = self.select(root, app)
         self.checked(root, app, item)
-        app.commit_btn.invoke()
+        app.project_panel.save_local_btn.invoke()
         self.pump(root, lambda: not app._committing and not app._checking)
         self.assertEqual(app.mine_status.get(), "Сохранять было нечего: файлы не изменились.")
         self.assertEqual(self.client_revision(app, item), 2)
@@ -6443,15 +6749,16 @@ class LocalHistoryGuiTests(unittest.TestCase):
         self.rescan(root, app)
         iid, item = self.select(root, app, "серверный")
         self.assertFalse(item.local)
-        self.assertEqual(app.commit_btn.cget("text"), "Сохранить на сервер")
-        for button in (app.update_btn, app.lock_btn, app.unlock_btn, app.lines_nav_btn):
+        self.assertFalse(self.save_local_shown(app))                           # «Сохранить у себя» только у истории на компьютере
+        for button in (app.update_btn, app.server_btn):
             self.assertNotIn(button, self.hidden(app))
         self.assertIn(app.publish_btn, self.hidden(app))
         panel = app.project_panel
-        self.assertEqual(str(panel.tabs.tab(panel.frames["locks"], "state")), "normal")
+        for key in ("incoming", "locks", "lines"):
+            self.assertEqual(str(panel.tabs.tab(panel.frames[key], "state")), "normal")
         self.assertNotIn("Хранится только на этом компьютере", panel.header_text())
         self.select(root, app, self.FOLDER)                                    # и обратно
-        self.assertEqual(app.commit_btn.cget("text"), "Сохранить у себя")
+        self.assertTrue(self.save_local_shown(app))
 
     def lose_history(self, root, app, name=None):
         """Перечитывает список после потери истории и выбирает проект; ждёт, пока проверки закончатся."""
@@ -6476,7 +6783,7 @@ class LocalHistoryGuiTests(unittest.TestCase):
         self.assertIn("Восстановить историю", header)
         self.assertEqual(app.special_btn.cget("text"), "Восстановить историю")
         self.assertEqual(self.accents(app), [app.special_btn])
-        self.assertIn(app.commit_btn, self.hidden(app))
+        self.assertFalse(self.save_local_shown(app))                           # сохранять некуда: истории нет
         self.assertNotIn(app.publish_btn, self.hidden(app))                    # отправить можно и так
         self.assertNotIn(app.continue_btn, self.hidden(app))
         self.assertEqual(app.continue_btn.cget("text"), "Продолжить без истории")
@@ -6509,7 +6816,7 @@ class LocalHistoryGuiTests(unittest.TestCase):
         app._on_refresh_tab()
         self.pump(root, lambda: item.status is not None and item.status.local_changes and not app._checking)
         with mock.patch("tkinter.messagebox.showinfo"):
-            app.commit_btn.invoke()
+            app.project_panel.save_local_btn.invoke()
             self.pump(root, lambda: not app._committing and item.status is not None
                       and not item.status.local_changes and not app._checking)
         self.assertEqual(self.client_revision(app, item), 3)
@@ -6529,7 +6836,7 @@ class LocalHistoryGuiTests(unittest.TestCase):
         self.assertEqual(self.accents(app), [app.publish_btn])
         self.assertEqual(str(app.publish_btn.cget("state")), "normal")
         self.assertIn(app.special_btn, self.hidden(app))                       # «Восстановить» нечего
-        self.assertIn(app.commit_btn, self.hidden(app))
+        self.assertFalse(self.save_local_shown(app))
         self.assertNotIn(app.continue_btn, self.hidden(app))
         app._set_offline(True)                                                 # без связи отправить нельзя, подсказка есть
         app._update_mine_buttons()
@@ -6592,9 +6899,9 @@ class LocalHistoryGuiTests(unittest.TestCase):
         self.assertEqual(self.accents(app), [app.publish_btn])
         self.assertEqual(app.publish_btn.cget("text"), "Отправить на сервер…")
         self.assertEqual(str(app.publish_btn.cget("state")), "normal")
-        for button in (app.update_btn, app.lock_btn, app.unlock_btn, app.lines_nav_btn, app.server_btn, app.commit_btn,
-                       app.continue_btn):
+        for button in (app.update_btn, app.server_btn, app.continue_btn):
             self.assertIn(button, self.hidden(app))
+        self.assertFalse(self.save_local_shown(app))
         app._set_offline(True)
         app._update_mine_buttons()
         self.assertEqual(str(app.publish_btn.cget("state")), "disabled")       # без связи - серая, с подсказкой
@@ -6634,7 +6941,7 @@ class LocalHistoryGuiTests(unittest.TestCase):
         self.assertFalse(item.local)                                           # теперь это проект на сервере
         self.assertEqual(item.archive, self.result.repo)                       # история осталась архивом
         self.assertTrue(os.path.isdir(self.result.repo))
-        self.assertEqual(app.commit_btn.cget("text"), "Сохранить на сервер")
+        self.assertFalse(self.save_local_shown(app))                           # это уже не история на компьютере
         index = app._archive_idx
         self.assertIsNotNone(index)
         self.assertEqual(app.more_menu.entrycget(index, "label"), "Удалить прежние сохранения на этом компьютере…")
