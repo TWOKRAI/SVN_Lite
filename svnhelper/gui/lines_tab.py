@@ -247,11 +247,10 @@ class LinesTabMixin:
         self._autowrap(self.lines_hint, body, px(30))
 
         # кнопки стоят в колонке справа от панели «Состояние проекта» (project_panel.actions_for), по частоте
-        # использования сверху вниз: «Перейти» (главная), «Отличия», «Перенести правки…», «Новая ветка…»,
+        # использования сверху вниз: «Перейти», «Отличия», «Перенести правки…», «Новая ветка…»,
         # «Скачать отдельно», «Зафиксировать версию…»
         self.lines_buttons = row = self.project_panel.actions_for("lines")
-        self.switch_here_btn = ttk.Button(row, text="Перейти", style="Accent.TButton", command=self._on_switch_here,
-                                          state="disabled")
+        self.switch_here_btn = ttk.Button(row, text="Перейти", command=self._on_switch_here, state="disabled")
         self.diff_btn = ttk.Button(row, text="Отличия", command=self._on_show_diff, state="disabled")
         self.merge_btn = ttk.Button(row, text="Перенести правки…", command=self._on_merge, state="disabled")
         self.new_branch_btn = ttk.Button(row, text="Новая ветка…", command=self._on_make_branch, state="disabled")

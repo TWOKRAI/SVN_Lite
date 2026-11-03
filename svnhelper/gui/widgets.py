@@ -502,11 +502,24 @@ class SideButtons(ttk.Frame):
     def has_visible(self) -> bool:
         return any(widget not in self._hidden for widget in self._items)
 
-    def add(self, widget: tk.Misc, visible: bool = True, separator: bool = False) -> None:
-        self._items.append(widget)
+    def add(self, widget: tk.Misc, visible: bool = True, separator: bool = False,
+            before: Optional[tk.Misc] = None) -> None:
+        """Добавляет кнопку в конец колонки, а с before - перед этой кнопкой (так обновляются шаблоны комментария)."""
+        if before is not None and before in self._items:
+            self._items.insert(self._items.index(before), widget)
+        else:
+            self._items.append(widget)
         widget._side_gap = self._gap * 3 if separator else self._gap      # type: ignore[attr-defined]
         if not visible:
             self._hidden.add(widget)
+        self._repack()
+
+    def remove(self, widget: tk.Misc) -> None:
+        """Убирает кнопку из колонки и уничтожает её."""
+        if widget in self._items:
+            self._items.remove(widget)
+        self._hidden.discard(widget)
+        widget.destroy()
         self._repack()
 
     def set_visible(self, widget: tk.Misc, visible: bool) -> None:
@@ -527,12 +540,49 @@ class SideButtons(ttk.Frame):
             self.on_change()
 
 
+BUTTON_FONT = (FONT_FAMILY, 10, "bold")
+
+
+def button_padding(px: Callable[[int], int]) -> int:
+    """Сколько ширины кнопка добавляет к тексту (отступы кнопок темы, масштаб экрана учтён)."""
+    return 2 * px(14) + px(8)
+
+
+def text_width(parent: tk.Misc, text: str) -> int:
+    # «font measure» напрямую: объект tkfont.Font удаляется сборщиком мусора, а из чужого потока это роняет Tcl
+    return int(parent.tk.call("font", "measure", BUTTON_FONT, text))
+
+
 def button_column_width(parent: tk.Misc, texts: list[str], px: Callable[[int], int]) -> int:
     """Ширина колонки кнопок по самому длинному тексту (шрифт и отступы кнопок темы, масштаб экрана учтён)."""
-    # «font measure» напрямую: объект tkfont.Font удаляется сборщиком мусора, а из чужого потока это роняет Tcl
-    spec = (FONT_FAMILY, 10, "bold")
-    widest = max((int(parent.tk.call("font", "measure", spec, text)) for text in texts), default=0)
-    return widest + 2 * px(14) + px(8)
+    widest = max((text_width(parent, text) for text in texts), default=0)
+    return widest + button_padding(px)
+
+
+def fit_text(parent: tk.Misc, text: str, max_width: int) -> str:
+    """Текст кнопки, укороченный с «…» так, чтобы он занимал не больше max_width пикселей (шрифт кнопок темы).
+
+    Помещающийся текст возвращается как есть; полный текст вызывающий показывает во всплывающей подсказке."""
+    if text_width(parent, text) <= max_width:
+        return text
+    low, high = 0, len(text)            # наибольшее число букв, при котором «начало…» ещё помещается
+    while low < high:
+        middle = (low + high + 1) // 2
+        if text_width(parent, text[:middle].rstrip() + "…") <= max_width:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip() + "…"
+
+
+def popup_menu_under(button: tk.Misc, menu: tk.Menu) -> None:
+    """Открывает меню под кнопкой (для кнопок с «▾»)."""
+    if str(button.cget("state")) == "disabled":
+        return
+    try:
+        menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+    finally:
+        menu.grab_release()
 
 
 class CollapsibleColumn(ttk.Frame):

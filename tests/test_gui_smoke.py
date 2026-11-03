@@ -3344,7 +3344,7 @@ class CommitFlowFakeTests(unittest.TestCase):
         with mock.patch("tkinter.messagebox.askyesno", return_value=False):
             self.save(panel, self.file("новый файл.txt"))
             self.finish()
-        self.assertEqual(list(panel._recent.cget("values")), [self.COMMENT])
+        self.assertEqual(panel.recent_comments(), [self.COMMENT])
 
     def test_checks_wait_for_commit_and_locking(self):
         item = self.item
@@ -3372,8 +3372,7 @@ class CommitFlowFakeTests(unittest.TestCase):
         self.app.shared_data = {"commit_templates": ["Один", "Два"]}
         with mock.patch.object(self.app, "_on_refresh"), mock.patch.object(self.app, "_on_url_changed"),                 mock.patch.object(self.app, "_rescan_docs"):
             self.app._rebuild_config()
-        labels = [b.cget("text") for b in self.app._commit_panel._templates_row.winfo_children()]
-        self.assertEqual(labels, ["Один", "Два"])
+        self.assertEqual(self.app._commit_panel.template_texts(), ["Один", "Два"])
 
     def test_commit_lock_required_offers_lock_and_saves(self):
         from svnhelper.svn_core import CommitResult
@@ -3589,6 +3588,210 @@ class CommitPanelTests(unittest.TestCase):
         self.panel.set_changes([self.LocalChange("a.txt", "modified")])
         theme.configure_tree_tags(self.panel.tree)
         theme.apply(self.root, mode="light")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "нет экрана")
+class SideColumnButtonsTests(unittest.TestCase):
+    """U4.1: колонка кнопок справа на «Изменениях» (шаблоны, «Последние ▾») и на «Занятых» - без окна с проектами."""
+
+    LONG = "Исправил размеры на сборочном чертеже по замечаниям главного конструктора и технолога"
+
+    def make_panel(self, scale=1.0, templates=None, recent=("раз", "два")):
+        from svnhelper import theme
+        from svnhelper.gui.project_panel import ProjectPanel
+        root = tk.Tk()
+        self.addCleanup(self.destroy_root, root)
+        root.tk.call("tk", "scaling", 96 * scale / 72)
+        theme.apply(root)
+        px = lambda value: int(value * scale)                                      # noqa: E731
+        self.saved, self.released, self.locked = [], [], []
+        panel = ProjectPanel(root, px, templates=templates, recent_comments=list(recent),
+                             on_save=lambda paths, text: self.saved.append((paths, text)),
+                             on_release=self.released.append, on_lock=lambda: self.locked.append(True))
+        panel.pack(fill="both", expand=True)
+        root.geometry("1000x600")
+        root.update()
+        self.root, self.panel, self.px = root, panel, px
+        return panel
+
+    @staticmethod
+    def destroy_root(root):
+        try:
+            root.destroy()
+        except tk.TclError:                     # уже закрыто самим тестом
+            pass
+
+    def show_changes(self, panel):
+        from svnhelper.svn_core import LocalChange
+        panel.tabs.select(panel.frames["changes"])
+        panel.commit_panel.set_changes([LocalChange("a.txt", "modified")])
+        self.root.update()
+
+    @staticmethod
+    def texts(panel):
+        return [str(b.cget("text")) for b in panel.side_buttons()]
+
+    def test_changes_tab_has_save_templates_and_recent_in_order(self):
+        panel = self.make_panel()
+        self.assertEqual(panel.side_buttons(), [])                         # правок нет: нет и колонки
+        self.show_changes(panel)
+        self.assertEqual(self.texts(panel), ["Сохранить отмеченное", "Правка чертежа", "Новая редакция КП",
+                                             "Исправил по замечаниям", "Последние ▾"])
+        ys = [b.winfo_y() for b in panel.side_buttons()]
+        self.assertEqual(ys, sorted(ys))
+        # шаблоны отделены от кнопки сохранения: зазор больше обычного
+        buttons = panel.side_buttons()
+        gap = lambda a, b: b.winfo_y() - (a.winfo_y() + a.winfo_height())      # noqa: E731
+        self.assertGreater(gap(buttons[0], buttons[1]), gap(buttons[1], buttons[2]))
+        # под списком правок кнопок нет: только поле и ошибка
+        body = panel.commit_panel
+        outside = [w for w in SideColumnButtonsTests.all_widgets(body, "TButton") if w.master is not panel.side
+                   and not str(w.master).startswith(str(panel.side))]
+        self.assertEqual(outside, [])
+        self.assertEqual(str(body.entry.winfo_manager()), "grid")
+        panel.side_buttons()[2].invoke()
+        self.assertEqual(body.comment(), "Новая редакция КП")
+
+    @staticmethod
+    def all_widgets(widget, klass):
+        found = []
+        for child in widget.winfo_children():
+            if child.winfo_class() == klass:
+                found.append(child)
+            found.extend(SideColumnButtonsTests.all_widgets(child, klass))
+        return found
+
+    def test_recent_menu_lists_comments_and_fills_the_field(self):
+        panel = self.make_panel(recent=["раз", "два", " ", "три", "4", "5", "6"])
+        self.show_changes(panel)
+        body = panel.commit_panel
+        self.assertEqual(body.recent_comments(), ["раз", "два", "три", "4", "5"])      # пять последних, пустые не берём
+        menu = body._recent_menu
+        self.assertEqual([menu.entrycget(i, "label") for i in range(menu.index("end") + 1)],
+                         ["раз", "два", "три", "4", "5"])
+        menu.invoke(1)
+        self.assertEqual(body.comment(), "два")
+        body.set_recent_comments([])                                            # нечего выбирать: кнопки нет
+        self.root.update()
+        self.assertNotIn("Последние ▾", self.texts(panel))
+        body.set_recent_comments(["x" * 200])                                   # длинный комментарий в меню коротким
+        label = body._recent_menu.entrycget(0, "label")
+        self.assertTrue(label.endswith("…") and len(label) <= body.RECENT_LABEL_MAX)
+        body._recent_menu.invoke(0)
+        self.assertEqual(body.comment(), "x" * 200)                             # а в поле - целиком
+
+    def test_long_template_does_not_widen_column_and_has_full_tooltip(self):
+        self.assertGreater(len(self.LONG), 60)
+        panel = self.make_panel(templates=[self.LONG, "Короткий"])
+        self.show_changes(panel)
+        limit = self.px(panel.SIDE_MAX_WIDTH)
+        buttons = panel.side_buttons()
+        self.assertLessEqual(panel.side.winfo_reqwidth(), limit)
+        self.assertLessEqual(max(b.winfo_width() for b in buttons), limit)
+        long_button = buttons[1]
+        shown = str(long_button.cget("text"))
+        self.assertTrue(shown.endswith("…") and len(shown) < len(self.LONG))
+        self.assertEqual(long_button._full_tip.text_fn(), self.LONG)            # полный текст - в подсказке
+        self.assertEqual(buttons[2].cget("text"), "Короткий")
+        self.assertEqual(buttons[2]._full_tip.text_fn(), "")                    # у короткого подсказки нет
+        long_button.invoke()
+        self.assertEqual(panel.commit_panel.comment(), self.LONG)               # в поле попадает целиком
+        self.assertEqual(panel.commit_panel.template_texts(), [self.LONG, "Короткий"])
+
+    def test_long_template_fits_at_every_scale(self):
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                panel = self.make_panel(scale=scale, templates=[self.LONG, self.LONG, self.LONG])
+                self.show_changes(panel)
+                limit = self.px(panel.SIDE_MAX_WIDTH)
+                for button in panel.side_buttons():
+                    self.assertLessEqual(button.winfo_width(), limit, button.cget("text"))
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), button.cget("text"))
+                    self.assertLessEqual(button.winfo_rootx() + button.winfo_width(),
+                                         self.root.winfo_rootx() + self.root.winfo_width())
+                self.root.destroy()
+
+    def test_templates_are_rebuilt_in_place_before_recent(self):
+        panel = self.make_panel()
+        self.show_changes(panel)
+        panel.commit_panel.set_templates(["Один", "Два"])                       # общие настройки перечитаны
+        self.root.update()
+        self.assertEqual(self.texts(panel), ["Сохранить отмеченное", "Один", "Два", "Последние ▾"])
+        panel.commit_panel.set_templates([])
+        self.root.update()
+        self.assertEqual(self.texts(panel), ["Сохранить отмеченное", "Последние ▾"])
+
+    def test_blocked_panel_blocks_templates_too(self):
+        panel = self.make_panel()
+        self.show_changes(panel)
+        panel.commit_panel.set_enabled(False, "В версию сохранять нельзя")
+        self.assertEqual({str(b.cget("state")) for b in panel.side_buttons()}, {"disabled"})
+        panel.commit_panel.set_templates(["Новый"])                             # и новые шаблоны заблокированы
+        self.assertEqual({str(b.cget("state")) for b in panel.side_buttons()}, {"disabled"})
+        panel.commit_panel.set_enabled(True)
+        self.assertEqual({str(b.cget("state")) for b in panel.side_buttons()}, {"normal"})
+
+    def test_locks_tab_buttons_and_release_without_selection(self):
+        from svnhelper.svn_core import LockInfo
+        panel = self.make_panel()
+        panel.tabs.select(panel.frames["locks"])
+        panel.set_locks_enabled(True, True)
+        base = os.path.join(os.sep, "proj")
+        mine, other = os.path.join(base, "a.bin"), os.path.join(base, "b.bin")
+        panel.set_locks(base, [LockInfo(mine, "me")], [LockInfo(other, "petrov")])
+        self.root.update()
+        self.assertEqual(self.texts(panel), ["Занять файл…", "Освободить…"])
+        tree = panel.locks_tree
+        self.assertEqual(str(tree.cget("selectmode")), "extended")
+        own_row, other_row = tree.get_children()
+        self.assertEqual(tree.selection(), ())
+        self.assertEqual(str(panel.release_btn.cget("state")), "normal")
+        panel.release_btn.invoke()
+        self.assertEqual(self.released, [[]])                                   # без выбора: окно выбора спросит само
+        tree.selection_set(own_row, other_row)                                  # выбраны свой и чужой: освобождает свой
+        self.root.update()
+        panel.release_btn.invoke()
+        self.assertEqual(self.released[-1], [mine])
+        tree.selection_set(other_row)                                           # только чужой: освобождать нечего
+        self.root.update()
+        self.assertEqual(str(panel.release_btn.cget("state")), "disabled")
+        panel.lock_btn.invoke()
+        self.assertEqual(self.locked, [True])
+        panel.set_locks_enabled(False, False)
+        tree.selection_clear()
+        self.assertEqual((str(panel.lock_btn.cget("state")), str(panel.release_btn.cget("state"))),
+                         ("disabled", "disabled"))
+
+    def test_incoming_tab_counter(self):
+        panel = self.make_panel()
+        tab = lambda: panel.tabs.tab(panel.frames["incoming"], "text")          # noqa: E731
+        self.assertEqual(tab(), "Новое")
+        panel.set_incoming_count(4)
+        self.assertEqual(tab(), "Новое 4")
+        panel.set_incoming_count(0)
+        self.assertEqual(tab(), "Новое")
+
+    def test_dark_theme_builds(self):
+        from svnhelper import theme
+        panel = self.make_panel(templates=[self.LONG])
+        theme.apply(self.root, mode="dark")
+        self.show_changes(panel)
+        panel.commit_panel.set_templates(["Один", self.LONG])
+        panel.commit_panel.set_recent_comments(["раз"])
+        self.root.update()
+        self.assertEqual(len(panel.side_buttons()), 4)
+        theme.apply(self.root, mode="light")
+
+    def test_fit_text(self):
+        from svnhelper.gui.widgets import fit_text, text_width
+        root = tk.Tk()
+        self.addCleanup(root.destroy)
+        self.assertEqual(fit_text(root, "Коротко", 500), "Коротко")
+        for room in (40, 120, 200):
+            shown = fit_text(root, self.LONG, room)
+            self.assertTrue(shown.endswith("…"))
+            self.assertLessEqual(text_width(root, shown), room)
+        self.assertEqual(fit_text(root, self.LONG, 1), "…")
 
 
 class CommitTemplatesConfigTests(unittest.TestCase):
@@ -4048,13 +4251,20 @@ class ProjectPanelTabsTests(unittest.TestCase):
             app._refresh_row(item)
             row = tree.get_children()[0]
             self.assertEqual((tree.set(row, "file"), tree.set(row, "who")), (os.path.join("docs sub", "b.bin"), "вы"))
-            self.assertEqual(str(panel.release_btn.cget("state")), "disabled")      # ничего не выбрано
+            # ничего не выбрано: «Освободить…» доступна и открывает окно выбора своих файлов
+            self.assertEqual(tree.selection(), ())
+            self.assertEqual(str(panel.release_btn.cget("state")), "normal")
+            with mock.patch.object(app, "_on_release_lock") as choose, mock.patch.object(app, "_run_locks") as run:
+                panel.release_btn.invoke()
+            choose.assert_called_once_with()
+            run.assert_not_called()
             tree.selection_set(row)
             root.update()
             self.assertEqual(str(panel.release_btn.cget("state")), "normal")
-            with mock.patch.object(app, "_run_locks") as run:
+            with mock.patch.object(app, "_on_release_lock") as choose, mock.patch.object(app, "_run_locks") as run:
                 panel.release_btn.invoke()
-            run.assert_called_once_with(item, [mine_file], lock=False)
+            run.assert_called_once_with(item, [mine_file], lock=False)           # выбрана своя строка: освобождает её
+            choose.assert_not_called()
             with mock.patch.object(app, "_on_get_lock") as get_lock:                # «Занять файл…» в колонке кнопок
                 panel.lock_btn.invoke()
             get_lock.assert_called_once_with()
@@ -4073,11 +4283,13 @@ class ProjectPanelTabsTests(unittest.TestCase):
         try:
             panel = app.project_panel
             root.update()
+            panel.commit_panel.set_recent_comments(["Раз", "Два"])
             expected = {
-                "changes": ["Сохранить отмеченное"],
+                "changes": ["Сохранить отмеченное", "Правка чертежа", "Новая редакция КП", "Исправил по замечаниям",
+                            "Последние ▾"],
                 "incoming": [],
                 "history": [],
-                "locks": ["Освободить", "Занять файл…"],
+                "locks": ["Занять файл…", "Освободить…"],
                 "lines": ["Перейти", "Отличия", "Перенести правки…", "Новая ветка…", "Скачать отдельно",
                           "Зафиксировать версию…"],
             }
@@ -4097,15 +4309,18 @@ class ProjectPanelTabsTests(unittest.TestCase):
                         self.assertEqual(len({b.winfo_x() for b in panel.side_buttons()}), 1)
                     else:                                                  # нет кнопок - нет колонки
                         self.assertEqual(panel.side.winfo_manager(), "")
-            # «Перейти» - главная кнопка вкладки «Ветки»
-            self.assertEqual(str(app.switch_here_btn.cget("style")), "Accent.TButton")
+            # подсвечена только «Сохранить отмеченное»; «Перейти» и остальные обычного стиля
+            self.assertEqual(str(app.switch_here_btn.cget("style")), "")
             self.assertEqual(str(panel.commit_panel.save_button.cget("style")), "Accent.TButton")
-            # под таблицами вкладок кнопок действий не осталось: они только в колонке (шаблоны комментария - не действия)
-            actions = {text for texts_ in expected.values() for text in texts_}
+            right = [b for key in ("changes", "locks", "lines") for b in panel._side_bars[key]._items]
+            self.assertEqual([str(b.cget("text")) for b in right if str(b.cget("style")) == "Accent.TButton"],
+                             ["Сохранить отмеченное"])
+            # под таблицами вкладок кнопок не осталось: все только в колонке справа, под списком правок
+            # только поле комментария и ошибка
             for key in ("changes", "locks", "lines"):
                 outside = [str(w.cget("text")) for w in self.all_buttons(app.project_tab_frames[key])
                            if not isinstance(w.master, SideButtons)]
-                self.assertFalse(actions & set(outside), (key, outside))
+                self.assertEqual(outside, [], (key, outside))
         finally:
             root.destroy()
 

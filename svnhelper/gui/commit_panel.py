@@ -8,7 +8,7 @@ from typing import Callable, Iterable, Optional
 from .. import theme
 from ..config import DEFAULT_COMMIT_TEMPLATES
 from ..svn_core import LocalChange
-from .widgets import SideButtons
+from .widgets import popup_menu_under, SideButtons
 
 CHECKED, UNCHECKED = "☑", "☐"
 LOCK = "🔒"
@@ -28,6 +28,7 @@ EMPTY_TEXT = "Правок нет. Измените файлы в папке п�
 NEED_COMMENT = "Напишите, что вы сделали"
 NEED_FILE = "Отметьте хотя бы один файл"
 NEED_LOCK_TEXT = "нужно занять"
+RECENT_BUTTON = "Последние ▾"
 
 
 class CommitPanel(ttk.Frame):
@@ -36,11 +37,15 @@ class CommitPanel(ttk.Frame):
     on_save(paths, comment) вызывается только после проверок (комментарий не пустой, отмечен хотя бы один файл).
     set_changes(list[LocalChange]) — показать правки (все отмечены, кроме конфликтных).
     set_enabled(False, reason) — заблокировать сохранение и показать причину.
-    actions — колонка кнопок вкладки (SideButtons): «Сохранить отмеченное» стоит в ней и видна, пока есть правки;
-    без неё кнопка стоит под полем комментария.
+    actions — колонка кнопок вкладки (SideButtons): в ней сверху вниз «Сохранить отмеченное», шаблоны комментария и
+    «Последние ▾» (меню последних комментариев); видны, пока есть правки. Под списком остаются только поле и ошибка.
+    Без колонки всё стоит под полем комментария: кнопка сохранения, ряд шаблонов, список последних.
+    Длинный шаблон на кнопке укорачивает ProjectPanel (по атрибуту кнопки full_text), полный текст виден в подсказке.
     """
 
     RECENT_LIMIT = 5
+    TEMPLATES_SHOWN = 3
+    RECENT_LABEL_MAX = 70        # длиннее комментарий в меню укорачивается с «…» (по выбору подставляется целиком)
 
     def __init__(self, parent: tk.Misc, templates: Optional[Iterable[str]] = None,
                  recent_comments: Optional[Iterable[str]] = None,
@@ -51,6 +56,10 @@ class CommitPanel(ttk.Frame):
         self._marks: dict[str, bool] = {}      # путь -> отмечен
         self._conflicts: set[str] = set()
         self._enabled = True
+        self._has_changes = False
+        self._templates: list[str] = []
+        self._recent_values: list[str] = []
+        self._template_buttons: list[ttk.Button] = []      # шаблоны в колонке кнопок (если она есть)
         self._comment = tk.StringVar()
         self._comment.trace_add("write", lambda *_: self._clear_error())
 
@@ -90,20 +99,24 @@ class CommitPanel(ttk.Frame):
         self.entry.grid(row=2, column=0, sticky="ew")
         self._error = ttk.Label(self._body, text="", style="Error.TLabel", wraplength=360, justify="left")
         self._error.grid(row=3, column=0, sticky="w", pady=(2, 0))
-
-        self._templates_row = ttk.Frame(self._body)
-        self._templates_row.grid(row=4, column=0, sticky="w", pady=(4, 0))
-        self._recent = ttk.Combobox(self._body, state="readonly")
-        self._recent.bind("<<ComboboxSelected>>", self._on_recent)
-        self._recent_row = 5
-
         self._reason = ttk.Label(self._body, text="", style="Hint.TLabel", wraplength=360, justify="left")
         self._reason.grid(row=6, column=0, sticky="w", pady=(6, 0))
+
         self.save_button = ttk.Button(actions if actions is not None else self._body, text="Сохранить отмеченное",
                                       style="Accent.TButton", command=self._save)
         if actions is not None:
             actions.add(self.save_button, visible=False)
+            self._recent_menu = tk.Menu(self, tearoff=False)
+            self._recent_btn = ttk.Button(actions, text=RECENT_BUTTON,
+                                          command=lambda: popup_menu_under(self._recent_btn, self._recent_menu))
+            actions.add(self._recent_btn, visible=False)
         else:
+            # прежняя раскладка: шаблоны и список последних под полем комментария
+            self._templates_row = ttk.Frame(self._body)
+            self._templates_row.grid(row=4, column=0, sticky="w", pady=(4, 0))
+            self._recent = ttk.Combobox(self._body, state="readonly")
+            self._recent.bind("<<ComboboxSelected>>", self._on_recent)
+            self._recent_row = 5
             self.save_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
 
         self.set_templates(list(DEFAULT_COMMIT_TEMPLATES) if templates is None else templates)
@@ -113,20 +126,63 @@ class CommitPanel(ttk.Frame):
     # --- наполнение ---------------------------------------------------------
 
     def set_templates(self, templates: Iterable[str]) -> None:
-        for child in self._templates_row.winfo_children():
-            child.destroy()
-        for text in list(templates)[:3]:
-            ttk.Button(self._templates_row, text=text,
-                       command=lambda t=text: self.set_comment(t)).pack(side="left", padx=(0, 6))
+        self._templates = list(templates)[:self.TEMPLATES_SHOWN]
+        if self._actions is None:
+            for child in self._templates_row.winfo_children():
+                child.destroy()
+            for text in self._templates:
+                ttk.Button(self._templates_row, text=text,
+                           command=lambda t=text: self.set_comment(t)).pack(side="left", padx=(0, 6))
+            return
+        for button in self._template_buttons:
+            self._actions.remove(button)
+        self._template_buttons = []
+        for index, text in enumerate(self._templates):
+            button = ttk.Button(self._actions, text=text, command=lambda t=text: self.set_comment(t))
+            button.full_text = text                  # type: ignore[attr-defined]  # ProjectPanel укорачивает подпись
+            self._actions.add(button, visible=self._has_changes, separator=index == 0, before=self._recent_btn)
+            self._template_buttons.append(button)
+        self._sync_actions()
+
+    def template_texts(self) -> list[str]:
+        """Шаблоны комментария целиком (на кнопках длинные могут быть укорочены)."""
+        return list(self._templates)
 
     def set_recent_comments(self, comments: Iterable[str]) -> None:
         values = [c for c in comments if c.strip()][:self.RECENT_LIMIT]
-        self._recent.configure(values=values)
-        self._recent.set("")
-        if values:
-            self._recent.grid(row=self._recent_row, column=0, sticky="ew", pady=(6, 0))
-        else:
-            self._recent.grid_remove()
+        self._recent_values = values
+        if self._actions is None:
+            self._recent.configure(values=values)
+            self._recent.set("")
+            if values:
+                self._recent.grid(row=self._recent_row, column=0, sticky="ew", pady=(6, 0))
+            else:
+                self._recent.grid_remove()
+            return
+        self._recent_menu.delete(0, "end")
+        for text in values:
+            self._recent_menu.add_command(label=self._menu_label(text), command=lambda t=text: self.set_comment(t))
+        self._sync_actions()
+
+    def recent_comments(self) -> list[str]:
+        """Последние комментарии, из которых можно выбрать (не больше RECENT_LIMIT)."""
+        return list(self._recent_values)
+
+    def _menu_label(self, text: str) -> str:
+        text = " ".join(text.split())
+        return text if len(text) <= self.RECENT_LABEL_MAX else text[:self.RECENT_LABEL_MAX - 1].rstrip() + "…"
+
+    def _sync_actions(self) -> None:
+        """Кнопки в колонке справа: шаблоны видны, пока есть правки; «Последние ▾» ещё и если есть что выбрать.
+        Заблокированная панель (в версию сохранять нельзя) блокирует и их."""
+        if self._actions is None:
+            return
+        state = "normal" if self._enabled else "disabled"
+        for button in self._template_buttons:
+            self._actions.set_visible(button, self._has_changes)
+            button.configure(state=state)
+        self._actions.set_visible(self._recent_btn, self._has_changes and bool(self._recent_values))
+        self._recent_btn.configure(state=state)
 
     def set_changes(self, changes: list[LocalChange]) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -143,7 +199,7 @@ class CommitPanel(ttk.Frame):
             self.tree.insert("", "end", iid=change.path, tags=tags,
                              values=(CHECKED if not conflict else UNCHECKED, change.path,
                                      KIND_TEXT.get(change.kind, change.kind), self._lock_text(change)))
-        has_changes = bool(changes)
+        has_changes = self._has_changes = bool(changes)
         if has_changes:
             self._empty.grid_remove()
             self._body.grid()
@@ -152,6 +208,7 @@ class CommitPanel(ttk.Frame):
             self._empty.grid()
         if self._actions is not None:
             self._actions.set_visible(self.save_button, has_changes)
+            self._sync_actions()
         self._clear_error()
 
     @staticmethod
@@ -167,6 +224,7 @@ class CommitPanel(ttk.Frame):
         self.save_button.configure(state="normal" if enabled else "disabled")
         self.entry.configure(state="normal" if enabled else "disabled")
         self._reason.configure(text="" if enabled else reason)
+        self._sync_actions()
 
     def checked_paths(self) -> list[str]:
         return [path for path in self.tree.get_children() if self._marks.get(path)]

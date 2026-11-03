@@ -15,7 +15,7 @@ from tkinter import ttk
 from .. import messages, theme
 from ..svn_core import CancelToken, LockInfo, LogEntry
 from .commit_panel import CommitPanel
-from .widgets import SideButtons, button_column_width
+from .widgets import button_column_width, button_padding, fit_text, SideButtons, Tooltip
 
 # ключ вкладки -> подпись на ярлыке
 PROJECT_TABS = (("changes", "Изменения"), ("incoming", "Новое"), ("history", "История"),
@@ -190,15 +190,18 @@ class ProjectPanel(ttk.Frame):
 
     Публичные виджеты: title_label, status_label, branch_label, todo_label, note_label; tabs (Notebook),
     frames[ключ вкладки], commit_panel, incoming_view, history_view, locks_tree, locks_message,
-    release_btn, lock_btn. Кнопки «Занятых» вызывают on_release(пути своих файлов) и on_lock().
+    release_btn, lock_btn. Кнопки «Занятых» вызывают on_release(пути выбранных своих файлов; пустой список, если
+    ничего не выбрано: тогда окно спросит, какие свои файлы освободить) и on_lock().
 
     Кнопки вкладок стоят не под таблицей, а вертикальной колонкой справа от панели (self.side): у каждой вкладки
     своя колонка SideButtons (actions_for(ключ)), показывается колонка выбранной вкладки. У вкладки без кнопок
     (Новое, История) колонки нет, и места она не занимает. Колонка лежит в самой панели, поэтому прячется и
-    показывается вместе с ней при сворачивании «Состояния проекта».
+    показывается вместе с ней при сворачивании «Состояния проекта». Колонка не шире SIDE_MAX_WIDTH: подпись
+    длиннее (шаблон комментария) укорачивается с «…», полный текст виден во всплывающей подсказке.
     """
 
     SIDE_GAP = 6
+    SIDE_MAX_WIDTH = 240
 
     TAG_COLOR = {"ok": "success", "new": "warning", "bad": "danger", "plain": "muted", "frozen": "frozen"}
 
@@ -267,10 +270,12 @@ class ProjectPanel(ttk.Frame):
 
     def sync_actions(self) -> None:
         """Колонка перестраивается по выбранной вкладке: показана колонка этой вкладки, ширина у всех одна
-        (по самому длинному тексту), нет кнопок - нет и колонки."""
+        (по самому длинному тексту, но не больше SIDE_MAX_WIDTH), нет кнопок - нет и колонки."""
         px = self.px
-        width = button_column_width(self, [str(b.cget("text")) for bar in self._side_bars.values()
-                                           for b in bar._items], px)
+        buttons = [b for bar in self._side_bars.values() for b in bar._items]
+        width = min(button_column_width(self, [self._full_text(b) for b in buttons], px), px(self.SIDE_MAX_WIDTH))
+        for button in buttons:
+            self._fit_button(button, width - button_padding(px))
         for bar in self._side_bars.values():
             bar.set_width(width)
         current = self._side_bars.get(self.current_tab())
@@ -282,6 +287,23 @@ class ProjectPanel(ttk.Frame):
             self.side.grid(row=0, column=1, rowspan=2, sticky="n", padx=(px(12), 0))
         else:
             self.side.grid_remove()
+
+    @staticmethod
+    def _full_text(button: tk.Misc) -> str:
+        """Полная подпись кнопки: у кнопок с укорачиваемой подписью (шаблоны) она в атрибуте full_text."""
+        return getattr(button, "full_text", None) or str(button.cget("text"))
+
+    def _fit_button(self, button: tk.Misc, room: int) -> None:
+        """Подпись кнопки с full_text укорачивается, чтобы войти в колонку; полный текст - в подсказке."""
+        full = getattr(button, "full_text", None)
+        if full is None:
+            return
+        shown = fit_text(self, full, room)
+        if str(button.cget("text")) != shown:
+            button.configure(text=shown)
+        if not hasattr(button, "_full_tip"):
+            button._full_tip = Tooltip(                    # type: ignore[attr-defined]
+                button, lambda b=button: b.full_text if str(b.cget("text")) != b.full_text else "")
 
     def side_buttons(self) -> list[tk.Misc]:
         """Кнопки колонки справа сверху вниз (только показанные); пусто, если колонки нет."""
@@ -338,6 +360,10 @@ class ProjectPanel(ttk.Frame):
         """Счётчик правок на ярлыке «Изменения»."""
         self.tabs.tab(self.frames["changes"], text=f"Изменения {count}" if count else "Изменения")
 
+    def set_incoming_count(self, count: int) -> None:
+        """Счётчик нового на сервере на ярлыке «Новое»."""
+        self.tabs.tab(self.frames["incoming"], text=f"Новое {count}" if count else "Новое")
+
     def set_local_view(self, local: bool) -> None:
         """Проект с историей на компьютере: вкладки «Новое», «Занятые», «Ветки» прячутся (у других проектов возвращаются)."""
         if local == self._local_view:
@@ -367,7 +393,7 @@ class ProjectPanel(ttk.Frame):
         table.grid(row=1, column=0, sticky="nsew")
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        self.locks_tree = ttk.Treeview(table, columns=("file", "who", "days"), show="headings", selectmode="browse",
+        self.locks_tree = ttk.Treeview(table, columns=("file", "who", "days"), show="headings", selectmode="extended",
                                        height=6)
         for column, title, width, stretch in (("file", "Файл", 220, True), ("who", "Кто занял", 100, False),
                                               ("days", "Сколько", 110, False)):
@@ -379,11 +405,13 @@ class ProjectPanel(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         theme.configure_tree_tags(self.locks_tree)
         self.locks_tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_lock_buttons())
-        bar = self.actions_for("locks")        # «Освободить» работает с выбранной строкой таблицы - она выше
-        self.release_btn = ttk.Button(bar, text="Освободить", command=self._release_clicked, state="disabled")
+        # «Занять файл…» открывает окно выбора; «Освободить…» берёт выбранные свои строки таблицы, а без выбора
+        # открывает окно выбора своих файлов
+        bar = self.actions_for("locks")
         self.lock_btn = ttk.Button(bar, text="Занять файл…", command=self._on_lock, state="disabled")
-        bar.add(self.release_btn)
+        self.release_btn = ttk.Button(bar, text="Освободить…", command=self._release_clicked, state="disabled")
         bar.add(self.lock_btn)
+        bar.add(self.release_btn)
         self._own_locks: dict[str, str] = {}      # строка таблицы -> путь файла, занятого вами
         self._release_allowed = False
 
@@ -427,10 +455,10 @@ class ProjectPanel(ttk.Frame):
         return [self._own_locks[iid] for iid in self.locks_tree.selection() if iid in self._own_locks]
 
     def _sync_lock_buttons(self) -> None:
-        ok = self._release_allowed and bool(self.selected_own_locks())
+        """«Освободить…» доступна, если ничего не выбрано или среди выбранного есть свои файлы; выбраны только
+        чужие - освобождать нечего (чужое освободить нельзя)."""
+        ok = self._release_allowed and (not self.locks_tree.selection() or bool(self.selected_own_locks()))
         self.release_btn.configure(state="normal" if ok else "disabled")
 
     def _release_clicked(self) -> None:
-        paths = self.selected_own_locks()
-        if paths:
-            self._on_release(paths)
+        self._on_release(self.selected_own_locks())

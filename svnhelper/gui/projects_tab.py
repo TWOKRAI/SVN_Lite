@@ -1017,7 +1017,10 @@ class ProjectsTabMixin:
             self._shown_locks = key
 
     def _on_panel_release(self, paths: list[str]) -> None:
-        """«Освободить» на вкладке «Занятые»: выбранные свои файлы."""
+        """«Освободить…» на вкладке «Занятые»: выбранные свои файлы, а без выбора - окно выбора своих файлов."""
+        if not paths:
+            self._on_release_lock()
+            return
         item = self._selected_item()
         if item is not None and item.state == "svn" and self.client and not self._path_busy(item.path):
             self._run_locks(item, paths, lock=False)
