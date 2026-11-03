@@ -2084,6 +2084,31 @@ class ListModeTests(unittest.TestCase):
         app.select_list_mode("download")
         self.assertEqual(app.mine_col2.width, app.px(saved.mine_col2_download_width))
 
+    def test_download_progress_fits_smallest_window(self):
+        """Ход скачивания (полоса, строка хода, размер проекта) виден в окне 900x640 вместе со ссылкой из буфера,
+        веткой и папкой: подсказка шага 3 уступает место ходу работы."""
+        from svnhelper.gui.models import DownloadJob
+        root, app, _ = self.make_app(visible=True)
+        app._mine_dirty = False
+        root.geometry(f"{app.px(900)}x{app.px(640)}")
+        app.select_list_mode("download")
+        app.url_var.set("svn://srv/test/projects/Очень длинное название проекта для проверки")
+        app.job = DownloadJob(url="u", name="n", dest="d")
+        app._update_buttons()
+        app._show(app.progress, True)
+        app.status_var.set("Скачано 120 из 400 (30%), осталось ~1 мин")
+        app.info_var.set("Размер проекта: 1,2 ГБ, 400 файлов и папок.")
+        app._show(app.line_row, True)                  # проект с ветками: строка «Что скачать» тоже на месте
+        root.update()
+        bottom = app.mine_col3.winfo_rooty() + app.mine_col3.winfo_height()    # колонка обрезает то, что ниже
+        info = next(w for w in app.progress.master.winfo_children()
+                    if "textvariable" in w.keys() and str(w.cget("textvariable")) == str(app.info_var))
+        for widget in (app.progress, app.cancel_btn, app.download_btn, app.line_combo, info):
+            self.assertTrue(widget.winfo_ismapped(), widget)
+            self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
+        app.job = None
+        app._update_buttons()
+
     def test_subtab_labels_tree_and_form_fit_at_every_scale(self):
         """Ярлыки «Мои проекты | Скачать проект» не обрезаны в колонке «Проекты», дерево, поля и кнопки формы
         видны целиком в самом маленьком окне (900x640) при 100, 125 и 150%."""

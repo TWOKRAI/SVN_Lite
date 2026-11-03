@@ -96,10 +96,12 @@ class DownloadTabMixin:
         steps = ttk.Frame(form)
         steps.grid(row=0, column=0, sticky="nsew")
         steps.columnconfigure(0, weight=1)
+        # отступы плотнее, чем у Step.TLabelframe: форма делит высоту окна (от 640 px) с ходом скачивания
+        pad = (px(12), px(8))
 
         # 1. Какой проект
-        self.step1 = step1 = ttk.LabelFrame(steps, text="1. Какой проект", style="Step.TLabelframe")
-        step1.grid(row=0, column=0, sticky="ew", pady=(0, px(10)))
+        self.step1 = step1 = ttk.LabelFrame(steps, text="1. Какой проект", style="Step.TLabelframe", padding=pad)
+        step1.grid(row=0, column=0, sticky="ew", pady=(0, px(8)))
         step1.columnconfigure(0, weight=1)
         step1_hint = ttk.Label(step1, text="Выберите проект в списке слева или вставьте ссылку на него.",
                                style="Hint.TLabel", justify="left")
@@ -123,6 +125,8 @@ class DownloadTabMixin:
         self.url_status.grid(row=4, column=0, sticky="w", pady=(px(6), 0))
         self._autowrap(self.url_status, step1, px(40))
         self.url_var.trace_add("write", lambda *_: self._on_url_changed())
+        # подсказка шага 1 нужна, пока поле пустое; дальше её место занимают «Что скачать» и сведения о ветке
+        self.url_var.trace_add("write", lambda *_: self._show(step1_hint, not self.url_var.get().strip()))
 
         # «Что скачать»: есть только у проектов с ветками или версиями
         self.line_row = line_row = ttk.Frame(step1)
@@ -140,8 +144,8 @@ class DownloadTabMixin:
         self.line_info.grid_remove()
 
         # 2. Куда скачать
-        step2 = ttk.LabelFrame(steps, text="2. Куда скачать", style="Step.TLabelframe")
-        step2.grid(row=1, column=0, sticky="ew", pady=(0, px(10)))
+        step2 = ttk.LabelFrame(steps, text="2. Куда скачать", style="Step.TLabelframe", padding=pad)
+        step2.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
         step2.columnconfigure(0, weight=1)
         ttk.Label(step2, text="Папка для проектов:").grid(row=0, column=0, columnspan=2, sticky="w")
         self.dir_var = tk.StringVar(value=self.settings.last_dir or self.config.work_dir)
@@ -159,7 +163,7 @@ class DownloadTabMixin:
         self.dir_var.trace_add("write", lambda *_: self._update_dest_label())
 
         # 3. Скачать: кнопка в колонке справа, здесь ход работы и итог
-        step3 = ttk.LabelFrame(steps, text="3. Скачать", style="Step.TLabelframe")
+        step3 = ttk.LabelFrame(steps, text="3. Скачать", style="Step.TLabelframe", padding=pad)
         step3.grid(row=2, column=0, sticky="ew")
         step3.columnconfigure(0, weight=1)
         step3_hint = ttk.Label(step3, text="Нажмите «Скачать» справа, и проект скачается в выбранную папку.",
@@ -167,13 +171,15 @@ class DownloadTabMixin:
         step3_hint.grid(row=0, column=0, sticky="w")
         self._autowrap(step3_hint, step3, px(40))
         self.progress = ttk.Progressbar(step3, mode="determinate", maximum=100)
-        self.progress.grid(row=1, column=0, sticky="ew", pady=(px(10), px(4)))
+        self.progress.grid(row=1, column=0, sticky="ew", pady=(px(4), px(4)))
         self.progress.grid_remove()
         self.status_var = tk.StringVar()
         status = ttk.Label(step3, textvariable=self.status_var, justify="left")
         status.grid(row=2, column=0, sticky="w", pady=(px(4), 0))
         self._autowrap(status, step3, px(40))
         self._hide_when_empty(status, self.status_var)
+        # подсказка нужна, пока скачивания не было; дальше её место занимают ход и итог (окно в 640 px невысокое)
+        self.status_var.trace_add("write", lambda *_: self._show(step3_hint, not self.status_var.get().strip()))
         self.info_var = tk.StringVar()
         info = ttk.Label(step3, textvariable=self.info_var, style="Hint.TLabel", justify="left")
         info.grid(row=3, column=0, sticky="w")
