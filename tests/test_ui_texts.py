@@ -21,7 +21,7 @@ SVN_WORD = re.compile(r"SVN")
 STORAGE_WORD = re.compile(r"хранилищ", re.IGNORECASE)
 # модули, написанные с этим правилом с самого начала; ревизия/репозиторий/svnadmin проверяются только в них
 RU_CHECKED = ("gui/new_project_dialog.py", "newproject.py", "gui/server_tree.py", "localrepo.py", "gui/projects_tab.py",
-              "gui/project_panel.py")
+              "gui/project_panel.py", "gui/agent_dialog.py")
 RU_CHECKED_DIRS = ("ops/",)      # слой ops для ИИ-помощника (AG.1): все его модули, в том числе будущие
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 # что разрешено оставить в тексте: названия программ, адреса и ключи для администратора
@@ -155,6 +155,32 @@ class UiTextsTests(unittest.TestCase):
         self.assertNotIn("нельзя", publish.MESSAGES[publish.LOCAL_HISTORY_MISSING])        # отправка при этом возможна
         self.assertNotIn("192.168", server.example_url(""))                                  # боевой адрес в примере не зашит
         self.assertTrue(server.example_url("svn://srv.local", ["proj"]).startswith("svn://srv.local/proj/"))
+
+    def test_agent_dialog_and_versions_texts_are_plain_russian(self):
+        """AG.7: окно «ИИ-помощник…», его пометки состояния и фраза doctor про разные версии: без терминов svn."""
+        from svnhelper.gui import agent_dialog
+        from svnhelper.ops import diag, texts
+        texts_list = [agent_dialog.TITLE, agent_dialog.INTRO, agent_dialog.NOT_YET_TEXT, agent_dialog.FOLDERS_FIXED_TEXT,
+                      agent_dialog.FOLDERS_EXTRA_TEXT, agent_dialog.FOLDERS_LOCKED_TEXT, agent_dialog.COPIED_CODE_TEXT,
+                      agent_dialog.COPIED_DESKTOP_TEXT, agent_dialog.CLI_MISSING_TEXT, agent_dialog.SAVE_ERROR_TEXT,
+                      agent_dialog.LOG_FOLDER_TEXT, diag.VERSIONS_DIFFER.format(window="1.0.0", cli="1.0.1"),
+                      *agent_dialog.CEILING_TEXTS.values(), *agent_dialog.SIGNATURE_TEXTS.values(),
+                      *(agent_dialog.PERMISSION_PREFIX + label for _action, label in agent_dialog.PERMISSIONS),
+                      texts.POLICY_TAMPERED, texts.POLICY_FOREIGN, texts.POLICY_UNREADABLE,
+                      *(texts.policy_mode_text(mode) for mode in ("off", "read_only", "write"))]
+        self.assertGreater(len(texts_list), 20)
+        found = []
+        for text in texts_list:
+            cleaned = text
+            for ok in ALLOWED:
+                cleaned = cleaned.replace(ok, "")
+            if (FORBIDDEN.search(cleaned) or FORBIDDEN_RU.search(cleaned) or SVN_WORD.search(cleaned)
+                    or STORAGE_WORD.search(cleaned)):
+                found.append(text[:80])
+        self.assertEqual(found, [])
+        self.assertEqual(len(agent_dialog.PERMISSIONS), 6)
+        self.assertTrue(all(text.startswith("Разрешить помощнику: ") for text in
+                            (agent_dialog.PERMISSION_PREFIX + label for _a, label in agent_dialog.PERMISSIONS)))
 
     def test_forbidden_words_are_caught(self):
         tree = ast.parse('a = "Проект в хранилище"\nb = "Подключён к SVN"\nc = "Хранилище возвращено"\n'

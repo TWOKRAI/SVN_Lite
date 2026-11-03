@@ -6150,5 +6150,215 @@ class LocalHistoryDialogTests(unittest.TestCase):
         self.assertEqual(list(self.jobs.glob("*.json")), [])
 
 
+@unittest.skipUnless(HAS_DISPLAY, "нет экрана")
+class AgentDialogTests(unittest.TestCase):
+    """AG.7: окно «Справка → ИИ-помощник…»: состояние политики, папки, команды подключения, журнал."""
+
+    def setUp(self):
+        import json
+        self.json = json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name) / "data"
+        env = mock.patch.dict(os.environ, {"SVNLITE_DATA_DIR": str(self.data)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(gc.collect)
+
+    def make_app(self, scale=None, agent_max_mode="read_only"):
+        from svnhelper.config import Config, SettingsStore
+        from svnhelper.gui import App
+        from svnhelper.svn_core import SvnClient
+        root = tk.Tk()
+        if scale is not None:
+            root.tk.call("tk", "scaling", 96 * scale / 72)
+        root.withdraw()
+        quiet_clipboard(root)
+        self.addCleanup(self.destroy_root, root)
+        store = SettingsStore(Path(self.tmp.name) / "s.json")
+        store.settings.project_dirs = [os.path.join(self.tmp.name, "Проекты")]
+        cfg = Config(server="svn://srv", repos=["test"], agent_max_mode=agent_max_mode)
+        app = App(root, cfg, store, SvnClient("svn"), os.path.join(self.tmp.name, "log.txt"))
+        return root, app
+
+    @staticmethod
+    def destroy_root(root):
+        try:
+            root.destroy()
+        except tk.TclError:                  # тест уже закрыл окно сам
+            pass
+
+    def open_dialog(self, **kwargs):
+        root, app = self.make_app(**kwargs)
+        app._open_agent_dialog()
+        return root, app, app._agent_dialog
+
+    def test_menu_item_opens_one_dialog(self):
+        root, app = self.make_app()
+        self.assertEqual(app.help_menu.entrycget("ИИ-помощник…", "state"), "normal")
+        app.help_menu.invoke(app.help_menu.index("ИИ-помощник…"))
+        first = app._agent_dialog
+        self.assertTrue(first.winfo_exists())
+        app._open_agent_dialog()
+        self.assertIs(app._agent_dialog, first)                     # повторно окно не плодится
+
+    def test_no_policy_file_shows_view_only_and_switches_are_off_and_disabled(self):
+        from svnhelper import agent_policy
+        root, app, dialog = self.open_dialog()
+        self.assertEqual(dialog.policy.signature, agent_policy.SIG_NO_FILE)
+        self.assertIn("только смотреть", dialog.mode_var.get())
+        self.assertIn("не задана", dialog.signature_var.get())
+        self.assertEqual(dialog.note_label.cget("text"), "")
+        self.assertEqual(len(dialog.permission_boxes), 6)
+        for action, box in dialog.permission_boxes.items():
+            self.assertEqual(str(box.cget("state")), "disabled", action)
+            self.assertFalse(dialog.permission_vars[action].get(), action)
+            self.assertTrue(box.cget("text").startswith("Разрешить помощнику: "))
+        self.assertEqual(dialog.fixed_var.get(), app.settings.project_dirs[0])
+        self.assertEqual(str(dialog.add_btn.cget("state")), "normal")
+        self.assertFalse(self.data.joinpath("agent_policy.json").exists())        # открытие окна ничего не пишет
+
+    def test_ceiling_off_is_shown_and_overrides_mode(self):
+        root, app, dialog = self.open_dialog(agent_max_mode="off")
+        self.assertIn("выключен", dialog.ceiling_var.get())
+        self.assertIn("выключен администратором", dialog.mode_var.get())
+
+    def write_raw_policy(self, data):
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / "agent_policy.json").write_text(self.json.dumps(data), encoding="utf-8")
+
+    def test_tampered_signature_is_shown_and_folders_locked(self):
+        from svnhelper import agent_policy
+        from svnhelper.ops import texts
+        agent_policy.write({"mode": "write", "allow": ["lock"]})
+        path = self.data / "agent_policy.json"
+        data = self.json.loads(path.read_text("utf-8"))
+        data["allow"] = ["lock", "publish"]                                    # правка не через программу
+        path.write_text(self.json.dumps(data), encoding="utf-8")
+        root, app, dialog = self.open_dialog()
+        self.assertEqual(dialog.signature_var.get(), "изменена")
+        self.assertEqual(dialog.note_label.cget("text"), texts.POLICY_TAMPERED)
+        self.assertIn("только смотреть", dialog.mode_var.get())                # запись выключена
+        self.assertEqual(str(dialog.add_btn.cget("state")), "disabled")
+        self.assertEqual(str(dialog.remove_btn.cget("state")), "disabled")
+        self.assertTrue(dialog.folders_hint.winfo_manager())
+
+    def test_foreign_signature_asks_to_enable_again(self):
+        import base64
+        from svnhelper import agent_policy
+        from svnhelper.ops import texts
+        foreign = base64.b64encode(agent_policy._DPAPI_HEADER + b"\x00" * 40).decode("ascii")
+        self.write_raw_policy({"format": 1, "mode": "write", "allow": ["lock"], "sig": foreign})
+        root, app, dialog = self.open_dialog()
+        self.assertEqual(dialog.signature_var.get(), "нужно включить заново")
+        self.assertEqual(dialog.note_label.cget("text"), texts.POLICY_FOREIGN)
+        self.assertEqual(str(dialog.add_btn.cget("state")), "disabled")
+
+    def test_allowed_permissions_are_shown_but_not_editable(self):
+        from svnhelper import agent_policy
+        agent_policy.write({"mode": "write", "allow": ["lock", "save_local"]})
+        root, app, dialog = self.open_dialog()
+        self.assertEqual(dialog.signature_var.get(), "нормально")
+        self.assertTrue(dialog.permission_vars["lock"].get() and dialog.permission_vars["save_local"].get())
+        self.assertFalse(dialog.permission_vars["publish"].get())
+        self.assertTrue(all(str(b.cget("state")) == "disabled" for b in dialog.permission_boxes.values()))
+
+    def test_connection_commands_are_copied(self):
+        from svnhelper.gui import agent_dialog
+        root, app, dialog = self.open_dialog()
+        with mock.patch.object(dialog, "clipboard_clear"), mock.patch.object(dialog, "clipboard_append") as append:
+            dialog.copy_code_btn.invoke()
+            command = append.call_args.args[0]
+            dialog.copy_desktop_btn.invoke()
+            snippet = append.call_args.args[0]
+        self.assertTrue(command.startswith('claude mcp add --scope user svnlite -- "'), command)
+        self.assertTrue(command.endswith('" mcp'), command)
+        self.assertEqual(command, agent_dialog.claude_code_command())
+        config = self.json.loads(snippet)["mcpServers"]["svnlite"]
+        self.assertEqual(config["args"][-1], "mcp")
+        self.assertEqual(config["command"], agent_dialog.cli_command()[0])
+        self.assertIn("скопирована", dialog.status_var.get())
+
+    def test_connection_command_for_frozen_program(self):
+        from svnhelper.gui import agent_dialog
+        exe = r"C:\Program Files\SVN-lite\SVN-lite.exe"
+        with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(sys, "executable", exe):
+            parts = agent_dialog.cli_command()
+            self.assertEqual(parts, [str(Path(r"C:\Program Files\SVN-lite\svnlite.exe").resolve())])
+            self.assertEqual(agent_dialog.claude_code_command(),
+                             f'claude mcp add --scope user svnlite -- "{parts[0]}" mcp')
+            snippet = self.json.loads(agent_dialog.claude_desktop_json())
+            self.assertEqual(snippet, {"mcpServers": {"svnlite": {"command": parts[0], "args": ["mcp"]}}})
+
+    def test_open_journal_opens_agent_folder(self):
+        root, app, dialog = self.open_dialog()
+        with mock.patch("os.startfile", create=True) as start:
+            dialog.log_btn.invoke()
+        start.assert_called_once_with(self.data / "agent")
+        self.assertTrue((self.data / "agent").is_dir())
+
+    def test_add_and_remove_folder_keep_other_policy_values(self):
+        from svnhelper import agent_policy
+        agent_policy.write({"mode": "write", "allow": ["lock"], "max_writes_per_hour": 7})
+        folder = os.path.join(self.tmp.name, "Чертежи 2026")
+        os.makedirs(folder)
+        root, app, dialog = self.open_dialog()
+        with mock.patch("tkinter.filedialog.askdirectory", return_value=folder.replace("\\", "/")):
+            dialog.add_btn.invoke()
+        policy = agent_policy.Policy.load()
+        self.assertEqual(policy.signature, agent_policy.SIG_OK)
+        self.assertEqual(policy.allowed_dirs, (os.path.normpath(folder),))
+        self.assertEqual((policy.file_mode, policy.allow, policy.max_writes_per_hour), ("write", ("lock",), 7))
+        self.assertEqual(dialog.folder_list.get(0, "end"), (os.path.normpath(folder),))
+        with mock.patch("tkinter.filedialog.askdirectory", return_value=folder):
+            dialog.add_btn.invoke()                                            # повтор не дублирует
+        self.assertEqual(len(agent_policy.Policy.load().allowed_dirs), 1)
+        dialog.folder_list.selection_set(0)
+        dialog.remove_btn.invoke()
+        self.assertEqual(agent_policy.Policy.load().allowed_dirs, ())
+        self.assertEqual(agent_policy.Policy.load().allow, ("lock",))
+
+    def test_add_folder_without_policy_file_signs_view_only_policy(self):
+        from svnhelper import agent_policy
+        folder = os.path.join(self.tmp.name, "общая")
+        os.makedirs(folder)
+        root, app, dialog = self.open_dialog()
+        with mock.patch("tkinter.filedialog.askdirectory", return_value=folder):
+            dialog.add_btn.invoke()
+        policy = agent_policy.Policy.load()
+        self.assertEqual((policy.signature, policy.file_mode, policy.allow), ("ok", "read_only", ()))
+        self.assertEqual(policy.allowed_dirs, (os.path.normpath(folder),))
+        self.assertIn("только смотреть", dialog.mode_var.get())
+
+    def test_folder_write_failure_is_reported_not_swallowed(self):
+        root, app, dialog = self.open_dialog()
+        with mock.patch("tkinter.filedialog.askdirectory", return_value=self.tmp.name), \
+                mock.patch("svnhelper.agent_policy.write", side_effect=OSError("диск защищён от записи")), \
+                mock.patch("tkinter.messagebox.showerror") as error:
+            dialog.add_btn.invoke()
+        error.assert_called_once()
+        self.assertIn("Не удалось записать настройки помощника", error.call_args.args[1])
+        self.assertEqual(dialog.folder_list.get(0, "end"), ())
+
+    def test_dialog_fits_screen_at_125_and_150_percent_and_keeps_main_window_geometry(self):
+        for scale in (1.25, 1.5):
+            root, app = self.make_app(scale=scale)
+            root.update_idletasks()
+            before = (app._min_width, app._min_height, root.minsize())
+            app._open_agent_dialog()
+            dialog = app._agent_dialog
+            # самый длинный вариант: тревога про подпись и строка про скопированное
+            dialog.note_label.configure(text="x " * 100)
+            dialog.note_label.grid()
+            dialog.status_var.set("y " * 100)
+            dialog.status_label.pack()
+            dialog.update_idletasks()
+            self.assertLessEqual(dialog.winfo_reqheight(), root.winfo_screenheight() - 60, scale)
+            self.assertLessEqual(dialog.winfo_reqwidth(), root.winfo_screenwidth(), scale)
+            self.assertEqual(before, (app._min_width, app._min_height, root.minsize()))   # окно программы не менялось
+            dialog.destroy()
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

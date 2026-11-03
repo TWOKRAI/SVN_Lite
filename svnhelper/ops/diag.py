@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from .. import __version__, agentlog, server
+from .. import __version__, agentlog, selfupdate, server
 from ..config import CONFIG_NAME, app_dir, data_dir, shared_cache_path
 from ..svn_core import SvnError
 from . import texts
@@ -12,6 +12,22 @@ from .context import OpsContext, is_url
 from .errors import from_exception, no_svn
 from .registry import operation
 from .result import ErrorInfo, Result, clean_text
+
+
+# Версии окна и консольной программы разошлись (Task AG.7). Строка здесь, а не в texts.py: тот файл правит другой исполнитель.
+VERSIONS_DIFFER = ("Версии программы разошлись: окно {window}, помощник {cli}. "
+                   "Обновите SVN-lite (Справка, «Проверить обновление программы») и перезапустите помощника.")
+
+
+def _program_data() -> dict:
+    """Версия программы. У собранного svnlite.exe ещё версия окна (его запись при запуске) и совпадение версий:
+    при запуске из исходников окно и помощник это один пакет, сравнивать нечего."""
+    program: dict = {"version": __version__}
+    if selfupdate.is_supported():
+        window = selfupdate.window_version()
+        program.update(cli_version=__version__, window_version=window,
+                       versions_match=not window or window == __version__)
+    return program
 
 
 def _svn_data(ctx: OpsContext) -> dict:
@@ -52,7 +68,7 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
     connection, conn_error = _check_connection(ctx, check_connection)
     dirs = ctx.project_dirs
     data = {
-        "program": {"version": __version__},
+        "program": _program_data(),
         "svn": _svn_data(ctx),
         "config": _config_data(ctx),
         "server": {"configured": is_url(ctx.config.server) and bool(ctx.config.repos), "roots": len(ctx.config.repos)},
@@ -85,6 +101,10 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
     if note:                                               # подпись политики не принята: запись выключена, причина своими словами
         warnings.append(note)
         text = f"{text} {note}"
+    if not data["program"].get("versions_match", True):
+        differ = VERSIONS_DIFFER.format(window=data["program"]["window_version"], cli=data["program"]["cli_version"])
+        warnings.append(differ)
+        text = f"{text} {differ}"
     text = f"{text} {texts.policy_mode_text(data['policy'].get('mode', ''))}".rstrip()
     svn = {"server": ctx.config.server, "roots": list(ctx.config.repos), "templates_root": ctx.config.templates_root}
     if error is not None:
