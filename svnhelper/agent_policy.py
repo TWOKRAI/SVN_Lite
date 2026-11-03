@@ -10,24 +10,34 @@
 по умолчанию read_only) и режим из файла политики (read_only | write). Нет файла политики или неверная подпись:
 read_only. Неверное значение в файле заменяется безопасным и пишется в журнал, как в `config.clean_notify`.
 
+Состояния подписи: `ok`; `no_file` (файла нет); `invalid` (файл правили не через SVN-lite или он повреждён);
+`foreign` (подпись сделана на другом компьютере или в другом профиле, DPAPI её не открывает: политику нужно заново
+включить здесь); `unreadable` (файл не удалось прочитать, например он занят: это не подделка). Во всех, кроме `ok`
+и `no_file`, действует read_only, а отказ и doctor говорят своими словами.
+
+Потолок `agent_max_mode` долгоживущий процесс (сервер MCP) перечитывает на каждую операцию (`current_ceiling`): общая
+копия настроек и svn_helper.json читаются только при изменении файлов (кэш по mtime и размеру).
+
 Модуль не импортирует `svnhelper.ops` на уровне модуля: слой ops сам подключает политику (цикла нет). Отказы
 (`Policy.check`) бросают `ops.errors.OpsError` с кодом возврата 6; ошибка подтягивается в момент отказа.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import logging
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .config import (AGENT_MODES, DEFAULT_AGENT_MAX_MODE, SettingsStore, build_config, data_dir, load_shared_cache,
-                     protect_text, stricter_mode, unprotect_text)
+from .config import (AGENT_MODES, CONFIG_NAME, DEFAULT_AGENT_MAX_MODE, SettingsStore, app_dir, build_config, data_dir,
+                     load_shared_cache, protect_text, shared_cache_path, stricter_mode, unprotect_text)
 from .folderlock import named_lock
 
 log = logging.getLogger("svnhelper.agent_policy")
@@ -45,7 +55,14 @@ COUNTERS_TIMEOUT = 10.0
 # состояние подписи
 SIG_OK = "ok"
 SIG_NO_FILE = "no_file"         # файла политики нет: помощник только смотрит, это обычное состояние
-SIG_INVALID = "invalid"         # файл правили не через SVN-lite, он повреждён или не читается
+SIG_INVALID = "invalid"         # файл правили не через SVN-lite или он повреждён
+SIG_FOREIGN = "foreign"         # подпись не открывается на этом компьютере (другой профиль или ПК): включить заново
+SIG_UNREADABLE = "unreadable"   # файл не удалось прочитать (занят, нет доступа): это не подделка
+# сбой подписи -> причина отказа в texts.POLICY_DENIALS
+_SIGNATURE_REASONS = {SIG_INVALID: "tampered", SIG_FOREIGN: "foreign", SIG_UNREADABLE: "unreadable"}
+# начало любого блока DPAPI: версия 1 и GUID провайдера; по нему отличаем чужую подпись от случайного мусора
+_DPAPI_HEADER = bytes.fromhex("01000000d08c9ddf0115d1118c7a00c04fc297eb")
+WRITE_REPLACE_ATTEMPTS = 3      # попыток заменить файл политики (антивирус или чтение держат его мгновение)
 
 DEFAULTS: dict = {
     "format": FORMAT, "mode": "read_only", "allow": [], "allowed_dirs": [],
@@ -121,9 +138,59 @@ def _digest(values: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _signature_ok(data: dict) -> bool:
+def _is_dpapi_blob(sig: str) -> bool:
+    try:
+        return base64.b64decode(sig, validate=True).startswith(_DPAPI_HEADER)
+    except ValueError:
+        return False
+
+
+def _signature_state(data: dict) -> str:
+    """SIG_OK, SIG_FOREIGN (настоящий блок DPAPI, который здесь не открывается) или SIG_INVALID (всё остальное)."""
     sig = data.get("sig")
-    return isinstance(sig, str) and bool(sig) and unprotect_text(sig) == _digest(data)
+    if not isinstance(sig, str) or not sig:
+        return SIG_INVALID
+    digest = unprotect_text(sig)
+    if digest and digest == _digest(data):
+        return SIG_OK
+    if not digest and _is_dpapi_blob(sig):
+        return SIG_FOREIGN
+    return SIG_INVALID
+
+
+# --------------------------------------------------------------------------
+# Потолок администратора (agent_max_mode)
+# --------------------------------------------------------------------------
+
+_ceiling_cache: dict = {}
+_ceiling_lock = threading.Lock()
+
+
+def _stamp(path: Path) -> tuple:
+    try:
+        stat = path.stat()
+        return str(path), stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return str(path), None, None
+
+
+def current_ceiling(settings) -> str:
+    """Потолок прав сейчас: меньший из svn_helper.json рядом с программой и общей копии настроек (как в
+    `build_config`). Файлы перечитываются, только если изменились (mtime и размер), поэтому вызов на каждую операцию
+    дёшев. Сбой разбора: read_only (потолок может только урезать права, поднять их сбой не должен)."""
+    stamp = (_stamp(app_dir() / CONFIG_NAME), _stamp(shared_cache_path()))
+    with _ceiling_lock:
+        cached = _ceiling_cache.get("value")
+    if cached and cached[0] == stamp:
+        return cached[1]
+    try:
+        ceiling = build_config(settings, load_shared_cache()).agent_max_mode
+    except Exception:                                   # noqa: BLE001  (причина в журнале, права не растут)
+        log.exception("Потолок прав помощника не прочитан: действует %s", DEFAULT_AGENT_MAX_MODE)
+        return DEFAULT_AGENT_MAX_MODE
+    with _ceiling_lock:
+        _ceiling_cache["value"] = (stamp, ceiling)
+    return ceiling
 
 
 def write(values: Optional[dict] = None, path: Optional[Path] = None) -> dict:
@@ -139,9 +206,21 @@ def write(values: Optional[dict] = None, path: Optional[Path] = None) -> dict:
     tmp = path.with_suffix(".tmp")
     with named_lock(COUNTERS_LOCK, COUNTERS_TIMEOUT):
         tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, path)
+        _replace_with_retries(tmp, path)
     log.info("Политика помощника записана: режим %s, разрешений %d", clean["mode"], len(clean["allow"]))
     return clean
+
+
+def _replace_with_retries(tmp: Path, path: Path) -> None:
+    """os.replace с повторами: Windows отказывает (PermissionError), пока файл на миг держит другая программа."""
+    for attempt in range(WRITE_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == WRITE_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 # --------------------------------------------------------------------------
@@ -212,7 +291,7 @@ class Policy:
             return cls(ceiling=ceiling, signature=SIG_NO_FILE, reloadable=True)
         except OSError:
             log.exception("Файл политики помощника не прочитан: запись выключена")
-            return cls(ceiling=ceiling, signature=SIG_INVALID, reloadable=True)
+            return cls(ceiling=ceiling, signature=SIG_UNREADABLE, reloadable=True)
         try:
             data = json.loads(raw.decode("utf-8-sig"))
             if not isinstance(data, dict):
@@ -220,7 +299,11 @@ class Policy:
         except ValueError:
             log.warning("Файл политики помощника повреждён: запись выключена")
             return cls(ceiling=ceiling, signature=SIG_INVALID, reloadable=True)
-        if not _signature_ok(data):
+        state = _signature_state(data)
+        if state == SIG_FOREIGN:
+            log.warning("Подпись политики помощника сделана в другом профиле или на другом компьютере: запись выключена")
+            return cls(ceiling=ceiling, signature=SIG_FOREIGN, reloadable=True)
+        if state != SIG_OK:
             log.warning("Файл политики помощника изменён не через SVN-lite (подпись неверна): запись выключена")
             return cls(ceiling=ceiling, signature=SIG_INVALID, reloadable=True)
         clean, problems = clean_policy(data)
@@ -231,9 +314,10 @@ class Policy:
                    reloadable=True,
                    **{key: clean[key] for key in (*_INT_FIELDS, "mark_comments")})
 
-    def reload(self) -> "Policy":
-        """Свежее чтение файла с тем же потолком: сервер MCP живёт долго, а политику меняет окно."""
-        return Policy.load(self.ceiling)
+    def reload(self, ceiling: Optional[str] = None) -> "Policy":
+        """Свежее чтение файла: сервер MCP живёт долго, а политику меняет окно. ceiling: новый потолок (контекст берёт
+        его из `current_ceiling`); без него остаётся прежний."""
+        return Policy.load(self.ceiling if ceiling is None else ceiling)
 
     def describe(self) -> dict:
         return {"mode": self.mode, "file_mode": self.file_mode, "ceiling": self.ceiling, "signature": self.signature,
@@ -242,19 +326,20 @@ class Policy:
                 "problems": list(self.problems)}
 
     def check(self, action: str, project: object = None, base_dirs: Optional[Iterable[str]] = None, line: str = "",
-              consume: bool = False) -> None:
+              *, consume: bool) -> None:
         """Разрешено ли записывающее действие. Отказ: OpsError с кодом 6 (версия, `line="tag"`: код 5).
 
         action: одно из ACTIONS. project: путь к папке проекта (или объект с `.path`); None - папку не проверять.
         base_dirs: папки, внутри которых можно работать (обычно `ctx.project_dirs`); None - только `allowed_dirs`.
-        consume=True: считать вызов записью (под общим замком, виден другому процессу). План ничего не меняет
-        и не считается: consume=True только перед самой записью."""
+        consume обязателен (без значения по умолчанию, чтобы запись не прошла незамеченной): True считает вызов записью
+        (под общим замком, виден другому процессу) и ставится только перед самой записью; False (план, проверка)
+        ничего не меняет и не считается."""
         if action not in ACTIONS:
             deny("action", action=action)
         if self.mode == "off":
             deny("off")
         if self.mode != "write":
-            deny("tampered" if self.signature == SIG_INVALID else "mode")
+            deny(_SIGNATURE_REASONS.get(self.signature, "mode"))
         if action not in self.allow:
             deny("allow", action=action)
         path = getattr(project, "path", project)
@@ -271,7 +356,7 @@ class Policy:
     def _count_write(self, consume: bool) -> None:
         """Лимит записей в час на все процессы: метки времени в `agent/counters.json` под общим замком."""
         path = counters_path()
-        with named_lock(COUNTERS_LOCK, COUNTERS_TIMEOUT):
+        with named_lock(COUNTERS_LOCK, COUNTERS_TIMEOUT, strict=True):     # без каталога замков запись не считается: отказ
             now = time.time()
             stamps = [t for t in _read_counters(path) if now - WRITE_WINDOW < t <= now + 60]
             if len(stamps) >= self.max_writes_per_hour:

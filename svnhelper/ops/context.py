@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
-from ..agent_policy import Policy
+from ..agent_policy import SIG_UNREADABLE, Policy, current_ceiling
 from ..config import Config, SettingsStore, build_config, find_svn, load_shared_cache
 from ..svn_core import CancelToken, ErrorKind, SvnClient, SvnError
 
@@ -49,6 +49,7 @@ class OpsContext:
     connect_timeout: float = CONNECT_TIMEOUT
     started: float = 0.0                        # когда началась текущая операция (monotonic); 0 - не началась
     client_info: str = ""                       # имя клиента из clientInfo MCP (для журнала действий)
+    live_ceiling: bool = False                  # потолок прав берётся из файлов настроек и перечитывается на каждую операцию
     audit: dict = field(default_factory=dict)   # сведения для журнала, которые операция кладёт сама (files, rev_after...)
 
     @property
@@ -63,10 +64,22 @@ class OpsContext:
 
     def begin(self) -> "OpsContext":
         """Копия контекста с отметкой начала операции: общий бюджет времени считается от неё. Копия нужна, потому что
-        один контекст (сервер MCP) обслуживает несколько операций одновременно. Политика из файла перечитывается:
-        сервер живёт долго, а сотрудник меняет политику в окне. У копии свой словарь `audit`."""
-        policy = self.policy.reload() if getattr(self.policy, "reloadable", False) else self.policy
-        return dataclasses.replace(self, started=time.monotonic(), policy=policy, audit={})
+        один контекст (сервер MCP) обслуживает несколько операций одновременно. Политика из файла и потолок прав
+        перечитываются: сервер живёт долго, а сотрудник меняет политику в окне, администратор потолок в файле. Сбой
+        чтения даёт безопасную политику «только чтение» (подпись unreadable), а не исключение. У копии свой словарь
+        `audit`."""
+        return dataclasses.replace(self, started=time.monotonic(), policy=self._fresh_policy(), audit={})
+
+    def _fresh_policy(self):
+        policy = self.policy
+        if not getattr(policy, "reloadable", False):
+            return policy
+        try:
+            ceiling = current_ceiling(self.store.settings) if self.live_ceiling else None
+            return policy.reload(ceiling)
+        except Exception:                           # noqa: BLE001  (политика не прочитана: только чтение, причина в журнале)
+            log.exception("Политика помощника не загружена: действует только чтение")
+            return Policy(ceiling=getattr(policy, "ceiling", "read_only"), signature=SIG_UNREADABLE, reloadable=True)
 
     def remaining(self) -> float:
         """Сколько секунд осталось на операцию (без отметки начала - весь бюджет)."""
@@ -81,6 +94,7 @@ def make_context(client: Optional[SvnClient] = None, store: Optional[SettingsSto
     """Собирает контекст. Всё, что не передано, берётся по умолчанию. svn.exe не найден: client=None, операции со
     svn отвечают кодом 9. Ничего не записывает на диск. Клиент с логином и паролем не принимается (ValueError)."""
     store = store or SettingsStore()
+    config_from_files = config is None              # конфигурацию дали снаружи (тест): потолок не перечитываем
     if config is None:
         config = build_config(store.settings, load_shared_cache())
     config.password = ""                        # помощнику пароль не нужен: дальше он нигде не окажется
@@ -93,9 +107,11 @@ def make_context(client: Optional[SvnClient] = None, store: Optional[SettingsSto
             client.store_auth = False
         else:
             log.warning("svn.exe не найден: операции со svn недоступны")
+    live_ceiling = config_from_files and policy is None
     if policy is None:
         policy = Policy.load(ceiling=config.agent_max_mode)         # файл политики и потолок администратора
-    return OpsContext(store, config, client, policy, client_name, timeout, client_info=client_info)
+    return OpsContext(store, config, client, policy, client_name, timeout, client_info=client_info,
+                      live_ceiling=live_ceiling)
 
 
 @contextlib.contextmanager

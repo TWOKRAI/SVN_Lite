@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from svnhelper import agent_policy                                                  # noqa: E402
 from svnhelper.agent_policy import Policy                                           # noqa: E402
 from svnhelper.config import (Config, SettingsStore, apply_config_data, build_config, clean_agent_mode,  # noqa: E402
-                              stricter_mode)
+                              save_shared_cache, stricter_mode)
 from svnhelper.ops import audit, make_context, run, texts                           # noqa: E402
 from svnhelper.ops import projects as ops_projects                                  # noqa: E402
 from svnhelper.ops.context import ReadOnlyPolicy                                    # noqa: E402
@@ -93,6 +93,7 @@ class PolicyBase(unittest.TestCase):
         return agent_policy.write(values)
 
     def denied(self, policy, *args, **kw) -> OpsError:
+        kw.setdefault("consume", False)
         with self.assertRaises(OpsError) as caught:
             policy.check(*args, **kw)
         self.assertEqual((caught.exception.kind, caught.exception.exit_code), ("policy_denied", 6))
@@ -113,8 +114,8 @@ class FileAndSignatureTests(PolicyBase):
         self.sign(mode="write", allow=["save_local", "lock"])
         policy = Policy.load(ceiling="write")
         self.assertEqual((policy.mode, policy.signature), ("write", "ok"))
-        policy.check("save_local", str(self.proj), base_dirs=[str(self.base)])
-        policy.check("lock")
+        policy.check("save_local", str(self.proj), base_dirs=[str(self.base)], consume=False)
+        policy.check("lock", consume=False)
         self.assertIn("save_server", self.denied(policy, "save_server").message)
         self.assertEqual(self.denied(policy, "nonsense").svn["reason"], "action")
 
@@ -131,6 +132,62 @@ class FileAndSignatureTests(PolicyBase):
         self.assertIn(texts.POLICY_TAMPERED, result.warnings)
         self.assertIn("запись выключена", result.text)
         self.assertEqual(result.data["policy"]["signature"], "invalid")
+
+    def test_signature_from_another_profile_gets_its_own_text(self):
+        self.sign(mode="write", allow=["save_local"])
+        with mock.patch.object(agent_policy, "unprotect_text", return_value=""):    # DPAPI чужой подписи не открывает
+            policy = Policy.load(ceiling="write")
+            self.assertEqual((policy.mode, policy.signature), ("read_only", "foreign"))
+            error = self.denied(policy, "save_local")
+            self.assertEqual((error.message, error.svn["reason"]), (texts.POLICY_FOREIGN, "foreign"))
+            result = run(self.ctx(), "doctor", check_connection=False)
+        self.assertIn(texts.POLICY_FOREIGN, result.warnings)
+        self.assertIn(texts.POLICY_FOREIGN, result.text)
+        self.assertNotIn(texts.POLICY_TAMPERED, result.text)
+        self.assertIn("заново включить", texts.POLICY_FOREIGN)
+        values = {**agent_policy.DEFAULTS, "mode": "write", "allow": ["lock"], "sig": "AAAA"}   # мусор вместо подписи
+        agent_policy.policy_path().write_text(json.dumps(values), encoding="utf-8")
+        with mock.patch.object(agent_policy, "unprotect_text", return_value=""):
+            self.assertEqual(Policy.load(ceiling="write").signature, "invalid")
+
+    def test_unreadable_file_is_not_reported_as_tampering(self):
+        self.sign(mode="write", allow=["save_local"])
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError("занят")):
+            policy = Policy.load(ceiling="write")
+            self.assertEqual((policy.mode, policy.signature), ("read_only", "unreadable"))
+            error = self.denied(policy, "save_local")
+            self.assertEqual((error.message, error.svn["reason"]), (texts.POLICY_UNREADABLE, "unreadable"))
+            note = texts.POLICY_SIGNATURE_NOTES["unreadable"]
+        self.assertNotIn("изменена", note)
+        ctx = self.ctx()
+        self.assertEqual(ctx.policy.signature, "ok")                                # файл снова читается
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError("занят")):
+            doctor = run(ctx, "doctor", check_connection=False)
+        self.assertIn(texts.POLICY_UNREADABLE, doctor.warnings)
+        self.assertNotIn(texts.POLICY_TAMPERED, doctor.text)
+        self.assertEqual(doctor.data["policy"]["mode"], "read_only")
+
+    def test_write_retries_replace_on_permission_error(self):
+        real_replace = os.replace
+        calls = []
+
+        def flaky(src, dst):
+            calls.append(src)
+            if len(calls) < 3:
+                raise PermissionError("файл занят")
+            return real_replace(src, dst)
+
+        with mock.patch.object(agent_policy.os, "replace", side_effect=flaky), \
+                mock.patch.object(agent_policy.time, "sleep"):
+            agent_policy.write({"mode": "write", "allow": ["lock"]})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(Policy.load(ceiling="write").signature, "ok")
+        calls.clear()
+        with mock.patch.object(agent_policy.os, "replace", side_effect=PermissionError("занят")) as always, \
+                mock.patch.object(agent_policy.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                agent_policy.write({"mode": "read_only"})
+        self.assertEqual(always.call_count, agent_policy.WRITE_REPLACE_ATTEMPTS)
 
     def test_reformatting_does_not_break_signature_but_broken_json_does(self):
         self.sign(mode="write", allow=["lock"])
@@ -243,6 +300,59 @@ class CeilingTests(PolicyBase):
         self.config.agent_max_mode = "off"
         self.assertEqual(self.ctx().policy.mode, "off")
 
+    def write_shared_ceiling(self, mode: str) -> None:
+        save_shared_cache({"agent_max_mode": mode})
+
+    def test_lowered_ceiling_is_seen_by_a_long_living_context(self):
+        """Потолок в файле настроек меняют при работающем сервере: следующий вызов уже отказывает кодом 6."""
+        self.sign(mode="write", allow=["lock"])
+        self.write_shared_ceiling("write")
+        ctx = make_context(store=self.store, client=SvnClient(FAKE), client_name="mcp")       # конфигурация из файлов
+        self.assertEqual(ctx.policy.mode, "write")
+        policy = ctx.begin().policy
+        self.assertEqual((policy.ceiling, policy.mode), ("write", "write"))
+        policy.check("lock", consume=False)
+        self.write_shared_ceiling("read_only")                                      # администратор понизил потолок
+        policy = ctx.begin().policy
+        self.assertEqual((policy.ceiling, policy.mode), ("read_only", "read_only"))
+        self.assertEqual(self.denied(policy, "lock").svn["reason"], "mode")
+        self.write_shared_ceiling("off")                                            # и выключил помощника совсем
+        result = run(ctx, "projects")
+        self.assertEqual((result.error.kind, result.exit_code), ("policy_denied", 6))
+        self.assertEqual(result.error.message, texts.POLICY_DENIALS["off"][0])
+        self.assertEqual(run(ctx, "doctor", check_connection=False).data["policy"]["mode"], "off")
+        self.write_shared_ceiling("write")                                          # и вернул: тоже без перезапуска
+        self.assertEqual(ctx.begin().policy.mode, "write")
+
+    def test_ceiling_files_are_read_only_when_they_change(self):
+        self.write_shared_ceiling("write")
+        ctx = make_context(store=self.store, client=SvnClient(FAKE))
+        ctx.begin()                                                                 # первая сборка потолка
+        with mock.patch("svnhelper.agent_policy.build_config", wraps=build_config) as built:
+            for _ in range(3):
+                ctx.begin()
+            self.assertEqual(built.call_count, 0)                                   # файлы не менялись с первой сборки
+            self.write_shared_ceiling("off")
+            for _ in range(3):
+                self.assertEqual(ctx.begin().policy.ceiling, "off")
+            self.assertEqual(built.call_count, 1)
+
+    def test_explicit_config_keeps_its_ceiling(self):
+        self.config.agent_max_mode = "write"
+        self.write_shared_ceiling("off")                                            # файлы такому контексту не указ
+        self.assertEqual(self.ctx().begin().policy.ceiling, "write")
+
+    def test_policy_load_failure_gives_safe_read_only(self):
+        self.sign(mode="write", allow=["lock"])
+        self.config.agent_max_mode = "write"
+        ctx = self.ctx()
+        with mock.patch.object(Policy, "load", side_effect=RuntimeError("сбой")):
+            policy = ctx.begin().policy
+            result = run(ctx, "projects")                                           # begin внутри try: ответ, не исключение
+        self.assertEqual((policy.mode, policy.signature), ("read_only", "unreadable"))
+        self.assertIsNotNone(result)
+        self.denied(policy, "lock")
+
     def test_off_refuses_everything_except_doctor_with_code_6(self):
         self.config.agent_max_mode = "off"
         ctx = self.ctx()
@@ -269,8 +379,8 @@ class FolderTests(PolicyBase):
         outside.mkdir(parents=True)
         self.sign(mode="write", allow=["save_local"], allowed_dirs=[str(extra)])
         policy = Policy.load(ceiling="write")
-        policy.check("save_local", str(self.proj), base_dirs=[str(self.base)])
-        policy.check("save_local", str(extra / "проект"), base_dirs=[str(self.base)])
+        policy.check("save_local", str(self.proj), base_dirs=[str(self.base)], consume=False)
+        policy.check("save_local", str(extra / "проект"), base_dirs=[str(self.base)], consume=False)
         self.assertEqual(self.denied(policy, "save_local", str(outside), base_dirs=[str(self.base)]).svn["reason"],
                          "folder")
         self.denied(policy, "save_local", str(self.proj))                 # без base_dirs: только allowed_dirs
@@ -280,7 +390,7 @@ class FolderTests(PolicyBase):
     def test_tag_is_never_changed(self):
         self.sign(mode="write", allow=["save_server"])
         with self.assertRaises(OpsError) as caught:
-            Policy.load(ceiling="write").check("save_server", line="tag")
+            Policy.load(ceiling="write").check("save_server", line="tag", consume=False)
         self.assertEqual((caught.exception.kind, caught.exception.exit_code), ("read_only_line", 5))
 
     def test_allowed_dirs_of_policy_extend_resolve(self):
@@ -322,7 +432,7 @@ class WriteLimitTests(PolicyBase):
         self.sign(mode="write", allow=["save_local"], max_writes_per_hour=2)
         policy = Policy.load(ceiling="write")
         for _ in range(5):
-            policy.check("save_local")                                    # план ничего не расходует
+            policy.check("save_local", consume=False)                     # план ничего не расходует
         policy.check("save_local", consume=True)
         policy.check("save_local", consume=True)
         error = self.denied(policy, "save_local", consume=True)
@@ -338,7 +448,21 @@ class WriteLimitTests(PolicyBase):
         policy.check("save_local", consume=True)                          # записи двухчасовой давности не считаются
         self.denied(policy, "save_local")
         agent_policy.counters_path().write_text("{сломан", encoding="utf-8")
-        policy.check("save_local")
+        policy.check("save_local", consume=False)
+
+    def test_counter_lock_is_strict_and_consume_is_required(self):
+        self.sign(mode="write", allow=["save_local"])
+        policy = Policy.load(ceiling="write")
+        with self.assertRaises(TypeError):
+            policy.check("save_local")                                    # молчаливого consume=False нет
+        with mock.patch.object(agent_policy, "named_lock", wraps=agent_policy.named_lock) as lock:
+            policy.check("save_local", consume=True)
+        self.assertIs(lock.call_args.kwargs.get("strict"), True)
+        from svnhelper import folderlock
+        with mock.patch.object(folderlock, "locks_dir", return_value=self.root / "файл.txt"):
+            (self.root / "файл.txt").write_text("не папка", encoding="utf-8")
+            with self.assertRaises(folderlock.LockUnavailable):
+                policy.check("save_local", consume=True)                  # нет каталога замков: запись не проходит
 
     def test_limit_works_between_two_processes(self):
         self.sign(mode="write", allow=["save_local"], max_writes_per_hour=7)

@@ -42,9 +42,10 @@ class Operation:
     func: Optional[Callable] = None
 
     def __call__(self, ctx, **params) -> Result:
-        run_ctx = ctx.begin()
+        run_ctx = ctx
         values: dict = {}
         try:
+            run_ctx = ctx.begin()
             self._check_enabled(run_ctx)
             values = self._check_params(params)
             if self.needs_svn and ctx.client is None:
