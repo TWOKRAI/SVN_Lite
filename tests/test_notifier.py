@@ -2,6 +2,7 @@
 
 Настоящий TortoiseSVN, реестр и значок в трее не трогаются.
 """
+import gc
 import os
 import sys
 import tempfile
@@ -18,6 +19,15 @@ from svnhelper.config import (clean_notify, Config, NOTIFY_DEFAULTS, apply_notif
 from svnhelper.notifier import (CheckResult, check_app_update, check_projects, discover_projects,  # noqa: E402
                                 in_quiet_hours, Notifier, ProjectInfo)
 from svnhelper.svn_core import SvnClient  # noqa: E402
+
+
+def release_test_windows(test, before):
+    """Окна теста собирает главный поток: иначе мусор закрытого окна попадает под сборщик в фоновом потоке другого
+    теста и роняет процесс (Tcl_AsyncDelete). Атрибуты, созданные в setUp, снимаются, потом gc.collect()."""
+    for name in set(vars(test)) - before:
+        delattr(test, name)
+    gc.collect()
+
 
 try:
     import tkinter as tk
@@ -516,6 +526,7 @@ class PopupGeometryTests(unittest.TestCase):
 @unittest.skipUnless(HAS_DISPLAY, "нет экрана")
 class AppNotifyTests(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(release_test_windows, self, set(vars(self)))
         from svnhelper.gui import App
         for target, kwargs in (("svnhelper.gui.download_tab.load_tree_cache", {"return_value": {}}),
                                ("svnhelper.gui.download_tab.save_tree_cache", {}),
@@ -905,6 +916,7 @@ class PopupWidgetTests(unittest.TestCase):
 @unittest.skipUnless(HAS_DISPLAY, "нет экрана")
 class SettingsDialogNotifyTests(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(release_test_windows, self, set(vars(self)))
         self.root = tk.Tk()
         self.root.withdraw()
         self.addCleanup(self.root.destroy)

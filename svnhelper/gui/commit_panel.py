@@ -8,6 +8,7 @@ from typing import Callable, Iterable, Optional
 from .. import theme
 from ..config import DEFAULT_COMMIT_TEMPLATES
 from ..svn_core import LocalChange
+from .widgets import SideButtons
 
 CHECKED, UNCHECKED = "☑", "☐"
 LOCK = "🔒"
@@ -35,14 +36,17 @@ class CommitPanel(ttk.Frame):
     on_save(paths, comment) вызывается только после проверок (комментарий не пустой, отмечен хотя бы один файл).
     set_changes(list[LocalChange]) — показать правки (все отмечены, кроме конфликтных).
     set_enabled(False, reason) — заблокировать сохранение и показать причину.
+    actions — колонка кнопок вкладки (SideButtons): «Сохранить отмеченное» стоит в ней и видна, пока есть правки;
+    без неё кнопка стоит под полем комментария.
     """
 
     RECENT_LIMIT = 5
 
     def __init__(self, parent: tk.Misc, templates: Optional[Iterable[str]] = None,
                  recent_comments: Optional[Iterable[str]] = None,
-                 on_save: Optional[Callable[[list[str], str], None]] = None):
+                 on_save: Optional[Callable[[list[str], str], None]] = None, actions: Optional[SideButtons] = None):
         super().__init__(parent)
+        self._actions = actions
         self.on_save: Optional[Callable[[list[str], str], None]] = on_save
         self._marks: dict[str, bool] = {}      # путь -> отмечен
         self._conflicts: set[str] = set()
@@ -95,9 +99,12 @@ class CommitPanel(ttk.Frame):
 
         self._reason = ttk.Label(self._body, text="", style="Hint.TLabel", wraplength=360, justify="left")
         self._reason.grid(row=6, column=0, sticky="w", pady=(6, 0))
-        self.save_button = ttk.Button(self._body, text="Сохранить отмеченное", style="Accent.TButton",
-                                      command=self._save)
-        self.save_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
+        self.save_button = ttk.Button(actions if actions is not None else self._body, text="Сохранить отмеченное",
+                                      style="Accent.TButton", command=self._save)
+        if actions is not None:
+            actions.add(self.save_button, visible=False)
+        else:
+            self.save_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
 
         self.set_templates(list(DEFAULT_COMMIT_TEMPLATES) if templates is None else templates)
         self.set_recent_comments(recent_comments or [])
@@ -143,6 +150,8 @@ class CommitPanel(ttk.Frame):
         else:
             self._body.grid_remove()
             self._empty.grid()
+        if self._actions is not None:
+            self._actions.set_visible(self.save_button, has_changes)
         self._clear_error()
 
     @staticmethod
