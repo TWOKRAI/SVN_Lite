@@ -197,8 +197,11 @@ def build_server(ctx=None, guard_seconds: Optional[float] = None):
         params = dict(arguments or {})
         details = params.pop("details", False) is True
         op_name = op_by_tool.get(name)
-        if op_name is None:                                          # неизвестный инструмент: ответ по формату ops
-            return tool_result(types, ops.run(ctx, name), details)
+        if op_name is None:             # неизвестный инструмент: отказ без вызова реестра по сырому имени (закрыто по умолчанию)
+            from .ops import errors, texts
+            from .ops.result import Result
+            error = errors.from_exception(errors.invalid_args(texts.ARG_NO_OPERATION.format(name=name)))
+            return tool_result(types, Result.failure(name, error), details)
         return tool_result(types, await execute(ctx, op_name, params, guard), details)
 
     @server.list_resources()
