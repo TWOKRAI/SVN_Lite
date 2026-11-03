@@ -159,11 +159,11 @@ class UiTextsTests(unittest.TestCase):
     def test_agent_dialog_and_versions_texts_are_plain_russian(self):
         """AG.7: окно «ИИ-помощник…», его пометки состояния и фраза doctor про разные версии: без терминов svn."""
         from svnhelper.gui import agent_dialog
-        from svnhelper.ops import diag, texts
+        from svnhelper.ops import texts
         texts_list = [agent_dialog.TITLE, agent_dialog.INTRO, agent_dialog.NOT_YET_TEXT, agent_dialog.FOLDERS_FIXED_TEXT,
                       agent_dialog.FOLDERS_EXTRA_TEXT, agent_dialog.FOLDERS_LOCKED_TEXT, agent_dialog.COPIED_CODE_TEXT,
                       agent_dialog.COPIED_DESKTOP_TEXT, agent_dialog.CLI_MISSING_TEXT, agent_dialog.SAVE_ERROR_TEXT,
-                      agent_dialog.LOG_FOLDER_TEXT, diag.VERSIONS_DIFFER.format(window="1.0.0", cli="1.0.1"),
+                      agent_dialog.LOG_FOLDER_TEXT, texts.VERSIONS_DIFFER.format(window="1.0.0", cli="1.0.1"),
                       *agent_dialog.CEILING_TEXTS.values(), *agent_dialog.SIGNATURE_TEXTS.values(),
                       *(agent_dialog.PERMISSION_PREFIX + label for _action, label in agent_dialog.PERMISSIONS),
                       texts.POLICY_TAMPERED, texts.POLICY_FOREIGN, texts.POLICY_UNREADABLE,

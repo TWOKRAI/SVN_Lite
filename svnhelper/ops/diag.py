@@ -14,11 +14,6 @@ from .registry import operation
 from .result import ErrorInfo, Result, clean_text
 
 
-# Версии окна и консольной программы разошлись (Task AG.7). Строка здесь, а не в texts.py: тот файл правит другой исполнитель.
-VERSIONS_DIFFER = ("Версии программы разошлись: окно {window}, помощник {cli}. "
-                   "Обновите SVN-lite (Справка, «Проверить обновление программы») и перезапустите помощника.")
-
-
 def _program_data() -> dict:
     """Версия программы. У собранного svnlite.exe ещё версия окна (его запись при запуске) и совпадение версий:
     при запуске из исходников окно и помощник это один пакет, сравнивать нечего."""
@@ -102,7 +97,7 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
         warnings.append(note)
         text = f"{text} {note}"
     if not data["program"].get("versions_match", True):
-        differ = VERSIONS_DIFFER.format(window=data["program"]["window_version"], cli=data["program"]["cli_version"])
+        differ = texts.VERSIONS_DIFFER.format(window=data["program"]["window_version"], cli=data["program"]["cli_version"])
         warnings.append(differ)
         text = f"{text} {differ}"
     text = f"{text} {texts.policy_mode_text(data['policy'].get('mode', ''))}".rstrip()
