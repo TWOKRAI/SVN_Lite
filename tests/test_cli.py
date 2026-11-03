@@ -293,10 +293,24 @@ class CliImportTests(unittest.TestCase):
         self.assertIn("from svnhelper.cli import main", (ROOT / "svnlite_cli.py").read_text(encoding="utf-8"))
         spec = (ROOT / "packaging" / "svnlite.spec").read_text(encoding="utf-8")
         for needle in ("console=True", "upx=False", "excludes=['tkinter']", "name='svnlite'", "svnlite_cli.py",
-                       "except ImportError", "collect_submodules('mcp')"):
+                       "find_spec('mcp') is None", "raise SystemExit", "requirements-mcp.txt", "svnhelper.mcp_server",
+                       "mcp.server.lowlevel", "mcp.server.stdio", "collect_submodules('anyio')", "win32job"):
             self.assertIn(needle, spec)
+        self.assertNotIn("except ImportError", spec)                # сборка без пакета mcp не проходит молча
+        self.assertNotIn("collect_submodules('mcp')", spec)         # лишнее в exe не тянем
         build = (ROOT / "packaging" / "build.bat").read_text(encoding="utf-8")
         self.assertIn("svnlite.spec", build)
+        order = [build.index(text) for text in ("pip install -r requirements-mcp.txt", 'python -c "import mcp"',
+                                                "packaging\\svnlite.spec", "out\\dist\\svnlite.exe --version",
+                                                "echo Done:")]
+        self.assertEqual(order, sorted(order))                      # mcp ставится и проверяется до сборки, exe после неё
+        for command in ("requirements-mcp.txt", 'python -c "import mcp"', "packaging\\svnlite.spec",
+                        "out\\dist\\svnlite.exe --version"):
+            line = build[build.index(command):].split("\n")[1]
+            self.assertIn("if errorlevel 1 goto :fail", line)
+        for name in ("build.bat", "svnlite.spec"):
+            raw = (ROOT / "packaging" / name).read_bytes()
+            self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"), name + ": строки должны оканчиваться на CRLF")
         self.assertEqual(build.count("goto :fail"), build.count("if errorlevel 1 goto :fail"))
         self.assertIn("svnlite.exe", build.split("echo Done:")[1])
 

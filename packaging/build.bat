@@ -15,9 +15,17 @@ if errorlevel 1 (
 python -m PyInstaller --clean --noconfirm --workpath "out\work" --distpath "out\dist" "packaging\SVN-lite.spec"
 if errorlevel 1 goto :fail
 
-rem Second exe: console program svnlite.exe. If the "mcp" package is installed it is bundled, so "svnlite mcp"
-rem works; otherwise the exe still builds and "svnlite mcp" reports that the assistant server is unavailable.
+rem Second exe: console program svnlite.exe. It must contain the assistant server ("svnlite mcp"), so the "mcp"
+rem package is mandatory: install it and check that it imports; the build stops here if that fails.
+python -m pip install -r requirements-mcp.txt
+if errorlevel 1 goto :fail
+python -c "import mcp"
+if errorlevel 1 goto :fail
 python -m PyInstaller --clean --noconfirm --workpath "out\work" --distpath "out\dist" "packaging\svnlite.spec"
+if errorlevel 1 goto :fail
+
+rem Smoke check of the built console exe (the assistant server itself is checked by hand).
+out\dist\svnlite.exe --version
 if errorlevel 1 goto :fail
 
 rem Put the admin config next to the exe, but never overwrite an edited one.
