@@ -300,15 +300,30 @@ class CliImportTests(unittest.TestCase):
         self.assertNotIn("collect_submodules('mcp')", spec)         # лишнее в exe не тянем
         build = (ROOT / "packaging" / "build.bat").read_text(encoding="utf-8")
         self.assertIn("svnlite.spec", build)
-        order = [build.index(text) for text in ("pyinstaller -r requirements-mcp.txt", '-c "import mcp"',
+        install = "-r requirements-build.txt -r requirements-mcp.txt"
+        order = [build.index(text) for text in ("-m pip --version", install, '-c "import mcp"',
                                                 "packaging\\svnlite.spec", "out\\dist\\svnlite.exe --version",
                                                 "echo Done:")]
         self.assertEqual(order, sorted(order))                      # mcp ставится и проверяется до сборки, exe после неё
         self.assertIn("out\\venv_build", build)                     # сборка идёт в своём окружении, не в глобальном Python
-        for command in ("pyinstaller -r requirements-mcp.txt", '-c "import mcp"', "packaging\\svnlite.spec",
-                        "out\\dist\\svnlite.exe --version"):
+        for command in (install, '-c "import mcp"', "packaging\\svnlite.spec", "out\\dist\\svnlite.exe --version"):
             line = build[build.index(command):].split("\n")[1]
             self.assertIn("if errorlevel 1 goto :fail", line)
+        # ревью v4, находка 5: сломанное или недосозданное окружение (python или pip не запускаются) удаляется и
+        # создаётся заново один раз; неудача называет шаг
+        line = build[build.index("-m pip --version"):].split("\n")[1]
+        self.assertIn("if errorlevel 1 goto :venv_broken", line)
+        broken = build[build.index("\n:venv_broken"):build.index("\n:venv_failed")]
+        for text in ("if defined VENV_RETRIED goto :venv_failed", 'set "VENV_RETRIED=1"', 'rmdir /s /q "%VENV%"',
+                     "goto :venv\n"):
+            self.assertIn(text, broken)
+        self.assertLess(build.index("\n:venv_failed"), build.index("\n:fail"))  # без goto: дальше «BUILD FAILED»
+        self.assertIn("BUILD FAILED: could not %STEP%", build)
+        # PyInstaller закреплён точной версией в requirements-build.txt
+        pins = [line.strip() for line in (ROOT / "requirements-build.txt").read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.startswith("#")]
+        self.assertEqual(len(pins), 1)
+        self.assertRegex(pins[0], r"^pyinstaller==\d+\.\d+\.\d+$")
         for name in ("build.bat", "svnlite.spec"):
             raw = (ROOT / "packaging" / name).read_bytes()
             self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"), name + ": строки должны оканчиваться на CRLF")

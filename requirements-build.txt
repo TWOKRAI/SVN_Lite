@@ -1,0 +1,5 @@
+# Зависимости сборки exe: packaging/build.bat ставит их в своё окружение out/venv_build вместе с requirements-mcp.txt.
+# PyInstaller закреплён точно: другая версия может по-другому искать скрытые импорты, и exe соберётся иначе.
+# 6.22.3 - версия, которой собраны SVN-lite.exe и svnlite.exe 2026-11-05 (проверено: pip show pyinstaller в
+# out/venv_build). Обновлять сознательно: поднять версию здесь, собрать build.bat, запустить оба exe.
+pyinstaller==6.22.3
