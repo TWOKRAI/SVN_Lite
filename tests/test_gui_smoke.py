@@ -3313,6 +3313,9 @@ class BranchTextGuiTests(unittest.TestCase):
         from svnhelper import server
         from svnhelper.svn_core import LocalChange, WcStatus
         root, app, tmp = self.make_app()
+        # поиск проектов при запуске (папки «dl» нет) должен закончиться до того, как строка вставлена вручную:
+        # иначе под нагрузкой его ответ приходит в root.update() ниже и очищает список
+        self.pump(root, lambda: app._mine_scanned)
         item = self.make_item(app, tmp, server.Line("branch", "задача"),
                               status=WcStatus(modified=2, incoming=1, unversioned=3,
                                               local_changes=[LocalChange("a.txt", "modified")]))
