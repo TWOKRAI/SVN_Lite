@@ -20,6 +20,7 @@ from .new_project_dialog import NewProjectDialog, PublishDialog
 from .project_panel import ProjectPanel, PROJECT_TABS
 from .models import (AUTO_CHECK_SEC, JobStamp, REFRESH_SEC, line_cell, lock_holder_text, LOCK_WARN_DAYS, LockResult, log,
                      MineItem, PROGRESS_MS, shorten_path, UpdateJob)
+from . import hints
 from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip
 
 
@@ -153,13 +154,11 @@ class ProjectsTabMixin:
         self.actions_row = row = SideButtons(tab, px(6), px(230))
         row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
         self.mine_name_label = ttk.Label(row, text="", style="Hint.TLabel", anchor="w", wraplength=px(220))
-        self.check_btn = ttk.Button(row, text="⟳", command=self._on_refresh_tab)
-        Tooltip(self.check_btn, lambda: "Проверить состояние")
+        self.check_btn = ttk.Button(row, text="⟳", command=self._on_refresh_tab)      # пояснение - в панели подсказок
         self.special_btn = ttk.Button(row, text="", state="disabled")  # «Починить папку» / «Разобрать конфликт»
         self.update_btn = ttk.Button(row, text="Получить новое", command=self._on_update_selected, state="disabled")
         self.publish_btn = ttk.Button(row, text=localrepo.PUBLISH_BUTTON, command=self._on_publish_project,
                                       state="disabled")       # у проекта без сервера: с историей на компьютере или без неё
-        Tooltip(self.publish_btn, lambda: messages.PLAIN_OFFLINE_TODO if self._offline else "")
         self.continue_btn = ttk.Button(row, text=localrepo.CONTINUE_BUTTON, command=self._on_continue_without_history)
         self.open_btn = ttk.Button(row, text="Открыть папку", command=self._on_open_mine, state="disabled")
         self.server_btn = ttk.Button(row, text="Открыть на сервере", command=self._on_open_server, state="disabled")
@@ -173,17 +172,18 @@ class ProjectsTabMixin:
         self.new_project_btn = ttk.Button(row, text="＋ Новый проект…", style="TButton", command=self._on_new_project)
         # порядок сверху вниз: действия над выбранным проектом целиком по частоте, потом «Открыть…» и «Ещё»;
         # сохранение, занятые файлы и ветки - справа, на вкладках «Состояния проекта»
+        # hint - пояснение в панели подсказок внизу окна (hints.HINTS); у особой кнопки ключ меняется вместе с ней
         row.add(self.mine_name_label)
-        row.add(self.check_btn)
-        row.add(self.special_btn, visible=False)
-        row.add(self.update_btn)
-        row.add(self.publish_btn, visible=False)
-        row.add(self.continue_btn, visible=False)       # второе действие при потерянной истории
+        row.add(self.check_btn, hint="project.check")
+        row.add(self.special_btn, visible=False, hint="project.resolve")
+        row.add(self.update_btn, hint="project.get_new")
+        row.add(self.publish_btn, visible=False, hint="project.publish")
+        row.add(self.continue_btn, visible=False, hint="project.continue")    # второе действие при потерянной истории
         row.add(self.mine_cancel_btn, visible=False)    # видна только пока идёт получение нового
-        row.add(self.open_btn, separator=True)
-        row.add(self.server_btn)
-        row.add(self.more_btn)
-        row.add(self.new_project_btn, separator=True)
+        row.add(self.open_btn, separator=True, hint="project.open")
+        row.add(self.server_btn, hint="project.server")
+        row.add(self.more_btn, hint="project.more")
+        row.add(self.new_project_btn, separator=True, hint="project.new")
         self._more_idx: dict[str, int] = {}
         self._expert_idx: dict[str, int] = {}
 
@@ -228,6 +228,7 @@ class ProjectsTabMixin:
             frame.rowconfigure(0, weight=1)
             tabs.add(frame, text=title)
             self.list_frames[key] = frame
+        hints.hint_tabs(tabs, [f"tab.{key}" for key, _title in self.LIST_MODES])
         mine = ttk.Frame(self.list_frames["mine"])
         mine.grid(row=0, column=0, sticky="nsew")
         self._build_mine_projects_column(mine)
@@ -250,13 +251,14 @@ class ProjectsTabMixin:
         self.mine_dir_combo = ttk.Combobox(folder, textvariable=self.mine_dir_var, state="readonly")
         self.mine_dir_combo.grid(row=0, column=1, columnspan=2, sticky="ew")
         self.mine_dir_combo.bind("<<ComboboxSelected>>", self._on_mine_dir_selected)
-        Tooltip(self.mine_dir_combo, lambda: self.dir_var.get().strip())    # длинный путь целиком
+        Tooltip(self.mine_dir_combo, lambda: self.dir_var.get().strip())    # длинный путь целиком (данные)
+        hints.hint(self.mine_dir_combo, "mine.folder")
         buttons = ButtonRow(folder, px(4), px(4))       # не помещаются в ширину колонки - вторая строка, а не обрезка
         buttons.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(px(4), 0))
         self.mine_browse_btn = ttk.Button(buttons, text="Выбрать…", command=self._on_browse_mine)
         self.rescan_btn = ttk.Button(buttons, text="Найти проекты", style="Ghost.TButton", command=self._scan_projects)
-        buttons.add(self.mine_browse_btn)
-        buttons.add(self.rescan_btn)
+        buttons.add(self.mine_browse_btn, hint="mine.browse")
+        buttons.add(self.rescan_btn, hint="mine.rescan")
         self._fill_project_dir_lists()
 
         # поиск по названию проекта (без учёта регистра); порядок задаёт щелчок по заголовку в широком виде
@@ -267,6 +269,7 @@ class ProjectsTabMixin:
         self.mine_filter_var = tk.StringVar()
         self.mine_filter_entry = ttk.Entry(find_row, textvariable=self.mine_filter_var)
         self.mine_filter_entry.grid(row=0, column=1, sticky="ew")
+        hints.hint(self.mine_filter_entry, "mine.filter")
         self.mine_filter_var.trace_add("write", lambda *_: self._apply_mine_sort())
 
         self.mine_table = frame = ttk.Frame(body, style="Card.TFrame", padding=1)
@@ -299,6 +302,7 @@ class ProjectsTabMixin:
         theme.configure_tree_tags(self.mine_tree)
         self.mine_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_mine_select())
         self.mine_tree.bind("<Double-1>", self._on_mine_double_click)
+        hints.hint_rows(self.mine_tree, self._mine_row_hint, "mine.table")
 
     def _build_mine_empty(self, body: ttk.Frame) -> None:
         """Пустое состояние «Мои проекты»: в папке нет проектов - текст и одна подсвеченная кнопка к скачиванию.
@@ -314,6 +318,7 @@ class ProjectsTabMixin:
         self.mine_empty_btn = ttk.Button(empty, text=self.MINE_EMPTY_BUTTON, style="Accent.TButton",
                                          command=lambda: self.select_list_mode("download"))
         self.mine_empty_btn.grid(row=2, column=0, sticky="ew")
+        hints.hint(self.mine_empty_btn, "mine.empty_download")
 
         def wrap(event) -> None:      # колонка узкая: _autowrap с его наименьшей шириной здесь не подходит
             width = max(px(80), event.width - px(28))
@@ -344,6 +349,7 @@ class ProjectsTabMixin:
         self.mine_empty_label.configure(text=label)
         self.mine_empty_hint.configure(text=hint)
         self.mine_empty_btn.configure(text=button, command=command)
+        hints.hint(self.mine_empty_btn, "mine.empty_browse" if missing_path else "mine.empty_download")
 
     def _build_mine_state_column(self, body: ttk.Frame) -> None:
         """Колонка 3: ProjectPanel (шапка и вкладки выбранного проекта). Вкладку «Ветки» наполняет LinesTabMixin."""
@@ -460,6 +466,7 @@ class ProjectsTabMixin:
     def _on_mine_column_toggled(self, _event=None) -> None:
         """Свернули или развернули колонку: раскладка и запоминание в settings."""
         self._layout_mine_columns()
+        self._sync_hint_background()          # карточка спряталась или появилась: панель говорит больше или меньше
         st = self.settings
         state = (self.mine_col2.collapsed, self.mine_col3.collapsed)
         if (st.mine_col2_collapsed, st.mine_col3_collapsed) != state:
@@ -516,6 +523,7 @@ class ProjectsTabMixin:
             self.mine_col3.set_title(*title)
         self.mine_col2.set_width(self.px(self._col2_width(mode)))
         self._layout_mine_columns()
+        self._sync_hint_background()
 
     def _on_list_tab_changed(self, _event=None) -> None:
         """Выбрана подвкладка колонки «Проекты» (щелчком или select_list_mode). Вход в «Скачать проект» разворачивает
@@ -1109,6 +1117,44 @@ class ProjectsTabMixin:
         self._mine_hint_text = text
         if self._selected_item() is None:
             self.project_panel.clear_header(text)
+            self._sync_hint_background()
+
+    # панель подсказок внизу окна: фоновый текст и строки таблицы проектов
+
+    def _card_visible(self) -> bool:
+        """Карточка выбранного проекта (шапка «Состояния проекта») сейчас на экране."""
+        return not self.mine_col3.collapsed and self._list_mode() == "mine"
+
+    def _sync_hint_background(self) -> None:
+        """Фоновый текст панели подсказок: что делать с выбранным проектом (та же строка «Что сделать», что в
+        карточке). Карточки не видно (свёрнута, «Скачать проект») - панель говорит ещё и имя и состояние."""
+        bar = getattr(self, "hint_bar", None)
+        if bar is None or not hasattr(self, "project_panel"):
+            return
+        if self._list_mode() == "download":
+            bar.set_background(self.DOWNLOAD_BACKGROUND)
+            return
+        item = self._selected_item()
+        if item is None:
+            bar.set_background(self._mine_hint_text)
+            return
+        name, state, _tag, _branch, todo, _note = self._header_fields(item)
+        todo = f"Что сделать: {todo}" if todo.strip(" .") else ""
+        if self._card_visible():
+            bar.set_background(todo or self._sentence(state))
+        else:
+            bar.set_background(" ".join(p for p in (f"«{name}»: {self._sentence(state)}", todo) if p))
+
+    def _mine_row_hint(self, iid: str) -> str:
+        """Пояснение строки таблицы проектов: имя, состояние и что сделать."""
+        item = self.mine.get(iid)
+        if item is None:
+            return ""
+        state, _tag, todo = self._state_cells(item)
+        text = f"«{item.display_name}»: {self._sentence(state)}"
+        if todo.strip(" ."):
+            text += f" Что сделать: {self._sentence(todo)}"
+        return text + " Двойной щелчок откроет «Состояние проекта»."
 
     def _refresh_project_panel(self) -> None:
         """Шапка и вкладки колонки 3 по выбранному проекту. Другой проект: незаконченные загрузки отменяются."""
@@ -1136,6 +1182,7 @@ class ProjectsTabMixin:
         self._sync_lines_view()
         self._open_changes_if_needed(item)
         self._load_project_tab()
+        self._sync_hint_background()
 
     def _typing_comment(self) -> bool:
         """Курсор в поле комментария на «Изменениях»: человек печатает, вкладки у него под руками не меняются."""
@@ -1350,6 +1397,8 @@ class ProjectsTabMixin:
             self.special_btn.configure(text="Разобрать конфликт", command=self._on_resolve,
                                        state=on(ready and free and not self._locking and not self._committing))
         self._show(self.special_btn, main in ("resolve", "repair", "restore"))
+        if main in ("resolve", "repair", "restore"):
+            hints.hint(self.special_btn, f"project.{main}")
         self.new_project_btn.configure(state=on(not busy and not self._new_project_running()))
 
         incoming = item.status.incoming if is_svn and item.status else 0

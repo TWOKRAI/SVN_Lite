@@ -7402,6 +7402,137 @@ class AgentDialogTests(unittest.TestCase):
             root.destroy()
 
 
+@unittest.skipUnless(HAS_DISPLAY and shutil.which("svn") and shutil.which("svnadmin"), "нет экрана или svn")
+class HintWiringTests(unittest.TestCase):
+    """U4.5: у каждой показанной кнопки обеих колонок, у ярлыков, таблиц и поля комментария есть пояснение
+    в панели подсказок; наведение показывает его, уход возвращает фоновый текст."""
+
+    setUpClass = MineTabTests.__dict__["setUpClass"]
+    tearDownClass = MineTabTests.__dict__["tearDownClass"]
+    pump = MineTabTests.pump
+    checkout = MineTabTests.checkout
+    make_app = MineTabTests.make_app
+    select_first = MineTabTests.select_first
+
+    def check_hover(self, root, app, button):
+        from svnhelper.gui import hints
+        bar = app.hint_bar
+        key = hints.key_of(button)
+        self.assertIn(key, hints.HINTS, button)
+        background = bar.text()
+        button.event_generate("<Enter>")
+        shown = bar.text()
+        self.assertTrue(shown.startswith(hints.HINTS[key][1].rstrip(".")), (button, shown))
+        if button.instate(["disabled"]):
+            self.assertIn("Сейчас недоступно: ", shown, button)
+        button.event_generate("<Leave>")
+        self.pump(root, lambda: bar.text() == background)
+
+    def shown_side_buttons(self, bar):
+        return [w for w in bar._items if w not in bar._hidden and isinstance(w, ttk.Button)]
+
+    def test_every_shown_button_of_both_columns_has_hint(self):
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, _base = self.make_app("hint_all")
+        try:
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking)
+            background = app.hint_bar.text()
+            self.assertTrue(background.startswith("Что сделать: "), background)    # строка «Что сделать» карточки
+            left = self.shown_side_buttons(app.actions_row)
+            self.assertEqual(left, [app.check_btn, app.update_btn, app.open_btn, app.server_btn, app.more_btn,
+                                    app.new_project_btn])
+            for button in left:
+                with self.subTest(button=button.cget("text")):
+                    self.check_hover(root, app, button)
+            # правая колонка на каждой вкладке; на «Изменениях» - с правками, шаблонами и «Последние ▾»
+            item.status = WcStatus(local_changes=[LocalChange(os.path.join(item.path, "a.txt"), "modified")])
+            app._refresh_project_panel()
+            app._update_mine_buttons()
+            app._commit_panel.set_recent_comments(["Правка чертежа"])
+            panel = app.project_panel
+            seen = 0
+            for tab in ("changes", "locks", "lines"):
+                app.open_project_tab(tab)
+                root.update()
+                buttons = panel.side_buttons()
+                self.assertTrue(buttons, tab)
+                for button in buttons:
+                    seen += 1
+                    with self.subTest(tab=tab, button=button.cget("text")):
+                        self.check_hover(root, app, button)
+            self.assertGreaterEqual(seen, 2 + 3 + 6)       # сохранение, «Последние», 3 шаблона; 2 на «Занятых»; 6 «Веток»
+            # особая кнопка слева меняет и пояснение
+            item.status = WcStatus(conflicts=1)
+            app._update_mine_buttons()
+            self.assertEqual(app.special_btn.cget("text"), "Разобрать конфликт")
+            self.check_hover(root, app, app.special_btn)
+            from svnhelper.gui import hints
+            self.assertEqual(hints.key_of(app.special_btn), "project.resolve")
+            item.state, item.status = "broken", None
+            app._update_mine_buttons()
+            self.assertEqual(hints.key_of(app.special_btn), "project.repair")
+            # форма скачивания
+            app.select_list_mode("download")
+            root.update()
+            self.assertEqual(app.hint_bar.text(), app.DOWNLOAD_BACKGROUND)
+            for button in self.shown_side_buttons(app.download_actions):
+                self.check_hover(root, app, button)
+        finally:
+            root.destroy()
+
+    def test_tabs_tables_and_comment_have_hints(self):
+        from svnhelper.gui import hints
+        root, app, _base = self.make_app("hint_tabs")
+        try:
+            for notebook in (app.list_tabs, app.project_tabs):
+                keys = notebook._hint_tab_keys
+                self.assertEqual(len(keys), len(notebook.tabs()))
+                self.assertTrue(all(key in hints.HINTS for key in keys), keys)
+            self.assertEqual(app.project_tabs._hint_tab_keys,
+                             ["tab.changes", "tab.incoming", "tab.history", "tab.locks", "tab.lines"])
+            panel = app.project_panel
+            for widget in (app.mine_tree, app._commit_panel.tree, app._commit_panel.entry, panel.locks_tree,
+                           panel.incoming_view.tree, panel.history_view.tree, app.lines_tree, app.tree,
+                           app.mine_filter_entry, app.mine_dir_combo, app.refresh_btn, app.url_entry):
+                self.assertIn(hints.key_of(widget), hints.HINTS, widget)
+            # строка таблицы проектов: имя, состояние и что сделать
+            iid, item = self.select_first(root, app)
+            with mock.patch.object(app.mine_tree, "identify_row", return_value=iid):
+                app.mine_tree.event_generate("<Motion>", x=5, y=5)
+            self.assertIn(f"«{item.display_name}»", app.hint_bar.text())
+            self.assertIn("Двойной щелчок", app.hint_bar.text())
+            app.mine_tree.event_generate("<Leave>")
+            self.pump(root, lambda: app.hint_bar.hovered() is None)
+            # поле комментария в фокусе: его пояснение (наведение важнее фокуса, поэтому курсор ушёл с таблицы)
+            app._commit_panel.entry.event_generate("<FocusIn>")
+            self.assertEqual(app.hint_bar.text(), hints.HINTS["changes.comment"][1])
+        finally:
+            root.destroy()
+
+    def test_grey_button_tells_why_and_card_hidden_adds_name(self):
+        from svnhelper.gui.models import UpdateJob
+        root, app, _base = self.make_app("hint_grey")
+        try:
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking)
+            app.upd = UpdateJob(item)
+            app._update_mine_buttons()
+            app.new_tag_btn.event_generate("<Enter>")
+            self.assertIn("Сейчас недоступно: идёт получение нового.", app.hint_bar.text())
+            app.upd = None
+            app._update_mine_buttons()
+            # «Состояние проекта» свёрнуто: фоновый текст говорит и имя, и состояние
+            app.mine_col3.collapse()
+            root.update()
+            self.assertTrue(app.hint_bar._background.startswith(f"«{item.display_name}»: "), app.hint_bar._background)
+            app.mine_col3.expand()
+            root.update()
+            self.assertTrue(app.hint_bar._background.startswith("Что сделать: "))
+        finally:
+            root.destroy()
+
+
 class FitLinesTests(unittest.TestCase):
     """U4.5: текст панели подсказок - не больше N строк по ширине, лишнее кончается «…»."""
 

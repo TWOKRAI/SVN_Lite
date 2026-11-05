@@ -14,6 +14,7 @@ from tkinter import ttk
 
 from .. import localrepo, messages, theme
 from ..svn_core import CancelToken, LockInfo, LogEntry
+from . import hints
 from .commit_panel import CommitPanel
 from .widgets import button_column_width, button_padding, fit_text, SideButtons, Tooltip
 
@@ -126,7 +127,8 @@ class LogView(ttk.Frame):
     set_entries(entries) - показать записи; clear() - убрать всё.
     """
 
-    def __init__(self, parent: tk.Misc, px: Callable[[int], int], *, names: bool, note: str = ""):
+    def __init__(self, parent: tk.Misc, px: Callable[[int], int], *, names: bool, note: str = "",
+                 hint: str = ""):
         super().__init__(parent)
         self.names = names
         self.columnconfigure(0, weight=1)
@@ -155,6 +157,8 @@ class LogView(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         hscroll.grid(row=1, column=0, sticky="ew")
         theme.configure_tree_tags(self.tree)
+        if hint:
+            hints.hint(self.tree, hint)
         self._table = frame
         self._show_table(False)
 
@@ -248,15 +252,18 @@ class ProjectPanel(ttk.Frame):
             self.frames[key] = frame
 
         self.tabs.bind("<<NotebookTabChanged>>", lambda _e: self.sync_actions())
+        hints.hint_tabs(self.tabs, [f"tab.{key}" for key, _title in PROJECT_TABS])
         self.commit_panel = CommitPanel(self.frames["changes"], templates=templates, recent_comments=recent_comments,
                                         on_save=on_save, actions=self.actions_for("changes"))
         self.commit_panel.grid(row=0, column=0, sticky="nsew")
         # проект с историей на компьютере: вместо «Сохранить отмеченное» одна кнопка, сохраняет все правки
         self.save_local_btn = ttk.Button(self.actions_for("changes"), text=localrepo.SAVE_BUTTON, command=on_save_local)
-        self.actions_for("changes").add(self.save_local_btn, visible=False, before=self.commit_panel.save_button)
-        self.incoming_view = LogView(self.frames["incoming"], px, names=True, note=messages.INCOMING_NOTE)
+        self.actions_for("changes").add(self.save_local_btn, visible=False, before=self.commit_panel.save_button,
+                                        hint="changes.save_local")
+        self.incoming_view = LogView(self.frames["incoming"], px, names=True, note=messages.INCOMING_NOTE,
+                                     hint="incoming.table")
         self.incoming_view.grid(row=0, column=0, sticky="nsew")
-        self.history_view = LogView(self.frames["history"], px, names=False)
+        self.history_view = LogView(self.frames["history"], px, names=False, hint="history.table")
         self.history_view.grid(row=0, column=0, sticky="nsew")
         self._build_locks(self.frames["locks"])
         self.sync_actions()
@@ -421,13 +428,14 @@ class ProjectPanel(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         theme.configure_tree_tags(self.locks_tree)
         self.locks_tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_lock_buttons())
+        hints.hint(self.locks_tree, "locks.table")
         # «Занять файл…» открывает окно выбора; «Освободить…» берёт выбранные свои строки таблицы, а без выбора
         # открывает окно выбора своих файлов
         bar = self.actions_for("locks")
         self.lock_btn = ttk.Button(bar, text="Занять файл…", command=self._on_lock, state="disabled")
         self.release_btn = ttk.Button(bar, text="Освободить…", command=self._release_clicked, state="disabled")
-        bar.add(self.lock_btn)
-        bar.add(self.release_btn)
+        bar.add(self.lock_btn, hint="locks.take")
+        bar.add(self.release_btn, hint="locks.release")
         self._own_locks: dict[str, str] = {}      # строка таблицы -> путь файла, занятого вами
         self._release_allowed = False
 

@@ -8,6 +8,7 @@ from typing import Callable, Iterable, Optional
 from .. import theme
 from ..config import DEFAULT_COMMIT_TEMPLATES
 from ..svn_core import LocalChange
+from . import hints
 from .widgets import popup_menu_under, SideButtons
 
 CHECKED, UNCHECKED = "☑", "☐"
@@ -93,11 +94,13 @@ class CommitPanel(ttk.Frame):
         theme.configure_tree_tags(self.tree)
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<space>", self._on_space)
+        hints.hint(self.tree, "changes.table")
 
         ttk.Label(self._body, text="Что вы сделали?", style="Section.TLabel").grid(
             row=1, column=0, sticky="w", pady=(10, 2))
         self.entry = ttk.Entry(self._body, textvariable=self._comment)
         self.entry.grid(row=2, column=0, sticky="ew")
+        hints.hint(self.entry, "changes.comment")
         self._error = ttk.Label(self._body, text="", style="Error.TLabel", wraplength=360, justify="left")
         self._error.grid(row=3, column=0, sticky="w", pady=(2, 0))
         self._reason = ttk.Label(self._body, text="", style="Hint.TLabel", wraplength=360, justify="left")
@@ -106,11 +109,11 @@ class CommitPanel(ttk.Frame):
         self.save_button = ttk.Button(actions if actions is not None else self._body, text="Сохранить отмеченное",
                                       style="Accent.TButton", command=self._save)
         if actions is not None:
-            actions.add(self.save_button, visible=False)
+            actions.add(self.save_button, visible=False, hint="changes.save")
             self._recent_menu = tk.Menu(self, tearoff=False)
             self._recent_btn = ttk.Button(actions, text=RECENT_BUTTON,
                                           command=lambda: popup_menu_under(self._recent_btn, self._recent_menu))
-            actions.add(self._recent_btn, visible=False)
+            actions.add(self._recent_btn, visible=False, hint="changes.recent")
         else:
             # прежняя раскладка: шаблоны и список последних под полем комментария
             self._templates_row = ttk.Frame(self._body)
@@ -141,7 +144,8 @@ class CommitPanel(ttk.Frame):
         for index, text in enumerate(self._templates):
             button = ttk.Button(self._actions, text=text, command=lambda t=text: self.set_comment(t))
             button.full_text = text                  # type: ignore[attr-defined]  # ProjectPanel укорачивает подпись
-            self._actions.add(button, visible=self._has_changes, separator=index == 0, before=self._recent_btn)
+            self._actions.add(button, visible=self._has_changes, separator=index == 0, before=self._recent_btn,
+                              hint="changes.template")
             self._template_buttons.append(button)
         self._sync_actions()
 

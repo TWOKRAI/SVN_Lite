@@ -12,6 +12,7 @@ from .. import theme
 from ..config import (APP_UPDATE_DAYS_CHOICES, CHECK_MIN_CHOICES, clean_notify, Config, NOTIFY_DEFAULTS,
                       POPUP_SEC_CHOICES, REPEAT_HOURS_CHOICES, Settings, UNSAVED_HOURS_CHOICES)
 from ..dialogs import center_window, FONT_FAMILY
+from . import hints
 from .models import REMEMBER_HINT
 
 
@@ -428,7 +429,8 @@ class PickDialog(tk.Toplevel):
 class ButtonRow(ttk.Frame):
     """Ряд кнопок: если они не помещаются по ширине окна, лишние переходят на вторую строку.
 
-    Показывать и прятать кнопки нужно через set_visible (App._show делает это сам).
+    Показывать и прятать кнопки нужно через set_visible (App._show делает это сам). hint - ключ пояснения в панели
+    подсказок (hints.HINTS): владельцу ряда не нужно писать обработчиков.
     """
 
     def __init__(self, parent: tk.Misc, gap: int, line_gap: int):
@@ -439,8 +441,10 @@ class ButtonRow(ttk.Frame):
         self._layout_key: Optional[tuple] = None
         self.bind("<Configure>", lambda _e: self.reflow())
 
-    def add(self, widget: tk.Misc, visible: bool = True) -> None:
+    def add(self, widget: tk.Misc, visible: bool = True, hint: Optional[str] = None) -> None:
         self._items.append(widget)
+        if hint:
+            hints.hint(widget, hint)
         if not visible:
             self._hidden.add(widget)
         self.after_idle(self.reflow)
@@ -507,8 +511,11 @@ class SideButtons(ttk.Frame):
         return any(widget not in self._hidden for widget in self._items)
 
     def add(self, widget: tk.Misc, visible: bool = True, separator: bool = False,
-            before: Optional[tk.Misc] = None) -> None:
-        """Добавляет кнопку в конец колонки, а с before - перед этой кнопкой (так обновляются шаблоны комментария)."""
+            before: Optional[tk.Misc] = None, hint: Optional[str] = None) -> None:
+        """Добавляет кнопку в конец колонки, а с before - перед этой кнопкой (так обновляются шаблоны комментария).
+        hint - ключ пояснения в панели подсказок (hints.HINTS)."""
+        if hint:
+            hints.hint(widget, hint)
         if before is not None and before in self._items:
             self._items.insert(self._items.index(before), widget)
         else:

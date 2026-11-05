@@ -15,8 +15,9 @@ from .create_dialog import CreateProjectDialog
 from .models import (CLIPBOARD_MAX_LEN, DownloadJob, FAV_ADD_TEXT, FAV_REMOVE_TEXT, JobStamp,
                      line_choice_label, LINES_DELAY_MS, log, LONG_TASK_SEC, Node, PROGRESS_MS, same_url,
                      SEARCH_DELAY_MS, search_projects, shorten_path, TREE_HINT, TRUNK_CHOICE)
+from . import hints
 from .server_tree import ServerTree
-from .widgets import AuditDialog, button_column_width, ButtonRow, SideButtons, Tooltip
+from .widgets import AuditDialog, button_column_width, ButtonRow, SideButtons
 
 LOCAL_OUTSIDE = "Эта папка не входит в проекты на сервере."
 LOCAL_MISSING = "Этого проекта ещё нет на сервере."
@@ -30,6 +31,9 @@ class DownloadTabMixin:
     # появляются редко, и пока их нет, форме остаётся больше места (в окне 900x640 при скачивании это важно)
     DOWNLOAD_BUTTONS = ("Скачать", "Отмена", "Создать проект из этой папки…", "Удалить недокачанную папку")
     DOWNLOAD_COLUMN_MIN_TEXT = "Скачать проект"
+    # фоновый текст панели подсказок на подвкладке «Скачать проект»
+    DOWNLOAD_BACKGROUND = ("Найдите проект в списке слева или вставьте ссылку на него, проверьте «Что скачать» "
+                           "и «Куда» и нажмите «Скачать».")
 
     # -- подвкладка «Скачать проект» колонки «Проекты» -------------------------------------------
     # Две части в разных колонках окна (docs/PLAN_ui_v4.md, раздел 3, вариант A): в колонке 2 вместо списка своих
@@ -51,6 +55,7 @@ class DownloadTabMixin:
         self.search_entry = ttk.Entry(search, textvariable=self.search_var)
         self.search_entry.grid(row=0, column=1, sticky="ew")
         self.search_entry.bind("<Escape>", lambda _e: self.search_var.set(""))
+        hints.hint(self.search_entry, "download.search")
         self.search_var.trace_add("write", lambda *_: self._on_search_changed())
 
         # дерево и список результатов поиска лежат друг на друге: виден один из них
@@ -79,6 +84,8 @@ class DownloadTabMixin:
         rscroll.grid(row=0, column=1, sticky="ns")
         self._tag_project_rows(self.results)
         self.results.bind("<<TreeviewSelect>>", self._on_result_select)
+        for tree in (self.tree, self.results):
+            hints.hint(tree, "download.tree")
         self.results_pane.grid_remove()
         bar = ttk.Frame(browser)
         bar.grid(row=2, column=0, sticky="ew", pady=(px(8), 0))
@@ -86,7 +93,7 @@ class DownloadTabMixin:
         # «⟳», а не «Обновить»: слово «Обновить» в программе не используется для разных вещей (PLAN_v3)
         self.refresh_btn = ttk.Button(bar, text="⟳", style="Ghost.TButton", width=2, command=self._on_refresh)
         self.refresh_btn.grid(row=0, column=0, sticky="nw")
-        Tooltip(self.refresh_btn, lambda: "Перечитать список с сервера")
+        hints.hint(self.refresh_btn, "download.refresh")         # что делает «⟳» - в панели подсказок
         self.tree_status = ttk.Label(bar, text=TREE_HINT, style="Hint.TLabel", justify="left")
         self.tree_status.grid(row=0, column=1, sticky="w", padx=(px(8), 0))
         self._autowrap(self.tree_status, bar, px(60))
@@ -117,6 +124,7 @@ class DownloadTabMixin:
         self.url_var = tk.StringVar()
         self.url_entry = ttk.Entry(step1, textvariable=self.url_var)
         self.url_entry.grid(row=2, column=0, sticky="ew", pady=(px(2), 0))
+        hints.hint(self.url_entry, "download.url")
         tools = ButtonRow(step1, px(8), px(2))     # в узкой колонке ссылки переходят на вторую строку
         tools.grid(row=3, column=0, sticky="ew", pady=(px(2), 0))
         self.recent_menu = tk.Menu(step1, tearoff=False, postcommand=self._fill_recent_menu)
@@ -125,8 +133,9 @@ class DownloadTabMixin:
                                   state="disabled")
         self.browse_disk_btn = ttk.Button(tools, text="Выбрать папку на диске…", style="Link.TButton",
                                           command=self._on_browse_disk)
-        for widget in (self.recent_btn, self.fav_btn, self.browse_disk_btn):
-            tools.add(widget)
+        for widget, key in ((self.recent_btn, "download.recent"), (self.fav_btn, "download.favorite"),
+                            (self.browse_disk_btn, "download.browse_disk")):
+            tools.add(widget, hint=key)
         self.url_status = ttk.Label(step1, text="", style="Hint.TLabel", justify="left")
         self.url_status.grid(row=4, column=0, sticky="w", pady=(px(6), 0))
         self._autowrap(self.url_status, step1, px(40))
@@ -143,6 +152,7 @@ class DownloadTabMixin:
         self.line_combo = ttk.Combobox(line_row, textvariable=self.line_var, state="disabled", values=[TRUNK_CHOICE])
         self.line_combo.grid(row=0, column=1, sticky="ew", padx=(px(10), 0))
         self.line_combo.bind("<<ComboboxSelected>>", self._on_line_selected)
+        hints.hint(self.line_combo, "download.line")
         line_row.grid_remove()
         self.line_info = ttk.Label(step1, text="", style="Hint.TLabel", justify="left")
         self.line_info.grid(row=6, column=0, sticky="w", pady=(px(4), 0))
@@ -159,7 +169,9 @@ class DownloadTabMixin:
         self.dir_entry = ttk.Combobox(step2, textvariable=self.dir_var, values=list(self.settings.project_dirs))
         self.dir_entry.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
         self.dir_entry.bind("<<ComboboxSelected>>", lambda _e: self._remember_project_dir(self.dir_var.get()))
+        hints.hint(self.dir_entry, "download.folder")
         self.browse_btn = ttk.Button(step2, text="Выбрать…", command=self._on_browse)
+        hints.hint(self.browse_btn, "download.browse")
         self.browse_btn.grid(row=1, column=1, sticky="e", padx=(px(8), 0), pady=(px(2), 0))
         self.dest_var = tk.StringVar()
         dest_label = ttk.Label(step2, textvariable=self.dest_var, style="Hint.TLabel", justify="left")
@@ -204,10 +216,10 @@ class DownloadTabMixin:
         self.create_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[2], command=self._on_create_project)
         # появляется только после отмены или ошибки, если на диске осталась недокачанная папка
         self.cleanup_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[3], command=self._on_remove_partial)
-        actions.add(self.download_btn)
+        actions.add(self.download_btn, hint="download.start")
         actions.add(self.cancel_btn, visible=False)
-        actions.add(self.create_btn, visible=False, separator=True)
-        actions.add(self.cleanup_btn, visible=False, separator=True)
+        actions.add(self.create_btn, visible=False, separator=True, hint="download.create")
+        actions.add(self.cleanup_btn, visible=False, separator=True, hint="download.cleanup")
         actions.on_change = self._fit_download_actions
 
     def _fit_download_actions(self) -> None:

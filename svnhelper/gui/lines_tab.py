@@ -9,6 +9,7 @@ from typing import Callable, Optional
 from .. import messages, server, theme
 from ..dialogs import NewLineDialog
 from ..svn_core import CancelToken, ErrorKind, WcStatus
+from . import hints
 from .models import JobStamp, LINES_PREFETCH, log, MineItem, UpdateJob
 
 
@@ -228,6 +229,7 @@ class LinesTabMixin:
         self._table_extras(self.lines_tree, frame)
         theme.configure_tree_tags(self.lines_tree)
         self.lines_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_lines_select())
+        hints.hint(self.lines_tree, "lines.table")
 
         # карточка выбранной линии
         self.line_card = card = ttk.Frame(body, style="Card.TFrame", padding=(px(14), px(10)))
@@ -257,9 +259,10 @@ class LinesTabMixin:
         self.download_other_btn = ttk.Button(row, text="Скачать отдельно", command=self._on_download_separately,
                                              state="disabled")
         self.new_tag_btn = ttk.Button(row, text="Зафиксировать версию…", command=self._on_make_tag, state="disabled")
-        for button in (self.switch_here_btn, self.diff_btn, self.merge_btn, self.new_branch_btn,
-                       self.download_other_btn, self.new_tag_btn):
-            row.add(button)
+        for button, key in ((self.switch_here_btn, "lines.switch"), (self.diff_btn, "lines.compare"),
+                            (self.merge_btn, "lines.merge"), (self.new_branch_btn, "lines.new_branch"),
+                            (self.download_other_btn, "lines.download_other"), (self.new_tag_btn, "lines.new_tag")):
+            row.add(button, hint=key)
 
         # «Отличия» выбранной ветки от Основной: подпись и список файлов под карточкой и подсказкой
         self.diff_box = box = ttk.Frame(body)
