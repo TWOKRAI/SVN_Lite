@@ -458,14 +458,20 @@ class MineTabTests(unittest.TestCase):
                     root.update()
                     right = root.winfo_rootx() + root.winfo_width()
                     bottom = root.winfo_rooty() + root.winfo_height()
-                    buttons = [w for w in app.actions_row._items if w not in app.actions_row._hidden]
-                    self.assertIn(app.special_btn, buttons)
-                    for widget in buttons:
-                        self.assertTrue(widget.winfo_ismapped(), widget)
-                        self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
-                        self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
-                        # подпись не обрезана: кнопке дали не меньше, чем она просит
-                        self.assertGreaterEqual(widget.winfo_width(), widget.winfo_reqwidth(), widget)
+                    for compact in (False, True):        # U4.8: в обоих видах колонки
+                        app.set_buttons_compact("both", compact)
+                        root.update()
+                        bar = app.actions_row
+                        buttons = [w for w in bar._items if w not in bar._hidden
+                                   and (not compact or isinstance(w, ttk.Button))]
+                        self.assertIn(app.special_btn, buttons)
+                        for widget in buttons:
+                            self.assertTrue(widget.winfo_ismapped(), widget)
+                            self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
+                            self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
+                            # подпись не обрезана: кнопке дали не меньше, чем она просит
+                            self.assertGreaterEqual(widget.winfo_width(), widget.winfo_reqwidth(), widget)
+                            self.assertGreaterEqual(widget.winfo_height(), widget.winfo_reqheight(), widget)
                     # «Отмена» только во время операции, и не слева, а в панели подсказок внизу окна (U4.5)
                     self.assertFalse(hasattr(app, "mine_cancel_btn"))
                     self.assertFalse(app.hint_bar.cancel_btn.winfo_ismapped())
@@ -2829,12 +2835,23 @@ class BranchesGuiTests(unittest.TestCase):
             self.assertTrue(app.mine_tree.winfo_ismapped())     # столбцы шире окна листаются полосой прокрутки
             self.open_lines(root, app, item)
             root.update()
-            for widget in (app.switch_here_btn, app.download_other_btn, app.new_branch_btn, app.new_tag_btn,
-                           app.merge_btn):
-                self.assertTrue(widget.winfo_ismapped(), widget)
-                self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
-                self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(),
-                                     root.winfo_rooty() + root.winfo_height(), widget)
+            widths = {}
+            for compact in (False, True):                       # U4.8: шесть кнопок «Веток» в обоих видах
+                app.set_buttons_compact("both", compact)
+                root.update()
+                # низ кнопки - не ниже ячейки вкладки: иначе колонку обрезает и последняя кнопка сплющена
+                cell = app.project_tab_frames["lines"]
+                cell_bottom = cell.winfo_rooty() + cell.winfo_height()
+                for widget in (app.switch_here_btn, app.diff_btn, app.download_other_btn, app.new_branch_btn,
+                               app.new_tag_btn, app.merge_btn):
+                    with self.subTest(compact=compact, button=widget.cget("text")):
+                        self.assertTrue(widget.winfo_ismapped(), widget)
+                        self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, widget)
+                        self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), cell_bottom, widget)
+                        self.assertGreaterEqual(widget.winfo_height(), widget.winfo_reqheight(), widget)
+                widths[compact] = app.project_panel.side.winfo_width()
+            self.assertLess(widths[True], widths[False] / 2)    # в компактном виде колонка заметно уже
+            app.set_buttons_compact("both", False)
             # «Что скачать» помещается в форму скачивания: шаги 2 и 3 не обрезаны
             app.select_list_mode("download")
             app.url_var.set(self.project_url)
@@ -4242,6 +4259,197 @@ class SideColumnButtonsTests(unittest.TestCase):
         self.assertEqual(fit_text(root, self.LONG, 1), "…")
 
 
+@unittest.skipUnless(sys.platform == "win32", "значки рисует Windows (GDI)")
+class SideButtonsViewTests(unittest.TestCase):
+    """U4.8: колонка кнопок со значками - вид «с подписями» и «только значки», без окна с проектами."""
+
+    def make_bar(self, scale=1.0, side="right", compact=False):
+        from svnhelper import theme
+        from svnhelper.gui.widgets import SideButtons
+        root = tk.Tk()
+        self.addCleanup(SideColumnButtonsTests.destroy_root, root)
+        root.tk.call("tk", "scaling", 96 * scale / 72)
+        theme.apply(root)
+        px = lambda value: int(value * scale)                                      # noqa: E731
+        bar = SideButtons(root, px(6), px=px, side=side, compact=compact)
+        bar.pack(side="left", anchor="n")
+        root.geometry(f"{px(500)}x{px(600)}")          # окно с запасом: колонку ничто не сжимает
+        self.buttons = {
+            "check": ttk.Button(bar, text="⟳"),
+            "update": ttk.Button(bar, text="Получить новое (12)", style="Accent.TButton"),
+            "open": ttk.Button(bar, text="Открыть папку", state="disabled"),
+            "tag": ttk.Button(bar, text="Зафиксировать версию…"),
+            "new": ttk.Button(bar, text="＋ Новый проект…"),
+        }
+        for name, key in (("check", "project.check"), ("update", "project.get_new"), ("open", "project.open"),
+                          ("tag", "lines.new_tag"), ("new", "project.new")):
+            bar.add(self.buttons[name], hint=key, separator=name == "new")
+        root.update()
+        self.root, self.bar, self.px = root, bar, px
+        return bar
+
+    def image_of(self, button):
+        """Значок кнопки (обычный, без серого): имя картинки и её размер."""
+        name = str(button.cget("image")[0]) if button.cget("image") else ""
+        if not name:
+            return "", (0, 0)
+        return name, (int(self.root.tk.call("image", "width", name)), int(self.root.tk.call("image", "height", name)))
+
+    def test_every_side_icon_key_has_hint_and_glyph(self):
+        from svnhelper.gui import hints, icons
+        self.assertTrue(icons.available())
+        self.assertTrue(icons.has_glyph(icons.ICON_FONT, icons.ICONS["project.check"]), "нет шрифта Segoe MDL2 Assets")
+        for key, char in icons.ICONS.items():
+            with self.subTest(key=key):
+                self.assertIn(key, hints.HINTS)
+                self.assertIn(key, icons.FALLBACK)                              # запасной символ на всякий случай
+                self.assertTrue(icons.has_glyph(icons.ICON_FONT, char), f"символа U+{ord(char):04X} нет")
+                self.assertEqual(icons.glyph_for(key, "Подпись").font, icons.ICON_FONT)
+        # ни шрифта, ни символа: буква подписи в кружке; без подписи - ничего
+        glyph = icons.glyph_for("нет такого", "сохранить")
+        self.assertEqual((glyph.text, glyph.circle), ("С", True))
+        self.assertIsNone(icons.glyph_for(None, "⟳"))
+        self.assertFalse(icons.has_glyph("Шрифта такого нет", "A"))
+
+    def test_label_and_style_stay_for_window_code(self):
+        bar = self.make_bar()
+        update = self.buttons["update"]
+        self.assertEqual(update.cget("text"), "Получить новое (12)")             # подпись - как была
+        self.assertEqual(update["text"], "Получить новое (12)")
+        self.assertEqual(update.cget("style"), "Accent.TButton")                # стиль окна - как был
+        self.assertEqual(str(ttk.Button.cget(update, "style")), "Side.Accent.TButton")     # на экране - производный
+        self.assertEqual(ttk.Style(self.root).lookup("Side.Accent.TButton", "background"),
+                         ttk.Style(self.root).lookup("Accent.TButton", "background"))      # цвета те же
+        self.assertEqual(str(ttk.Button.cget(update, "text")), "Получить\nновое (12)")     # на экране - две строки
+        before = self.image_of(update)[0]
+        update.configure(style="TButton", text="Получить новое")
+        self.assertEqual((update.cget("style"), update.cget("text")), ("TButton", "Получить новое"))
+        self.assertEqual(str(ttk.Button.cget(update, "style")), "Side.TButton")
+        self.assertNotEqual(self.image_of(update)[0], before)                   # значок цвета обычной кнопки
+        update["text"] = "Получаю новое…"
+        self.assertEqual(update.cget("text"), "Получаю новое…")
+        self.assertEqual(self.buttons["check"].cget("text"), "⟳")
+        self.assertEqual(str(ttk.Button.cget(self.buttons["new"], "text")), "Новый\nпроект…")   # «＋» нарисован значком
+        self.assertEqual(bar.compact, False)
+
+    def assert_aligned(self, buttons, same_width=True):
+        """Значки стоят одинаково: одна ячейка, один отступ слева, одна высота кнопок, кнопки друг под другом."""
+        self.root.update()
+        sizes = {self.image_of(b)[1][1] for b in buttons}                       # высота ячейки значка
+        self.assertEqual(len(sizes), 1, sizes)
+        self.assertEqual(len({b.winfo_height() for b in buttons}), 1, [b.winfo_height() for b in buttons])
+        self.assertEqual(len({b.winfo_x() for b in buttons}), 1)
+        if same_width:
+            self.assertEqual(len({b.winfo_width() for b in buttons}), 1)
+        self.assertEqual({str(ttk.Style(self.root).lookup(str(ttk.Button.cget(b, "style")), "anchor")) for b in buttons},
+                         {"w"})                                                 # значок прижат к левому краю
+        self.assertEqual(len({str(b.cget("padding")).split()[0] for b in buttons}), 1)   # с одним отступом
+
+    def test_expanded_icons_are_aligned_and_labels_two_lines(self):
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                bar = self.make_bar(scale=scale)
+                buttons = list(self.buttons.values())
+                self.assert_aligned(buttons)
+                for button in buttons:
+                    self.assertEqual(str(button.cget("compound")), "image" if button is self.buttons["check"] else "left")
+                    self.assertLessEqual(str(ttk.Button.cget(button, "text")).count("\n"), 1)
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
+                # кнопка уже прежней (px(240)) и не уже подписи в две строки
+                self.assertLess(bar.winfo_width(), self.px(240))
+                self.assertGreater(bar.winfo_width(), self.px(100))
+                self.root.destroy()
+
+    def test_compact_buttons_are_square_icons_with_counter(self):
+        from svnhelper.gui import icons
+        bar = self.make_bar()
+        wide = bar.winfo_width()
+        bar.set_compact(True)
+        self.root.update()
+        buttons = list(self.buttons.values())
+        self.assert_aligned(buttons)
+        self.assertLess(bar.winfo_width(), wide / 2)                            # колонка заметно уже
+        self.assertTrue(self.px(44) <= bar.winfo_width() <= self.px(52), bar.winfo_width())
+        for button in buttons:
+            self.assertEqual(str(button.cget("compound")), "image")
+            self.assertLessEqual(abs(button.winfo_width() - button.winfo_height()), self.px(6))   # почти квадрат
+        self.assertEqual(self.buttons["update"].cget("text"), "Получить новое (12)")
+        # счётчик нового - на значке, и он не сдвигает символ: вне угла со счётчиком значок тот же
+        size = self.px(24)
+        glyph = icons.glyph_for("project.get_new")
+        plain, counted = icons.coverage(glyph, size), icons.coverage(glyph, size, "12")
+        self.assertNotEqual(plain, counted)
+        radius = size * 0.36                                                    # кружок двузначного счётчика
+        cx, cy = size - radius - 0.2, radius + 0.2
+        outside = [i for i in range(size * size)
+                   if ((i % size + 0.5 - cx) ** 2 + (i // size + 0.5 - cy) ** 2) ** 0.5 > radius + size / 16 + 1]
+        self.assertGreater(len(outside), size * size // 3)
+        self.assertEqual([plain[i] for i in outside], [counted[i] for i in outside])
+        self.assertNotEqual(self.image_of(self.buttons["update"])[0], self.image_of(self.buttons["tag"])[0])
+        # одна картинка на одинаковый значок того же цвета (кэш)
+        self.assertIs(icons.render(self.root, glyph, size, "#000000", "12"),
+                      icons.render(self.root, glyph, size, "#000000", "12"))
+        bar.set_compact(False)
+        self.root.update()
+        self.assertEqual(bar.winfo_width(), wide)
+
+    def test_tooltips_say_full_label_in_compact_view(self):
+        from svnhelper.gui import hints
+        bar = self.make_bar()
+        self.assertEqual(bar.tip_text(self.buttons["update"]), "")              # подпись видна целиком
+        bar.set_compact(True)
+        self.assertEqual(bar.tip_text(self.buttons["update"]), "Получить новое (12)")
+        self.assertEqual(bar.tip_text(self.buttons["check"]), hints.HINTS["project.check"][0])  # не «⟳»
+        tip = self.buttons["tag"]._side_tip
+        self.buttons["tag"].event_generate("<Enter>")
+        self.assertIsNotNone(tip.tip)                                           # подсказка показана
+        self.buttons["tag"].event_generate("<Leave>")
+        self.assertIsNone(tip.tip)
+
+    def test_toggle_switches_view_or_asks_owner(self):
+        bar = self.make_bar(side="left")
+        toggle = bar.toggle_btn
+        self.assertEqual(toggle.cget("text"), "⟨⟨")                            # левая колонка уходит к левому краю
+        self.assertEqual(toggle._side_tip.text_fn(), "Свернуть до значков")
+        toggle.invoke()
+        self.assertTrue(bar.compact)
+        self.assertEqual((toggle.cget("text"), toggle._side_tip.text_fn()), ("⟩⟩", "Показать подписи"))
+        asked = []
+        bar.on_toggle = lambda: asked.append(True)
+        toggle.invoke()
+        self.assertEqual(asked, [True])
+        self.assertTrue(bar.compact)                                            # решает владелец, не колонка
+        right = self.make_bar(side="right")
+        self.assertEqual(right.toggle_btn.cget("text"), "⟩⟩")
+
+    def test_hidden_and_special_buttons_keep_icons(self):
+        bar = self.make_bar()
+        special = ttk.Button(bar, text="Разобрать конфликт")
+        bar.add(special, visible=False, hint="project.resolve")
+        before = self.image_of(special)[0]
+        special.configure(text="Починить папку")
+        bar.set_hint(special, "project.repair")
+        self.assertNotEqual(self.image_of(special)[0], before)                  # новый значок у нового назначения
+        bar.set_visible(special, True)
+        self.assert_aligned(list(self.buttons.values()) + [special])
+
+    def test_dark_theme_recolors_icons(self):
+        from svnhelper import theme
+        bar = self.make_bar()
+        bar.set_compact(True)
+        self.root.update()
+        light = self.image_of(self.buttons["tag"])[0]
+        theme.apply(self.root, mode="dark")
+        self.root.update()
+        self.assertNotEqual(self.image_of(self.buttons["tag"])[0], light)       # значок цвета текста тёмной темы
+        bar.set_compact(False)
+        self.root.update()
+        self.assert_aligned(list(self.buttons.values()))
+        theme.apply(self.root, mode="light")
+        self.root.update()
+        self.assertEqual(self.image_of(self.buttons["tag"])[0] != "", True)
+
+
 class CommitTemplatesConfigTests(unittest.TestCase):
     def test_defaults_and_override(self):
         from svnhelper.config import Config, apply_config_data
@@ -4445,6 +4653,59 @@ class ColumnOneButtonsTests(unittest.TestCase):
             app._update_mine_buttons()
             self.assertEqual(self.accents(app), [])
             self.assertEqual(app.mine_name_label.cget("text"), "")
+        finally:
+            root.destroy()
+
+    def test_one_accent_icons_and_alignment_in_both_views(self):
+        """U4.8: в обоих видах колонок на экране одна подсветка; у каждой показанной кнопки обеих колонок есть значок
+        (icons.ICONS); значки стоят одинаково - у кнопок колонки одна ширина, высота и левый край; счётчик нового
+        виден на значке в компактном виде."""
+        from svnhelper.gui import hints, icons
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, _base = self.make_app("u48_views")
+        try:
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking)
+            root.deiconify()
+            root.geometry(f"{app.px(1200)}x{app.px(800)}")
+            panel = app.project_panel
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified")
+            for compact in (False, True):
+                app.set_buttons_compact("both", compact)
+                for state, status, expected in (("svn", WcStatus(incoming=2), app.update_btn),
+                                                ("svn", WcStatus(local_changes=[change]), app._commit_panel.save_button),
+                                                ("svn", WcStatus(conflicts=1), app.special_btn)):
+                    with self.subTest(compact=compact, expected=expected.cget("text")):
+                        panel.tabs.select(panel.frames["changes"])
+                        self.show_state(app, item, state, status)
+                        app._commit_panel.set_changes([change] if status.local_changes else [])
+                        root.update()
+                        self.assertEqual(self.accents(app), [expected])
+                # значок у каждой показанной кнопки, одинаковое положение значков в каждой колонке
+                self.show_state(app, item, "svn", WcStatus(incoming=2, local_changes=[change]))
+                app._commit_panel.set_changes([change])
+                app._commit_panel.set_recent_comments(["Правка чертежа"])
+                for tab in ("changes", "locks", "lines"):
+                    app.open_project_tab(tab)
+                    root.update()
+                    for bar in (app.actions_row, panel._side_bars[tab]):
+                        shown = [b for b in bar._items if b not in bar._hidden and isinstance(b, ttk.Button)]
+                        with self.subTest(compact=compact, tab=tab, bar=str(bar)):
+                            self.assertTrue(shown)
+                            for button in shown:
+                                self.assertIn(hints.key_of(button), icons.ICONS, button.cget("text"))
+                                self.assertTrue(button.cget("image"), button.cget("text"))
+                            self.assertEqual(len({(b.winfo_width(), b.winfo_height(), b.winfo_x()) for b in shown}), 1,
+                                             [(b.cget("text"), b.winfo_width(), b.winfo_height(), b.winfo_x())
+                                              for b in shown])
+                            self.assertEqual({str(b.cget("padding")).split()[0] for b in shown}.__len__(), 1)
+                self.assertEqual(app.update_btn.cget("text"), "Получить новое (2)")
+                if compact:                      # число - на значке и в подсказке
+                    self.assertEqual(app.actions_row.tip_text(app.update_btn), "Получить новое (2)")
+                    with_counter = str(app.update_btn.cget("image")[0])
+                    self.show_state(app, item, "svn", WcStatus())
+                    self.assertNotEqual(str(app.update_btn.cget("image")[0]), with_counter)
+            app.set_buttons_compact("both", False)
         finally:
             root.destroy()
 
@@ -5048,7 +5309,8 @@ class ProjectPanelTabsTests(unittest.TestCase):
                     app.select_list_mode("mine")
                     iid, item = self.select_first(root, app)
                     self.pump(root, lambda: not app._checking and not item.checking and item.status is not None)
-                    for key in ("locks", "lines"):
+                    for compact, key in ((c, k) for c in (False, True) for k in ("locks", "lines")):
+                        app.set_buttons_compact("both", compact)       # U4.8: в обоих видах
                         app.open_project_tab(key)
                         root.update()
                         buttons = app.project_panel.side_buttons()
@@ -5056,6 +5318,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
                         for button in buttons:
                             self.assertTrue(button.winfo_ismapped(), button.cget("text"))
                             self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), button.cget("text"))
+                            self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight(), button.cget("text"))
                             self.assertLessEqual(button.winfo_rootx() + button.winfo_width(),
                                                  root.winfo_rootx() + root.winfo_width(), button.cget("text"))
                 finally:
@@ -7562,6 +7825,40 @@ class HintWiringTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_compact_button_hover_gives_detailed_hint_and_tooltip(self):
+        """U4.8: у кнопки «только значок» наведение даёт подробное пояснение в панели и подсказку с подписью - и в
+        режиме панели «только ход работы» (тогда подсказка с подписью - единственное, что видно)."""
+        from svnhelper.gui import hints
+        root, app, _base = self.make_app("hint_compact")
+        try:
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking)
+            app.set_buttons_compact("both", True)
+            root.update()
+            self.check_hover(root, app, app.open_btn)
+            tip = app.open_btn._side_tip
+            app.open_btn.event_generate("<Enter>")
+            self.assertIsNotNone(tip.tip)
+            self.assertEqual(tip.text_fn(), "Открыть папку")
+            app.open_btn.event_generate("<Leave>")
+            self.pump(root, lambda: app.hint_bar.hovered() is None)
+            app.set_hint_mode("progress")
+            app.check_btn.event_generate("<Enter>")
+            self.assertEqual(app.check_btn._side_tip.text_fn(), hints.HINTS["project.check"][0])
+            self.assertIsNotNone(app.check_btn._side_tip.tip)
+            app.check_btn.event_generate("<Leave>")
+            self.pump(root, lambda: app.hint_bar.hovered() is None)        # пояснение ушло (через 150 мс)
+            app.set_hint_mode("detailed")
+            app.open_project_tab("lines")
+            root.update()
+            for button in app.project_panel.side_buttons():
+                with self.subTest(button=button.cget("text")):
+                    self.check_hover(root, app, button)
+                    self.assertEqual(button._side_tip.text_fn(), button.cget("text"))
+            app.set_buttons_compact("both", False)
+        finally:
+            root.destroy()
+
     def test_tabs_tables_and_comment_have_hints(self):
         from svnhelper.gui import hints
         root, app, _base = self.make_app("hint_tabs")
@@ -7872,6 +8169,103 @@ class HintBarWindowTests(unittest.TestCase):
         root.update()
         self.assertEqual(str(app.hint_bar.cget("style")), "Card.TFrame")       # цвета только из стилей темы
         self.assertEqual(str(app.hint_bar.cancel_btn.cget("style")), "Small.TButton")
+
+
+@unittest.skipUnless(sys.platform == "win32", "значки рисует Windows (GDI)")
+class ButtonsViewWindowTests(unittest.TestCase):
+    """U4.8: колонки кнопок окна «с подписями» и «только значки»: стрелки, меню «Вид → Кнопки», настройка, значки."""
+
+    make_app = ListModeTests.make_app
+    pump = ListModeTests.pump
+
+    @staticmethod
+    def side_bars(app):
+        return [app.actions_row, *app.project_panel._side_bars.values(), app.download_actions]
+
+    def test_toggles_and_view_menu_switch_and_remember(self):
+        from svnhelper.config import SettingsStore
+        root, app, _ = self.make_app()
+        left, panel = app.actions_row, app.project_panel
+        self.assertEqual((left.compact, panel.compact, app.download_actions.compact), (False, False, False))
+        self.assertEqual(app.buttons_view_var.get(), "labels")
+        self.assertEqual(left.toggle_btn.cget("text"), "⟨⟨")
+        # справа стрелка одна - в заголовке колонки «Состояние проекта» (над кнопками строки не занимает)
+        toggle = app.buttons_right_toggle
+        self.assertEqual(toggle.master, app.mine_col3.header)
+        self.assertEqual(toggle.cget("text"), "⟩⟩")
+        self.assertTrue(all(bar.toggle_btn is None for bar in panel._side_bars.values()))
+        left.toggle_btn.invoke()                                     # стрелка слева: только левая колонка
+        self.assertEqual((left.compact, panel.compact), (True, False))
+        self.assertEqual(app.buttons_view_var.get(), "")             # колонки в разном виде: пункт не отмечен
+        saved = SettingsStore(self.settings_path).settings
+        self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (True, False))
+        toggle.invoke()                                              # стрелка справа: «Состояние» и форма скачивания
+        self.assertEqual((panel.compact, app.download_actions.compact, toggle.cget("text")), (True, True, "⟨⟨"))
+        self.assertEqual(app.buttons_view_var.get(), "icons")
+        menu = app.buttons_menu
+        self.assertEqual([menu.entrycget(i, "label") for i in range(menu.index("end") + 1)],
+                         ["С подписями", "Только значки"])
+        menu.invoke(0)                                               # меню: обе колонки сразу
+        self.assertEqual([bar.compact for bar in self.side_bars(app)], [False] * len(self.side_bars(app)))
+        saved = SettingsStore(self.settings_path).settings
+        self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (False, False))
+        menu.invoke(1)
+        self.assertEqual([bar.compact for bar in self.side_bars(app)], [True] * len(self.side_bars(app)))
+        self.assertEqual(left.toggle_btn.cget("text"), "⟩⟩")
+
+    def test_saved_view_is_used_at_start_and_builds_in_dark_theme(self):
+        from svnhelper.config import Config, SettingsStore
+        from svnhelper.gui import App
+        from svnhelper.svn_core import SvnClient
+        _root, app, work_dir = self.make_app()
+        app.set_buttons_compact("right", True)
+        root = tk.Tk()
+        root.withdraw()
+        quiet_clipboard(root)
+        self.addCleanup(lambda: root.winfo_exists() and root.destroy())
+        app = App(root, Config(server="svn://srv", repos=["test"], work_dir=work_dir), SettingsStore(self.settings_path),
+                  SvnClient("svn"), os.path.join(work_dir, "log.txt"), startup_jobs=False)
+        self.assertEqual((app.actions_row.compact, app.project_panel.compact, app.download_actions.compact),
+                         (False, True, True))
+        self.assertEqual(app.buttons_right_toggle.cget("text"), "⟨⟨")
+        for mode in ("dark", "light"):
+            app.set_theme(mode)
+            for compact in (True, False):
+                app.set_buttons_compact("both", compact)
+                root.update()
+                for bar in self.side_bars(app):
+                    for button in bar._buttons():
+                        self.assertTrue(button.cget("image"), button.cget("text"))      # значок есть в обоих видах
+                        self.assertTrue(str(ttk.Button.cget(button, "style")).startswith("Side."))
+
+    def test_columns_get_narrower_and_download_form_has_icons(self):
+        from svnhelper.gui import icons
+        root, app, _ = self.make_app(visible=True)
+        app._mine_dirty = False
+        root.geometry(f"{app.px(1100)}x{app.px(700)}")
+        app.select_list_mode("download")
+        app._set_create_target(("C:\\папка", "svn://srv", ["test", "папка"]))
+        app.download_actions.set_visible(app.cleanup_btn, True)
+        root.update()
+        wide = (app.actions_row.winfo_reqwidth(), app.download_actions.winfo_width())
+        for button in (app.download_btn, app.create_btn, app.cleanup_btn):
+            self.assertIn(hints_key(button), icons.ICONS)
+        app.set_buttons_compact("both", True)
+        root.update()
+        narrow = (app.actions_row.winfo_reqwidth(), app.download_actions.winfo_width())
+        self.assertLess(narrow[0], wide[0] / 2)
+        self.assertLess(narrow[1], wide[1] / 2)
+        self.assertEqual(app.download_btn.cget("style"), "Accent.TButton")     # главная кнопка формы - та же
+        self.assertEqual(shown_accents(app), [app.download_btn])
+        buttons = [app.download_btn, app.create_btn, app.cleanup_btn]
+        self.assertEqual(len({(b.winfo_width(), b.winfo_height(), b.winfo_x()) for b in buttons}), 1)
+        app._set_create_target(None)
+        app.download_actions.set_visible(app.cleanup_btn, False)
+
+
+def hints_key(widget):
+    from svnhelper.gui import hints
+    return hints.key_of(widget)
 
 
 if __name__ == "__main__":
