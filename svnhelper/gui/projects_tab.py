@@ -1360,7 +1360,15 @@ class ProjectsTabMixin:
         self._place_hint_bar()
 
     def _status_error(self, text: str) -> None:
-        """Тихий сбой без окна («Нужен вход на сервер»): совет в панели подсказок на ERROR_MS."""
+        """Тихий сбой без окна («Нужен вход на сервер»): совет в панели подсказок на ERROR_MS.
+
+        Пока идёт операция (например, открыто окно TortoiseSVN, а из уведомления нажали «Получить»), mine_status - это
+        её ход справа в панели: сбой туда не пишем (он выглядел бы ходом работы, и совета не было бы), а сразу
+        показываем советом слева. Ход операции остаётся на месте."""
+        bar = getattr(self, "hint_bar", None)
+        if bar is not None and self._operation_running():
+            bar.show_error(text)
+            return
         self._mine_status_kind = "error"
         self.mine_status.set(text)
 

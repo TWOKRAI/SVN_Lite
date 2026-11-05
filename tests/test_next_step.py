@@ -87,6 +87,11 @@ TABLE = [
     ("проверка идёт", svn(None, checking=True), "checking", "checking", "update", False, "nothing"),
     ("нет связи", svn(None, error="Нет связи", offline=True), "offline", "offline", "update", False, "nothing"),
     ("идёт операция", svn(status(local_changes=ONE), busy=True), "busy", "busy", "commit", False, "wait"),
+    # во время операции молчат и вход, и папка проектов: щелчок не должен открыть вход или выбор папки посреди работы
+    ("вход не выполнен, идёт операция", svn(status(), login_failed=True, busy=True), "busy", "busy", "update", False,
+     "wait"),
+    ("папки проектов нет, идёт скачивание", Facts(folder_missing=True, busy=True), "busy", "busy", None, False,
+     "wait"),
     # всё в порядке
     ("всё в порядке", svn(status()), "nothing", "nothing", "update", False, "nothing"),
     ("версия, делать нечего", svn(status(), read_only=True), "read_only", "read_only", "update", False, "nothing"),
@@ -228,6 +233,15 @@ class OtherProjects(unittest.TestCase):
     def test_login_and_missing_folder_beat_other_projects(self):
         self.assertEqual(next_step(svn(status(), login_failed=True, other=("x", "conflict"))).code, "login")
         self.assertEqual(next_step(svn(status(), folder_missing=True, other=("x", "conflict"))).code, "no_folder")
+
+    def test_busy_silences_login_and_missing_folder(self):
+        """Ревью v4, находка 7 (план, раздел 6.2): пока идёт операция, подсказка молчит и щелчок по ней ничего не
+        делает, даже если вход не выполнен или папка проектов не найдена."""
+        for facts in (svn(status(), login_failed=True, busy=True), Facts(folder_missing=True, busy=True),
+                      svn(status(), login_failed=True, folder_missing=True, busy=True, other=("x", "conflict"))):
+            with self.subTest(login=facts.login_failed, folder=facts.folder_missing):
+                step = next_step(facts)
+                self.assertEqual((step.code, step.click, step.quiet, step.op), ("busy", "none", True, "wait"))
 
     def test_main_button_ignores_global_facts(self):
         """Подсветка проекта не зависит от входа, папки и чужих проектов: так считала прежняя main_action."""

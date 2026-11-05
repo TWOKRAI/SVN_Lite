@@ -8264,6 +8264,42 @@ class HintBarTests(unittest.TestCase):
         button.event_generate("<FocusOut>")
         self.assertEqual(bar.text(), "Что сделать: ничего")
 
+    def test_focus_after_mouse_click_gives_no_hint(self):
+        """Ревью v4, находка 1: после щелчка мышью виджет забирает фокус (Tk шлёт FocusIn), но пояснение по фокусу -
+        только при работе с клавиатуры. Иначе оно закрыло бы фоновый текст, совет и результат, а щелчок по фоновому
+        тексту ничего бы не делал."""
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        clicked = []
+        bar.set_background("У коллег новое", click=lambda: clicked.append(1))
+        button = ttk.Button(root, text="Получить новое")
+        button.pack()
+        hints.hint(button, "project.get_new")
+        button.event_generate("<Enter>")
+        button.event_generate("<ButtonPress-1>", x=3, y=3)
+        button.event_generate("<FocusIn>")                  # фокус после щелчка (Tk ставит его в очередь)
+        button.event_generate("<ButtonRelease-1>", x=3, y=3)
+        button.event_generate("<Leave>")
+        self.pump(root, lambda: bar.hovered() is None)
+        self.assertEqual((bar.source(), bar.text()), ("background", "У коллег новое"))
+        self.assertTrue(bar.clickable())
+        bar.text_label.event_generate("<Button-1>")
+        self.assertEqual(clicked, [1])
+        bar.show_result("Готово")
+        self.assertEqual(bar.source(), "result")
+        bar.show_error("Нужен вход на сервер.")
+        self.assertEqual(bar.source(), "error")
+        bar._expire("error")
+        bar._expire("result")
+        # клавиатура (Tab, стрелки): фокус снова даёт пояснение; щелчок мышью его убирает, хоть фокус и остался
+        # клавишу шлём прямо в обработчик: в скрытом окне Tk отдаёт нажатия окну с фокусом, а его у тестов может не быть
+        self.assertIn(str(bar._on_key.__name__), root.bind("<KeyPress>"))
+        bar._on_key()
+        button.event_generate("<FocusIn>")
+        self.assertEqual((bar.source(), bar.text()), ("focus", hints.HINTS["project.get_new"][1]))
+        button.event_generate("<ButtonPress-1>", x=3, y=3)
+        self.assertEqual(bar.source(), "background")
+
     def test_without_installed_bar_hint_does_nothing(self):
         from svnhelper.gui import hints
         hints.install(None)
@@ -8440,15 +8476,26 @@ class HintBarTests(unittest.TestCase):
         self.assertEqual(bar.text(), "Не сохранено: 2 файла.")     # скрыта только для своего проекта
 
     def test_lines_by_mode_and_window_height(self):
+        """Строк столько, сколько велит режим и доступная высота окна: тест не зависит от размера экрана (на экране
+        ниже 800 px окно получает сколько поместится)."""
         from svnhelper.gui import hints
         root, bar = self.make_bar(visible=True)
-        root.geometry("900x800")
-        self.pump(root, lambda: root.winfo_height() >= 790)
-        self.assertEqual(bar.lines(), 2)
+        want = min(800, root.winfo_screenheight() - 80)
+        root.geometry(f"900x{want}")
+        end = time.monotonic() + 3
+        while root.winfo_height() < want - 10 and time.monotonic() < end:    # окно может не дорасти: края экрана
+            root.update()
+            time.sleep(0.01)
+        root.update()
+        tall = root.winfo_height() >= hints.SMALL_WINDOW
+        self.assertEqual(bar.lines(), 2 if tall else 1, root.winfo_height())
         two = bar.winfo_reqheight()
         bar.set_mode(hints.MODE_SHORT)
         self.assertEqual(bar.lines(), 1)
-        self.assertLess(bar.winfo_reqheight(), two)                # коротко - ниже
+        if tall:
+            self.assertLess(bar.winfo_reqheight(), two)            # коротко - ниже
+        else:
+            self.assertEqual(bar.winfo_reqheight(), two)           # невысокое окно и так давало одну строку
         bar.set_mode(hints.MODE_DETAILED)
         root.geometry(f"900x{hints.SMALL_WINDOW - 60}")             # невысокое окно: всегда одна строка
         self.pump(root, lambda: bar.lines() == 1)
@@ -8522,6 +8569,147 @@ class HintBarWindowTests(unittest.TestCase):
         root.update()
         self.assertEqual(str(app.hint_bar.cget("style")), "Card.TFrame")       # цвета только из стилей темы
         self.assertEqual(str(app.hint_bar.cancel_btn.cget("style")), "Small.TButton")
+
+    def add_project(self, app, work, name, status):
+        from svnhelper.gui.models import MineItem
+        os.makedirs(os.path.join(work, name), exist_ok=True)
+        item = MineItem(os.path.join(work, name), name, "svn", status=status, checked=True)
+        iid = app._insert_mine_row(item)
+        app.mine[iid] = item
+        return iid, item
+
+    def click(self, root, widget, x=5, y=5):
+        """Щелчок мышью: нажатие, фокус (его Tk даёт щёлкнутому виджету сам, но в скрытом окне - только при показе),
+        отпускание, уход курсора."""
+        widget.event_generate("<Enter>")
+        widget.event_generate("<ButtonPress-1>", x=x, y=y)
+        widget.event_generate("<FocusIn>")
+        widget.event_generate("<ButtonRelease-1>", x=x, y=y)
+        root.update()
+        widget.event_generate("<Leave>")
+
+    def test_mouse_click_on_row_button_and_tab_keeps_proactive_hint(self):
+        """Ревью v4, находка 1: обычный щелчок по строке таблицы, кнопке или ярлыку не прячет проактивную подсказку,
+        итог и совет за пояснением по фокусу, и щелчок по подсказке работает."""
+        from svnhelper.svn_core import WcStatus
+        root, app, work = self.make_app()
+        app._mine_dirty = False
+        root.update()
+        iid, item = self.add_project(app, work, "alpha", WcStatus(incoming=3))
+        app._set_mine_empty(False)
+        app.mine_tree.selection_set(iid)
+        root.update()
+        bar = app.hint_bar
+        self.assertTrue(bar.text().startswith("У коллег новое: 3 файла."), bar.text())
+        for widget in (app.mine_tree, app.open_btn, app.list_tabs, app.project_tabs):
+            with self.subTest(widget=widget.winfo_class()), \
+                    mock.patch("os.startfile", create=True):          # «Открыть папку» откроет Проводник
+                self.click(root, widget)
+                self.pump(root, lambda: bar.hovered() is None)
+                self.assertEqual(bar.source(), "background", bar.text())
+                self.assertTrue(bar.clickable())
+                bar.show_result("Готово")
+                self.assertEqual((bar.source(), bar.text()), ("result", "Готово"))
+                bar.show_error("Нужен вход на сервер.")
+                self.assertEqual(bar.source(), "error")
+                bar._expire("error")
+                bar._expire("result")
+        with mock.patch.object(app.update_btn, "focus_set") as focus:
+            bar.text_label.event_generate("<Button-1>")      # «Получить новое» - только фокус на кнопку
+            focus.assert_called_once_with()
+
+    def selected_app(self, status):
+        root, app, work = self.make_app()
+        app._mine_dirty = False
+        root.update()
+        iid, item = self.add_project(app, work, "alpha", status)
+        app._set_mine_empty(False)
+        app.mine_tree.selection_set(iid)
+        root.update()
+        return root, app, work, item
+
+    def test_quiet_error_during_operation_goes_to_advice(self):
+        """Ревью v4, находка 8: тихий сбой, пока открыто окно TortoiseSVN (из уведомления нажали «Получить»), - совет
+        слева на 15 с, а справа остаётся ход настоящей операции."""
+        from svnhelper import messages
+        from svnhelper.svn_core import WcStatus
+        root, app, _work, item = self.selected_app(WcStatus(incoming=1))
+        bar = app.hint_bar
+        app._tortoise_open.add(item.path)
+        app.mine_status.set("Открыто окно TortoiseSVN. Когда закончите, состояние проекта обновится само.")
+        progress = bar.progress_text()
+        self.assertTrue(progress.startswith("Открыто окно TortoiseSVN"), progress)
+        self.assertFalse(app._begin_update(item))           # папку держит TortoiseSVN: получать нельзя
+        self.assertEqual((bar.source(), bar.text()), ("error", messages.UPDATE_BUSY))
+        self.assertEqual(bar.progress_text(), progress)
+        # окно TortoiseSVN закрылось: сбой без операции - тем же советом через mine_status
+        app._tortoise_open.clear()
+        app.mine_status.set("")
+        bar._expire("error")
+        self.assertFalse(bar.progress_active)
+        app._status_error("Нужен вход на сервер.")
+        self.assertEqual((bar.source(), bar.text()), ("error", "Нужен вход на сервер."))
+        self.assertFalse(bar.progress_active)
+
+    def test_hint_click_does_nothing_while_operation_runs_or_after_state_change(self):
+        """Ревью v4, находки 7 и (а): пока идёт получение нового, скачивание, сохранение или отправка, щелчок по
+        подсказке (и по тексту, показанному до начала операции) ничего не делает - и подсказка «Папка … не найдена»
+        не открывает выбор папки посреди скачивания. Подпись шага сменилась между показом и щелчком - тоже ничего."""
+        from svnhelper.gui.models import DownloadJob, UpdateJob
+        from svnhelper.svn_core import WcStatus
+        root, app, work, item = self.selected_app(WcStatus(conflicts=1))
+        bar = app.hint_bar
+        operations = [("upd", UpdateJob(item)), ("job", DownloadJob(url="svn://srv/x", name="x", dest=work)),
+                      ("_committing", True), ("_publish_busy", True)]
+        with mock.patch.object(app, "_on_resolve") as resolve:
+            app._update_mine_buttons()                       # кнопка «Разобрать конфликт» зовёт подменённый обработчик
+            self.assertTrue(bar.text().startswith("Конфликт"), bar.text())
+            for name, value in operations:
+                with self.subTest(operation=name):
+                    app._sync_hint_background()
+                    stale = bar._background_click            # подсказка, показанная до начала операции
+                    self.assertTrue(bar.clickable())
+                    before = getattr(app, name)
+                    setattr(app, name, value)
+                    try:
+                        app._sync_hint_background()
+                        self.assertFalse(bar.clickable())
+                        bar.text_label.event_generate("<Button-1>")
+                        stale()
+                        resolve.assert_not_called()
+                    finally:
+                        setattr(app, name, before)
+            # подпись шага сменилась (второй конфликт), а текст ещё прежний: щелчок ничего не делает
+            app._sync_hint_background()
+            stale = bar._background_click
+            item.status = WcStatus(conflicts=2)
+            stale()
+            resolve.assert_not_called()
+            app._sync_hint_background()
+            bar._background_click()                          # свежий текст - тот же обработчик, один раз
+            resolve.assert_called_once_with()
+        # папка проектов не найдена: щелчок открывает выбор папки, но не во время скачивания
+        app.mine_tree.selection_set(())
+        root.update()
+        app._set_mine_empty(True, missing_path="Z:\\нет_папки")
+        app._update_mine_buttons()
+        self.assertTrue(bar.text().startswith("Папка «Z:\\нет_папки» не найдена"), bar.text())
+        stale = bar._background_click
+        app.job = DownloadJob(url="svn://srv/x", name="x", dest=work)
+        try:
+            with mock.patch.object(app, "_on_browse") as browse:
+                app._sync_hint_background()
+                self.assertFalse(bar.clickable())
+                bar.text_label.event_generate("<Button-1>")
+                stale()
+                browse.assert_not_called()
+        finally:
+            app.job = None
+        with mock.patch.object(app, "_on_browse") as browse:
+            app._sync_hint_background()
+            bar.text_label.event_generate("<Button-1>")
+            browse.assert_called_once_with()
+        app._set_mine_empty(False)
 
 
 @unittest.skipUnless(sys.platform == "win32", "значки рисует Windows (GDI)")

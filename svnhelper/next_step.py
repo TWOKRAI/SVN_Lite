@@ -9,7 +9,8 @@
     вход не выполнен -> папка проектов не найдена -> конфликт -> ошибка проверки -> папка повреждена, переход не
     закончен, пропала история -> новое у коллег -> свои правки (в том числе «файл изменён, но не занят») ->
     нужный файл занят другим -> проект только на компьютере -> «нажмите ⟳» -> проблема другого проекта -> всё в порядке.
-Молчат (quiet): нет связи, идёт операция, идёт проверка: об этом говорят другие места окна.
+Молчат (quiet): нет связи, идёт операция, идёт проверка: об этом говорят другие места окна. Идущая операция глушит и
+вход, и папку проектов: щелчок по подсказке не должен открывать их окна посреди работы.
 """
 from __future__ import annotations
 
@@ -131,14 +132,17 @@ class NextStep:
 
 def next_step(facts: Facts) -> NextStep:
     """Следующее действие по фактам о проекте (таблица приоритетов в докстринге модуля)."""
+    if facts.busy:
+        # идёт операция: подсказка молчит и щелчок по ней ничего не делает - даже о входе и папке проектов, иначе
+        # щелчок открыл бы вход или выбор папки посреди скачивания (docs/PLAN_ui_v4.md, раздел 6.2). Подсветка
+        # остаётся прежней.
+        step = _project_step(facts, with_switch=True)
+        return _make(BUSY, step.button, CLICK_NONE, facts, data=step.data)
     if facts.login_failed:
         return _make(LOGIN, B_LOGIN, CLICK_INVOKE, facts)
     if facts.folder_missing:
         return _make(NO_FOLDER, B_CHOOSE_FOLDER, CLICK_INVOKE, facts)
     step = _project_step(facts, with_switch=True)
-    if facts.busy:
-        # идёт операция: подсветка остаётся прежней, но подсказка молчит
-        step = _make(BUSY, step.button, CLICK_NONE, facts, data=step.data)
     if (facts.other is not None and not step.quiet and step.priority >= PRIORITY_OTHER
             and step.code != OTHER):
         name, code = facts.other

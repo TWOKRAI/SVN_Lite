@@ -1,6 +1,7 @@
 """Панель подсказок внизу главного окна (docs/PLAN_ui_v4.md, раздел 5).
 
-Слева - текст: пояснение элемента под курсором или в фокусе; иначе совет о тихом сбое (15 с); иначе результат
+Слева - текст: пояснение элемента под курсором или в фокусе (фокус - только с клавиатуры: после щелчка мышью виджет
+тоже забирает фокус, но пояснения по фокусу это не даёт); иначе совет о тихом сбое (15 с); иначе результат
 действия (10 с); иначе фоновый текст (что сделать с выбранным проектом). Справа - ход долгой операции и «Отмена».
 
 Подключение: окно создаёт одну панель (HintBar) и вызывает install(bar). Дальше любой виджет получает пояснение
@@ -418,6 +419,10 @@ class HintBar(ttk.Frame):
         self._pending: Optional[tuple] = None
         self._hidden: set = set()            # ключи подсказок, скрытых крестиком (до конца работы программы)
         self._timers: dict[str, Optional[str]] = {"leave": None, "error": None, "result": None, "step": None}
+        # пояснение по фокусу - только при работе с клавиатуры (Tab, стрелки): после щелчка мышью виджет тоже забирает
+        # фокус, и его пояснение закрыло бы проактивную подсказку, совет и результат. Чем человек работал последним:
+        # True - клавиатурой (и до первого нажатия), False - мышью.
+        self._keyboard = True
         self._progress = ""
         self._cancel_cmd: Optional[Callable[[], None]] = None
         self._small = False
@@ -439,7 +444,12 @@ class HintBar(ttk.Frame):
         self.hide_btn.grid(row=0, column=3, sticky="e", padx=(px(8), 0))
         self.hide_btn.grid_remove()
         self.bind("<Configure>", lambda _e: self._render(), add="+")
-        self.winfo_toplevel().bind("<Configure>", self._on_window_configure, add="+")
+        top = self.winfo_toplevel()
+        top.bind("<Configure>", self._on_window_configure, add="+")
+        # привязки окна верхнего уровня срабатывают для всех его виджетов, причём раньше, чем Tk передаст фокус
+        # щёлкнутому виджету (FocusIn ставится в очередь) и раньше общей привязки Tab (тег all)
+        top.bind("<ButtonPress>", self._on_pointer, add="+")
+        top.bind("<KeyPress>", self._on_key, add="+")
         self.bind("<Destroy>", self._on_destroy, add="+")
         self._apply_height()
 
@@ -538,8 +548,23 @@ class HintBar(ttk.Frame):
         self._render()
 
     def focus_in(self, widget: tk.Misc, text: Callable[[], str]) -> None:
+        """Фокус пришёл на виджет. Пояснение показываем, только если человек работает клавиатурой: фокус после щелчка
+        мышью (строка таблицы, кнопка, ярлык) пояснения не даёт - под курсором его и так показывает наведение."""
+        if not self._keyboard:
+            return
         self._focus = (widget, text)
         self._render()
+
+    def _on_pointer(self, _event=None) -> None:
+        """Щелчок мышью где угодно в окне: дальше работа мышью, пояснение по фокусу больше не показываем."""
+        self._keyboard = False
+        if self._focus is not None and not self._dead:
+            self._focus = None
+            self._render()
+
+    def _on_key(self, _event=None) -> None:
+        """Нажата клавиша: следующий переход фокуса (Tab, стрелки по ярлыкам) - с клавиатуры, его пояснение видно."""
+        self._keyboard = True
 
     def focus_out(self, widget: tk.Misc) -> None:
         if self._focus is not None and self._focus[0] is widget:
