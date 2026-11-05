@@ -459,6 +459,9 @@ def find_svnadmin(svn_exe: str = "") -> Optional[str]:
 # Настройки пользователя (без паролей!)
 # --------------------------------------------------------------------------
 
+HINT_MODES = ("detailed", "short", "progress")     # режимы панели подсказок; первый - по умолчанию (gui/hints.py)
+
+
 @dataclass
 class Settings:
     last_dir: str = ""
@@ -486,6 +489,9 @@ class Settings:
     mine_col3_collapsed: bool = False                      # «Мои проекты»: свёрнута колонка «Состояние проекта»
     mine_col2_width: int = 0                               # ширина колонки «Проекты» (px до масштаба экрана); 0 - по умолчанию
     mine_col2_download_width: int = 0                      # она же на подвкладке «Скачать проект» (там дерево сервера)
+    # панель подсказок внизу окна (меню «Вид → Подсказки внизу»): detailed - 2 строки, short - 1 строка,
+    # progress - только ход работы (полоса появляется на время операции); допустимые значения - HINT_MODES
+    hint_mode: str = "detailed"
     tray_on_close: bool = True                             # крестик окна сворачивает программу в трей, а не закрывает
     tray_hint_shown: bool = False                          # подсказка «программа продолжает работать у часов» уже показана
     # уведомления и фоновая проверка (Task E.2); допустимые значения и проверка - clean_notify
@@ -702,6 +708,7 @@ def _parse_settings(data: dict) -> Settings:
         mine_col2_download_width=data["mine_col2_download_width"]
         if type(data.get("mine_col2_download_width")) is int and 100 <= data["mine_col2_download_width"] <= 2000
         else 0,
+        hint_mode=text("hint_mode") if text("hint_mode") in HINT_MODES else HINT_MODES[0],
         tray_on_close=flag("tray_on_close") is not False,
         tray_hint_shown=flag("tray_hint_shown") is True,
         local_histories={k: v for k, v in data["local_histories"].items()

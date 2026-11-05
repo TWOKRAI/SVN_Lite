@@ -312,6 +312,8 @@ def apply(root: tk.Misc, px: Callable[[int], int] = lambda v: v, mode: str = "li
         s.map(name, background=accent_states, lightcolor=accent_states, darkcolor=accent_states,
               bordercolor=accent_states, foreground=[("disabled", p.on_accent_disabled)])
 
+    # невысокая кнопка («Отмена» в панели подсказок внизу окна): цвета и состояния - от TButton
+    s.configure("Small.TButton", padding=(px(10), px(1)))
     accent_button("Accent.TButton", pad, strong10)
     accent_button("Big.TButton", (px(28), px(10)), _strong(root, 12))
 

@@ -7402,5 +7402,265 @@ class AgentDialogTests(unittest.TestCase):
             root.destroy()
 
 
+class FitLinesTests(unittest.TestCase):
+    """U4.5: текст панели подсказок - не больше N строк по ширине, лишнее кончается «…»."""
+
+    def test_fit_lines(self):
+        from svnhelper.gui.hints import fit_lines
+        measure = len            # ширина - число букв
+        self.assertEqual(fit_lines("раз два три", 20, 2, measure), "раз два три")
+        self.assertEqual(fit_lines("раз два три", 7, 2, measure), "раз два\nтри")
+        self.assertEqual(fit_lines("раз два три четыре", 7, 2, measure), "раз два\nтри…")
+        self.assertEqual(fit_lines("оченьдлинноеслово", 6, 1, measure), "очень…")
+        self.assertEqual(fit_lines("раз  два", 1, 2, measure), "раз два")        # панель ещё не разложена
+        self.assertEqual(fit_lines("", 10, 2, measure), "")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "нет экрана")
+class HintBarTests(unittest.TestCase):
+    """U4.5: панель подсказок внизу окна - механизм (docs/PLAN_ui_v4.md, раздел 5)."""
+
+    def make_bar(self, reason=None, visible=False):
+        from svnhelper.gui import hints
+        root = tk.Tk()
+        if not visible:
+            root.withdraw()
+        self.addCleanup(lambda: root.winfo_exists() and root.destroy())
+        self.addCleanup(hints.install, None)
+        bar = hints.HintBar(root, lambda v: v, reason=reason)
+        bar.pack(side="bottom", fill="x")
+        hints.install(bar)
+        return root, bar
+
+    def pump(self, root, cond, timeout=5):
+        end = time.monotonic() + timeout
+        while not cond():
+            root.update()
+            time.sleep(0.01)
+            self.assertLess(time.monotonic(), end, "таймаут ожидания")
+
+    def test_priority_hover_error_result_background_and_leave_delay(self):
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        button = ttk.Button(root, text="Получить новое")
+        button.pack()
+        hints.hint(button, "project.get_new")
+        bar.set_background("Что сделать: ничего")
+        self.assertEqual(bar.text(), "Что сделать: ничего")
+        bar.show_result("Сохранено")
+        self.assertEqual(bar.text(), "Сохранено")
+        bar.show_error("Нужен вход на сервер.")
+        self.assertEqual(bar.text(), "Нужен вход на сервер.")
+        button.event_generate("<Enter>")
+        self.assertEqual(bar.text(), hints.HINTS["project.get_new"][1])
+        button.event_generate("<Leave>")
+        self.assertEqual(bar.text(), hints.HINTS["project.get_new"][1])    # не сразу: без мигания между кнопками
+        self.pump(root, lambda: bar.text() == "Нужен вход на сервер.")
+        bar._expire("error")
+        self.assertEqual(bar.text(), "Сохранено")
+        bar._expire("result")
+        self.assertEqual(bar.text(), "Что сделать: ничего")
+        # соседняя кнопка в течение задержки: её текст сразу, прежний уход не возвращает фон
+        other = ttk.Button(root, text="Открыть папку")
+        other.pack()
+        hints.hint(other, "project.open")
+        button.event_generate("<Enter>")
+        button.event_generate("<Leave>")
+        other.event_generate("<Enter>")
+        end = time.monotonic() + hints.HOVER_DELAY_MS * 2 / 1000
+        while time.monotonic() < end:
+            root.update()
+        self.assertEqual(bar.text(), hints.HINTS["project.open"][1])
+        # фокус с клавиатуры тоже показывает пояснение
+        other.event_generate("<Leave>")
+        self.pump(root, lambda: bar.hovered() is None)
+        button.event_generate("<FocusIn>")
+        self.assertEqual(bar.text(), hints.HINTS["project.get_new"][1])
+        button.event_generate("<FocusOut>")
+        self.assertEqual(bar.text(), "Что сделать: ничего")
+
+    def test_without_installed_bar_hint_does_nothing(self):
+        from svnhelper.gui import hints
+        hints.install(None)
+        root = tk.Tk()
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        button = ttk.Button(root, text="x")
+        hints.hint(button, "project.open")
+        self.assertIsNone(hints.key_of(button))
+        self.assertEqual(button.bind("<Enter>"), "")
+        with self.assertRaises(KeyError):
+            hints.hint(button, "нет такого ключа")
+
+    def test_bar_of_other_window_is_not_used(self):
+        """Диалог (своё окно верхнего уровня) к панели главного окна не подключается."""
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        dialog = tk.Toplevel(root)
+        button = ttk.Button(dialog, text="x")
+        hints.hint(button, "project.open")
+        self.assertIsNone(hints.key_of(button))
+
+    def test_disabled_element_tells_why(self):
+        from svnhelper.gui import hints
+        root, bar = self.make_bar(reason=lambda key: "идёт сохранение" if key == "project.get_new" else "")
+        button = ttk.Button(root, text="Получить новое", state="disabled")
+        hints.hint(button, "project.get_new")
+        button.event_generate("<Enter>")
+        self.assertEqual(bar.text(), hints.HINTS["project.get_new"][1] + " Сейчас недоступно: идёт сохранение.")
+        own = ttk.Button(root, text="Перейти", state="disabled")
+        hints.hint(own, "lines.switch", reason=lambda: "выберите ветку")
+        own.event_generate("<Enter>")
+        self.assertTrue(bar.text().endswith("Сейчас недоступно: выберите ветку."))
+        table = ttk.Button(root, text="Отличия", state="disabled")      # окно причины не знает: из REASONS
+        hints.hint(table, "lines.compare")
+        table.event_generate("<Enter>")
+        self.assertIn(hints.REASONS["lines.compare"], bar.text())
+        unknown = ttk.Button(root, text="Новая ветка…", state="disabled")
+        hints.hint(unknown, "lines.new_branch")
+        unknown.event_generate("<Enter>")
+        self.assertIn(hints.GENERIC_REASON, bar.text())
+        unknown.configure(state="normal")                     # состояние читается при показе
+        unknown.event_generate("<Enter>")
+        self.assertNotIn("Сейчас недоступно", bar.text())
+        bar.set_mode(hints.MODE_SHORT)
+        button.event_generate("<Enter>")
+        self.assertEqual(bar.text(), "Получить новое. Сейчас недоступно: идёт сохранение.")
+
+    def test_tabs_and_table_rows(self):
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        notebook = ttk.Notebook(root)
+        for title in ("Изменения", "Новое"):
+            notebook.add(ttk.Frame(notebook), text=title)
+        notebook.pack()
+        hints.hint_tabs(notebook, ["tab.changes", "tab.incoming"])
+        self.assertEqual(notebook._hint_tab_keys, ["tab.changes", "tab.incoming"])
+        with mock.patch.object(notebook, "index", return_value=1):
+            notebook.event_generate("<Motion>", x=3, y=3)
+        self.assertEqual(bar.text(), hints.HINTS["tab.incoming"][1])
+        with mock.patch.object(notebook, "index", side_effect=tk.TclError("нет ярлыка")):
+            notebook.event_generate("<Motion>", x=3, y=300)        # не над ярлыком: пояснение уходит
+        self.pump(root, lambda: bar.hovered() is None)
+        with self.assertRaises(KeyError):
+            hints.hint_tabs(notebook, ["tab.changes", "нет такого"])
+        tree = ttk.Treeview(root, columns=("a",), show="headings")
+        tree.insert("", "end", iid="r1", values=("x",))
+        tree.pack()
+        hints.hint_rows(tree, lambda iid: f"строка {iid}" if iid == "r1" else "", "mine.table")
+        self.assertEqual(hints.key_of(tree), "mine.table")
+        with mock.patch.object(tree, "identify_row", return_value="r1"):
+            tree.event_generate("<Motion>", x=3, y=3)
+        self.assertEqual(bar.text(), "строка r1")
+        with mock.patch.object(tree, "identify_row", return_value=""):
+            tree.event_generate("<Motion>", x=3, y=300)
+        self.assertEqual(bar.text(), hints.HINTS["mine.table"][1])
+
+    def test_progress_and_cancel(self):
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        root.update()
+        self.assertFalse(bar.progress_active)
+        self.assertEqual(bar.cancel_btn.winfo_manager(), "")
+        cancelled = []
+        bar.set_progress("Получено файлов: 120", cancel=lambda: cancelled.append(1))
+        self.assertEqual((bar.progress_text(), bar.cancel_btn.winfo_manager()), ("Получено файлов: 120", "grid"))
+        self.assertEqual(hints.key_of(bar.cancel_btn), None)        # пояснение «Отмены» подключает окно
+        bar.cancel_btn.invoke()
+        self.assertEqual(cancelled, [1])
+        bar.set_progress("Отмена…", cancel=lambda: cancelled.append(2), cancel_enabled=False)
+        bar.cancel_btn.invoke()
+        self.assertEqual(cancelled, [1])                            # серая «Отмена» не срабатывает
+        bar.set_progress("Сохраняю…")                               # операция без отмены: кнопки нет
+        self.assertEqual(bar.cancel_btn.winfo_manager(), "")
+        bar.clear_progress()
+        self.assertFalse(bar.progress_active)
+        self.assertEqual(bar.progress_label.winfo_manager(), "")
+
+    def test_lines_by_mode_and_window_height(self):
+        from svnhelper.gui import hints
+        root, bar = self.make_bar(visible=True)
+        root.geometry("900x800")
+        self.pump(root, lambda: root.winfo_height() >= 790)
+        self.assertEqual(bar.lines(), 2)
+        two = bar.winfo_reqheight()
+        bar.set_mode(hints.MODE_SHORT)
+        self.assertEqual(bar.lines(), 1)
+        self.assertLess(bar.winfo_reqheight(), two)                # коротко - ниже
+        bar.set_mode(hints.MODE_DETAILED)
+        root.geometry(f"900x{hints.SMALL_WINDOW - 60}")             # невысокое окно: всегда одна строка
+        self.pump(root, lambda: bar.lines() == 1)
+        long_text = "слово " * 200
+        bar.show_result(long_text)
+        root.update()
+        self.assertEqual(str(bar.text_label.cget("text")).count("\n"), 0)
+        self.assertTrue(str(bar.text_label.cget("text")).endswith("…"))
+        self.assertEqual(bar.text(), long_text)                   # целиком текст хранится, укорочен только показ
+        with self.assertRaises(ValueError):
+            bar.set_mode("крупно")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "нет экрана")
+class HintBarWindowTests(unittest.TestCase):
+    """U4.5: панель подсказок в главном окне: место, меню «Вид → Подсказки внизу», настройка, тёмная тема."""
+
+    make_app = ListModeTests.make_app
+    pump = ListModeTests.pump
+
+    def test_bar_at_bottom_and_view_menu_switches_mode(self):
+        from svnhelper.config import SettingsStore
+        from svnhelper.gui import hints
+        root, app, _ = self.make_app()
+        bar = app.hint_bar
+        self.assertIs(hints.installed(app.mine_tab), bar)
+        self.assertEqual(bar.winfo_manager(), "pack")
+        self.assertEqual(bar.pack_info()["side"], "bottom")
+        self.assertEqual(bar.mode, "detailed")
+        menu = app.hint_menu
+        labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)]
+        self.assertEqual(labels, ["Подробно (2 строки)", "Коротко (1 строка)", "Только ход работы"])
+        min_before = app._min_height
+        menu.invoke(1)
+        self.assertEqual((bar.mode, app.settings.hint_mode), ("short", "short"))
+        self.assertEqual(SettingsStore(self.settings_path).settings.hint_mode, "short")
+        self.assertEqual(bar.winfo_manager(), "pack")
+        self.assertLess(app._min_height, min_before)     # одна строка вместо двух
+        short_min = app._min_height
+        menu.invoke(2)                                   # только ход работы: полосы нет, окно ниже на её высоту
+        self.assertEqual(bar.winfo_manager(), "")
+        self.assertLess(app._min_height, short_min)
+        bar.set_progress("Получаю новое…")
+        app._place_hint_bar()
+        self.assertEqual(bar.winfo_manager(), "pack")    # на время операции появляется
+        bar.clear_progress()
+        app._place_hint_bar()
+        self.assertEqual(bar.winfo_manager(), "")
+        menu.invoke(0)
+        self.assertEqual(bar.winfo_manager(), "pack")
+        self.assertEqual(app._min_height, min_before)
+        self.assertEqual(app.hint_mode_var.get(), "detailed")
+
+    def test_saved_mode_is_used_at_start_and_dark_theme_builds(self):
+        from svnhelper.config import Config, SettingsStore
+        from svnhelper.gui import App
+        from svnhelper.svn_core import SvnClient
+        _root, app, work_dir = self.make_app()
+        app.set_hint_mode("progress")
+        self.assertEqual(SettingsStore(self.settings_path).settings.hint_mode, "progress")
+        root = tk.Tk()
+        root.withdraw()
+        quiet_clipboard(root)
+        self.addCleanup(lambda: root.winfo_exists() and root.destroy())
+        app = App(root, Config(server="svn://srv", repos=["test"], work_dir=work_dir), SettingsStore(self.settings_path),
+                  SvnClient("svn"), os.path.join(work_dir, "log.txt"), startup_jobs=False)
+        self.assertEqual((app.hint_bar.mode, app.hint_bar.winfo_manager()), ("progress", ""))   # без операции полосы нет
+        app.set_hint_mode("detailed")
+        self.assertEqual(app.hint_bar.winfo_manager(), "pack")
+        app.set_theme("dark")
+        root.update()
+        self.assertEqual(str(app.hint_bar.cget("style")), "Card.TFrame")       # цвета только из стилей темы
+        self.assertEqual(str(app.hint_bar.cancel_btn.cget("style")), "Small.TButton")
+
+
 if __name__ == "__main__":
     unittest.main()

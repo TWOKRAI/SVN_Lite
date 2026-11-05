@@ -110,6 +110,20 @@ class SettingsStoreTests(unittest.TestCase):
         saved = SettingsStore(self.path).settings
         self.assertEqual((saved.theme, saved.username), ("dark", "ivanov"))
 
+    def test_hint_mode_is_saved_and_checked(self):
+        """U4.5: режим панели подсказок хранится в settings.json; чужое значение заменяется значением по умолчанию."""
+        from svnhelper.config import HINT_MODES
+        self.assertEqual(SettingsStore(self.path).settings.hint_mode, "detailed")
+        self.assertEqual(HINT_MODES[0], "detailed")
+        store = SettingsStore(self.path)
+        store.settings.hint_mode = "short"
+        store.save()
+        self.assertEqual(SettingsStore(self.path).settings.hint_mode, "short")
+        for wrong in ("подробно", 2, None, ""):
+            with self.subTest(value=wrong):
+                self.path.write_text(json.dumps({"hint_mode": wrong}), encoding="utf-8")
+                self.assertEqual(SettingsStore(self.path).settings.hint_mode, "detailed")
+
     # --- чтение настроек при создании store ---
 
     def test_load_without_file_gives_default_settings(self):

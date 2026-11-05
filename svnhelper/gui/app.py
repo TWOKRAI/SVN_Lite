@@ -30,6 +30,8 @@ from ..svn_core import CancelToken, CheckoutProgress, ErrorKind, SvnClient, SvnE
 from .models import (CLOSE_POLL_MS, CLOSE_WAIT_SEC, DownloadJob, JobStamp, log, MineItem, Node, POLL_MS,
                      REFRESH_SEC, UpdateJob)
 from .widgets import ButtonRow, Lamp, popup_menu_under, SettingsDialog, SideButtons, Tooltip
+from . import hints
+from .hints import HintBar
 from .login import connection_error_text, LoginCoordinator
 from .download_tab import DownloadTabMixin
 from .projects_tab import ProjectsTabMixin
@@ -668,10 +670,17 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             label.bind("<Button-1>", lambda _e: self._open_settings())
         Tooltip(self.login_name_label, lambda: "Сменить пользователя")
 
+        # панель подсказок внизу окна (docs/PLAN_ui_v4.md, раздел 5): создаётся до колонок, чтобы их кнопки
+        # подключались к ней (hints.hint); пакуется снизу до рабочей области - над ней потом встанет место под чат
+        self.hint_bar = HintBar(root, px, mode=self.settings.hint_mode, reason=self._disabled_reason)
+        hints.install(self.hint_bar)
+        hints.hint(self.hint_bar.cancel_btn, "bar.cancel")
+
         # рабочая область прямо в окне, без ряда вкладок: «Скачать проект» - подвкладка колонки «Проекты»
         self._update_login_label()
         self._build_projects_tab(root)
-        self.mine_tab.pack(fill="both", expand=True, padx=px(12), pady=(px(4), px(12)))
+        self._place_hint_bar()
+        self.mine_tab.pack(fill="both", expand=True, padx=px(12), pady=(px(4), px(6)))
 
         menu = tk.Menu(root, tearoff=False)
         menu.add_command(label="Параметры…\tF12", command=self._open_settings)
@@ -686,6 +695,13 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         for mode in theme.MODES:
             view_menu.add_radiobutton(label=theme.MODE_LABELS[mode], value=mode, variable=self.theme_var,
                                       command=lambda m=mode: self.set_theme(m))
+        view_menu.add_separator()
+        self.hint_mode_var = tk.StringVar(value=self.hint_bar.mode)
+        self.hint_menu = tk.Menu(view_menu, tearoff=False)
+        for mode in hints.MODES:
+            self.hint_menu.add_radiobutton(label=hints.MODE_LABELS[mode], value=mode, variable=self.hint_mode_var,
+                                           command=lambda m=mode: self.set_hint_mode(m))
+        view_menu.add_cascade(label=hints.MENU_TITLE, menu=self.hint_menu)
         self._add_menu_button("Вид", view_menu)
         self.help_menu = help_menu = tk.Menu(root, tearoff=False)
         help_menu.add_command(label="Шпаргалка", command=self._open_help)
@@ -710,6 +726,9 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         width = min(px(1200), root.winfo_screenwidth() - 40)
         self._base_height = min(max(px(720), root.winfo_reqheight() + px(24)), root.winfo_screenheight() - 100)
         self._min_width, self._min_height = min(px(900), width), min(px(640), self._base_height)
+        if self.hint_bar.winfo_manager():
+            # панель уже учтена в высоте окна; если её спрячут (режим «только ход работы»), окно уменьшится на столько же
+            self._bar_heights = {self.hint_bar: self.hint_bar.winfo_reqheight() + px(self.HINT_BAR_GAP)}
         root.minsize(self._min_width, self._min_height)
         center_window(root, width, self._base_height)
         self._update_buttons()
@@ -731,6 +750,68 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self._refresh_lamp()
         if hasattr(self, "mine_tree"):
             self._on_offline_changed()
+
+    # -- панель подсказок внизу окна -------------------------------------------------------
+
+    HINT_BAR_GAP = 8          # отступ под панелью (px до масштаба экрана)
+
+    def _place_hint_bar(self) -> None:
+        """Панель видна всегда, а в режиме «только ход работы» - только пока идёт операция. Появилась или исчезла -
+        окно меняет высоту на её высоту, как при полосе «Нет связи» (_fit_height_for_bar)."""
+        bar = self.hint_bar
+        want = bar.mode != hints.MODE_PROGRESS or bar.progress_active
+        if want == bool(bar.winfo_manager()):
+            return
+        gap = self.px(self.HINT_BAR_GAP)
+        if want:
+            where = {"before": self.mine_tab} if self.mine_tab.winfo_manager() else {}
+            bar.pack(side="bottom", fill="x", padx=self.px(12), pady=(0, gap), **where)
+        else:
+            bar.pack_forget()
+        self._fit_height_for_bar(bar, want, margin=gap)
+
+    def set_hint_mode(self, mode: str) -> None:
+        """«Вид → Подсказки внизу»: подробно (2 строки), коротко (1 строка), только ход работы. Запоминается."""
+        if mode not in hints.MODES:
+            return
+        bar = self.hint_bar
+        if bar.winfo_manager():          # высота панели меняется: окно отдаёт прежнюю и берёт новую
+            bar.pack_forget()
+            self._fit_height_for_bar(bar, False)
+        bar.set_mode(mode)
+        self._place_hint_bar()
+        self.hint_mode_var.set(mode)
+        if self.settings.hint_mode != mode:
+            self.settings.hint_mode = mode
+            self.settings_store.save()
+
+    def _disabled_reason(self, key: str) -> str:
+        """Почему элемент с подсказкой key сейчас серый (общие причины окна); пусто - пусть скажет hints.REASONS."""
+        if self.client is None:
+            return "не найдена программа svn.exe (входит в TortoiseSVN)"
+        if self.upd is not None:
+            return "идёт получение нового" if not self.upd.url else "идёт переключение ветки"
+        if self.job is not None:
+            return "идёт скачивание проекта"
+        if self._committing:
+            return "идёт сохранение"
+        if self._locking:
+            return "идёт работа с файлами проекта"
+        if self._publish_running():
+            return "идёт отправка проекта на сервер"
+        if not key.startswith(("project.", "changes.", "locks.", "lines.")):
+            return ""
+        item = self._selected_item()
+        if item is None:
+            return "не выбран проект"
+        if self._path_busy(item.path):
+            return "папку проекта сейчас держит окно TortoiseSVN или починка"
+        if key == "project.publish" and self._offline:
+            return "нет связи с сервером, отправить получится, когда она появится"
+        if item.state == "svn" and item.line is not None and item.line.read_only and key in (
+                "changes.save", "locks.take", "lines.new_tag", "lines.merge"):
+            return "это зафиксированная версия, её можно только смотреть"
+        return ""
 
     def _on_lamp_click(self) -> None:
         """Щелчок по индикатору: «Проверить подключение» (как в параметрах, но с текущими настройками)."""
