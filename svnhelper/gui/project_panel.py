@@ -198,13 +198,14 @@ class ProjectPanel(ttk.Frame):
     ничего не выбрано: тогда окно спросит, какие свои файлы освободить) и on_lock().
 
     Кнопки вкладок стоят не под таблицей, а вертикальной колонкой справа: у каждой вкладки своя колонка
-    SideButtons (actions_for(ключ)), она лежит внутри вкладки (ярлыки вкладок занимают всю ширину панели, колонка
-    не отнимает её у них); self.side - колонка выбранной вкладки. У вкладки без кнопок (Новое, История) колонки
+    SideButtons (actions_for(ключ)), все они лежат в самой панели справа от шапки и вкладок и по очереди занимают
+    одно место; self.side - колонка выбранной вкладки. У вкладки без кнопок (Новое, История) колонки
     нет, и места она не занимает. Колонка лежит в панели, поэтому прячется и показывается вместе с ней при
     сворачивании «Состояния проекта». У кнопок значки; подпись в две строки, колонка не шире SIDE_MAX_WIDTH: подпись
     длиннее (шаблон комментария) укорачивается с «…», полный текст виден во всплывающей подсказке. compact - все
-    колонки только со значками (set_compact); стрелку переключения вида ставит окно в заголовок колонки
-    «Состояние проекта» (своей строки она здесь не занимает: шесть кнопок «Веток» помещаются в окно 640 px).
+    колонки только со значками (set_compact); их переключает первая кнопка каждой колонки «Скрыть» (on_toggle_view:
+    окно переключает вид всех колонок справа и запоминает его) и стрелка в заголовке колонки «Состояние проекта»
+    слева от названия (её ставит окно).
     """
 
     SIDE_GAP = 4
@@ -222,12 +223,14 @@ class ProjectPanel(ttk.Frame):
         self._local_view = False
         self._compact = compact
         self._syncing = False
+        self.on_toggle_view: Callable[[], None] = lambda: self.set_compact(not self._compact)   # «Скрыть» в колонках
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self._no_side = ttk.Frame(self)      # «колонка» вкладки без кнопок (side): не показана
 
-        # колонки кнопок: у каждой вкладки своя, лежит в самой вкладке справа и видна, только когда в ней есть кнопки
-        # (sync_actions). Не в панели рядом с блокнотом: колонка отнимала бы ширину у ярлыков вкладок
+        # колонки кнопок: у каждой вкладки своя, все лежат в панели справа от шапки и вкладок (решение владельца
+        # 2026-11-03: колонка относится к панели, а не к подвкладке); видна колонка выбранной вкладки, если в ней есть
+        # кнопки (sync_actions)
         self._side_bars: dict[str, SideButtons] = {}
 
         # шапка
@@ -281,9 +284,10 @@ class ProjectPanel(ttk.Frame):
         if bar is None:
             if key not in self.frames:
                 raise ValueError(f"нет вкладки «{key}»")
-            bar = self._side_bars[key] = SideButtons(self.frames[key], self.px(self.SIDE_GAP), px=self.px,
-                                                     side="right", compact=self._compact, toggle=False)
+            bar = self._side_bars[key] = SideButtons(self, self.px(self.SIDE_GAP), px=self.px,
+                                                     side="right", compact=self._compact)
             bar.on_change = self.sync_actions
+            bar.on_toggle = lambda: self.on_toggle_view()
         return bar
 
     @property
@@ -312,8 +316,9 @@ class ProjectPanel(ttk.Frame):
             px = self.px
             bars = list(self._side_bars.values())
             fit_columns(bars, px(self.SIDE_MAX_WIDTH), prepare=self._fit_templates)
+            current = self._side_bars.get(self.current_tab())
             for bar in bars:
-                if bar.has_visible():
+                if bar is current and bar.has_visible():     # колонки всех вкладок делят одно место справа
                     bar.grid(row=0, column=1, rowspan=2, sticky="n", padx=(px(12), 0))
                 else:
                     bar.grid_remove()

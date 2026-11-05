@@ -53,6 +53,9 @@ ICONS: dict[str, str] = {
     "lines.new_branch": "\uF003",       # Relationship (развилка из узлов)
     "lines.download_other": "\uE8A7",   # OpenInNewWindow
     "lines.new_tag": "\uE8EC",          # Tag
+    # первая кнопка колонок: скрыть подписи / показать их
+    "buttons.compact": "",       # RedEye (глаз)
+    "buttons.expand": "",
     # форма «Скачивание»
     "download.start": "\uE896",         # Download
     "download.create": "\uE8F4",        # NewFolder (папка с плюсом)
@@ -68,6 +71,7 @@ FALLBACK: dict[str, str] = {
     "locks.take": "⚿", "locks.release": "⚿",
     "lines.switch": "⇄", "lines.compare": "⇔", "lines.merge": "⤵", "lines.new_branch": "⑂",
     "lines.download_other": "⇩", "lines.new_tag": "⚑",
+    "buttons.compact": "◉", "buttons.expand": "◉",
     "download.start": "⬇", "download.create": "✚", "download.cleanup": "✖",
 }
 

@@ -408,19 +408,20 @@ class MineTabTests(unittest.TestCase):
             offline = messages.short_message(ErrorKind.NO_CONNECTION)
             item = MineItem("p", "x", "svn")
             app.mine[app._insert_mine_row(item)] = item
-            self.assertFalse(app.offline_bar.winfo_manager())
+            self.assertEqual(app.hint_bar.status(), "")
             app._on_item_status(item, None, offline)
             values, tag = app._row_values(item)
             self.assertEqual((values[2], tag), ("● Нет связи", "plain"))     # коротко, не обрезано
-            self.assertTrue(app.offline_bar.winfo_manager())
+            self.assertEqual(app.hint_bar.status(), messages.OFFLINE_BAR)       # «Нет связи» - в нижней панели
             other = MineItem("q", "y", "svn")
             app.mine[app._insert_mine_row(other)] = other
             app._on_item_status(other, None, offline)                        # вторая ошибка: полоса всё та же
-            self.assertEqual(len(app.offline_bar.master.pack_slaves()), len(set(app.offline_bar.master.pack_slaves())))
+            self.assertEqual(app.hint_bar.status(), messages.OFFLINE_BAR)       # вторая ошибка: то же состояние
+            self.assertFalse(hasattr(app, "offline_bar"))                         # полосы под шапкой больше нет
             self.assertIn("проверьте VPN", messages.OFFLINE_BAR)
             self.assertIn("Нет связи", app.lamp_text)
             app._on_item_status(item, WcStatus(), "")                        # сервер ответил: полоса исчезает
-            self.assertFalse(app.offline_bar.winfo_manager())
+            self.assertEqual(app.hint_bar.status(), "")
             self.assertNotIn("Подключено к SVN", app.project_panel.header_text())
         finally:
             root.destroy()
@@ -981,7 +982,7 @@ class MineTabTests(unittest.TestCase):
             self.assertEqual([app.mine_tree.heading(c, "text") for c in shown],
                              ["Проект ▲", "Состояние", "Ветка", "Изменён", "Что сделать"])
             self.assertEqual(app.mine_tree.heading("path", "text"), "Путь на сервере")   # колонка осталась, но не показана
-            self.assertEqual(app.check_btn.cget("text"), "⟳")
+            self.assertEqual(app.check_btn.cget("text"), "Обновить")
             self.assertEqual(app.more_btn.cget("text"), "Ещё ▾")
             self.assertEqual(app.recent_btn.cget("text"), "Недавние ▾")
             self.assertFalse(hasattr(app, "list_btn"))      # дерево сервера видно сразу: «Выбрать из списка ▾» нет
@@ -1517,17 +1518,24 @@ class Stage3GuiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.open_project_tab("нет такой")
 
-    def test_offline_bar_grows_window(self):
-        """Полоса «Нет связи» подгоняет высоту окна, как полоса «Доступна новая версия», и возвращает её обратно."""
+    def test_offline_status_is_in_bottom_bar_and_keeps_window_height(self):
+        """«Нет связи» - состояние нижней панели: окно по высоте не меняется, подсказка у кнопки и совет важнее его."""
+        from svnhelper import messages
         root, app, _tmp = self.make_app()
         before = (app._min_height, app._base_height)
+        bar = app.hint_bar
         app._set_offline(True)
-        grown = app._min_height - before[0]
-        self.assertGreaterEqual(grown, app.offline_bar.winfo_reqheight())
-        self.assertEqual(app._base_height - before[1], grown)
-        app._set_offline(True)                                                   # повторный показ окно не растит
-        self.assertEqual(app._min_height - before[0], grown)
+        self.assertEqual((app._min_height, app._base_height), before)
+        self.assertEqual((bar.source(), bar.text()), ("status", messages.OFFLINE_BAR))
+        bar.hover(app.open_btn, lambda: "Открыть папку")
+        self.assertEqual((bar.source(), bar.text()), ("hover", "Открыть папку"))   # пояснение кнопки важнее
+        bar._hover = None
+        bar.set_background("Что делать дальше", None)
+        self.assertEqual(bar.source(), "status")                                  # фоновый совет уступает состоянию
+        app._set_offline(True)                                                   # повтор ничего не меняет
+        self.assertEqual(bar.status(), messages.OFFLINE_BAR)
         app._set_offline(False)
+        self.assertEqual((bar.source(), bar.status()), ("background", ""))
         self.assertEqual((app._min_height, app._base_height), before)
 
     def pump(self, root, cond, timeout=10):
@@ -4470,13 +4478,30 @@ class SideButtonsViewTests(unittest.TestCase):
         self.root.update()
         self.assertEqual(bar.winfo_width(), wide)
 
+    def test_compact_view_keeps_heights_and_vertical_positions(self):
+        """Кнопки при смене вида меняют только ширину: высота и место по вертикали те же (в том числе «Скрыть»)."""
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                bar = self.make_bar(scale=scale)
+
+                def geometry():
+                    self.root.update()
+                    return [(b.winfo_y(), b.winfo_height()) for b in bar._buttons() if b.winfo_manager()]
+                wide_width = bar.winfo_width()
+                wide = geometry()
+                bar.set_compact(True)
+                compact = geometry()
+                self.assertEqual(len(wide), 6)                       # «Скрыть» и пять кнопок
+                self.assertEqual(compact, wide)
+                self.assertLess(bar.winfo_width(), wide_width)       # уже только по ширине
+
     def test_tooltips_say_full_label_in_compact_view(self):
         from svnhelper.gui import hints
         bar = self.make_bar()
         self.assertEqual(bar.tip_text(self.buttons["update"]), "")              # подпись видна целиком
         bar.set_compact(True)
         self.assertEqual(bar.tip_text(self.buttons["update"]), "Получить новое (12)")
-        self.assertEqual(bar.tip_text(self.buttons["check"]), hints.HINTS["project.check"][0])  # не «⟳»
+        self.assertEqual(bar.tip_text(self.buttons["check"]), "Обновить")
         tip = self.buttons["tag"]._side_tip
         self.buttons["tag"].event_generate("<Enter>")
         self.assertIsNotNone(tip.tip)                                           # подсказка показана
@@ -4486,18 +4511,20 @@ class SideButtonsViewTests(unittest.TestCase):
     def test_toggle_switches_view_or_asks_owner(self):
         bar = self.make_bar(side="left")
         toggle = bar.toggle_btn
-        self.assertEqual(toggle.cget("text"), "⟨⟨")                            # левая колонка уходит к левому краю
-        self.assertEqual(toggle._side_tip.text_fn(), "Свернуть до значков")
+        self.assertEqual(toggle.cget("text"), "Скрыть")                          # первая кнопка колонки, значок - глаз
+        self.assertIs(bar._buttons()[0], toggle)
+        self.assertEqual(bar.pack_slaves()[1], toggle)                          # после распорки, перед кнопками владельца
+        self.assertEqual(toggle._side_tip.text_fn(), "")                         # подпись видна, подсказка не нужна
         toggle.invoke()
         self.assertTrue(bar.compact)
-        self.assertEqual((toggle.cget("text"), toggle._side_tip.text_fn()), ("⟩⟩", "Показать подписи"))
+        self.assertEqual((toggle.cget("text"), toggle._side_tip.text_fn()), ("Показать", "Показать"))
         asked = []
         bar.on_toggle = lambda: asked.append(True)
         toggle.invoke()
         self.assertEqual(asked, [True])
         self.assertTrue(bar.compact)                                            # решает владелец, не колонка
         right = self.make_bar(side="right")
-        self.assertEqual(right.toggle_btn.cget("text"), "⟩⟩")
+        self.assertEqual(right.toggle_btn.cget("text"), "Скрыть")
 
     def test_hidden_and_special_buttons_keep_icons(self):
         bar = self.make_bar()
@@ -4717,6 +4744,7 @@ class ColumnOneButtonsTests(unittest.TestCase):
                 with self.subTest(state=state, status=status):
                     # подсвеченная кнопка справа видна на своей вкладке: сохранение - «Изменения», занять - «Занятые»
                     panel.tabs.select(panel.frames["locks" if main == "lock" else "changes"])
+                    app.root.update()          # колонка кнопок справа сменяется по событию выбора вкладки
                     self.show_state(app, item, state, status)
                     self.assertEqual(app._main_action_of(item), main)
                     self.assertEqual(self.accents(app), [expected])
@@ -5369,7 +5397,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
             app.mine_col3.expand()
             root.update()
             self.assertTrue(left.winfo_ismapped() and panel.side.winfo_ismapped())
-            self.assertEqual(panel.side.master, panel.frames["lines"])     # правая колонка лежит внутри своей вкладки
+            self.assertIs(panel.side.master, panel)     # правая колонка лежит в панели, а не в подвкладке
             self.assertTrue(str(panel.side).startswith(str(panel)))
         finally:
             root.destroy()
@@ -5404,8 +5432,9 @@ class ProjectPanelTabsTests(unittest.TestCase):
 
     def test_tab_labels_with_counters_are_not_clipped_at_every_scale(self):
         """U4.2: ярлыки «Изменения 12», «Новое 14» не обрезаны при 100/125/150% на каждой вкладке, в том числе там, где
-        справа колонка кнопок (она лежит внутри вкладки и ширину у ярлыков не отнимает). Окно px(1000): ноутбук 1366 px
-        при 125%. «Естественная» ширина ярлыка - в широком окне, где места с запасом."""
+        справа колонка кнопок (она лежит в панели рядом с вкладками и отнимает у ярлыков свою ширину: поэтому проверяемое
+        окно px(1250), а не px(1000), и в виде «только значки» колонка уже). «Естественная» ширина ярлыка - в
+        широком окне, где места с запасом."""
         for scale in (1.0, 1.25, 1.5):
             with self.subTest(scale=scale):
                 root, app, _base = self.make_app(f"p_tabs_scale_{scale}", visible=True, scale=scale)
@@ -5417,7 +5446,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
                     panel.set_changes_count(12)
                     panel.set_incoming_count(14)
                     widths = {}
-                    for size in (1700, 1000):      # широкое окно: естественная ширина; px(1000): проверяемая
+                    for size in (1700, 1250):      # широкое окно: естественная ширина; px(1250): проверяемая
                         root.geometry(f"{app.px(size)}x{app.px(700)}")
                         for key in ("changes", "incoming", "history", "locks", "lines"):
                             app.open_project_tab(key)        # выбранный ярлык шире остальных: сравниваем при том же выборе
@@ -5425,7 +5454,7 @@ class ProjectPanelTabsTests(unittest.TestCase):
                             widths[size, key] = self.tab_widths(panel.tabs, app.px)
                     for key in ("changes", "incoming", "history", "locks", "lines"):
                         self.assertEqual(len(widths[1700, key]), 5)
-                        self.assertEqual(widths[1000, key], widths[1700, key], key)
+                        self.assertEqual(widths[1250, key], widths[1700, key], key)
                 finally:
                     root.destroy()
 
@@ -7974,7 +8003,7 @@ class HintWiringTests(unittest.TestCase):
             self.pump(root, lambda: app.hint_bar.hovered() is None)
             app.set_hint_mode("progress")
             app.check_btn.event_generate("<Enter>")
-            self.assertEqual(app.check_btn._side_tip.text_fn(), hints.HINTS["project.check"][0])
+            self.assertEqual(app.check_btn._side_tip.text_fn(), "Обновить")
             self.assertIsNotNone(app.check_btn._side_tip.tip)
             app.check_btn.event_generate("<Leave>")
             self.pump(root, lambda: app.hint_bar.hovered() is None)        # пояснение ушло (через 150 мс)
@@ -8850,19 +8879,26 @@ class ButtonsViewWindowTests(unittest.TestCase):
         left, panel = app.actions_row, app.project_panel
         self.assertEqual((left.compact, panel.compact, app.download_actions.compact), (False, False, False))
         self.assertEqual(app.buttons_view_var.get(), "labels")
-        self.assertEqual(left.toggle_btn.cget("text"), "⟨⟨")
-        # справа стрелка одна - в заголовке колонки «Состояние проекта» (над кнопками строки не занимает)
+        self.assertEqual(left.toggle_btn.cget("text"), "Скрыть")
+        # справа «Скрыть» - первая кнопка в колонке каждой вкладки и формы скачивания, и ещё крупная стрелка слева от
+        # названия колонки «Состояние проекта»; обе переключают вид правых колонок
+        self.assertTrue(all(bar.toggle_btn.cget("text") == "Скрыть" for bar in panel._side_bars.values()))
+        self.assertEqual(app.download_actions.toggle_btn.cget("text"), "Скрыть")
         toggle = app.buttons_right_toggle
         self.assertEqual(toggle.master, app.mine_col3.header)
         self.assertEqual(toggle.cget("text"), "⟩⟩")
-        self.assertTrue(all(bar.toggle_btn is None for bar in panel._side_bars.values()))
-        left.toggle_btn.invoke()                                     # стрелка слева: только левая колонка
+        self.assertLess(toggle.grid_info()["column"], app.mine_col3.title_label.grid_info()["column"])
+        left.toggle_btn.invoke()                                     # «Скрыть» слева: только левая колонка
         self.assertEqual((left.compact, panel.compact), (True, False))
         self.assertEqual(app.buttons_view_var.get(), "")             # колонки в разном виде: пункт не отмечен
         saved = SettingsStore(self.settings_path).settings
         self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (True, False))
         toggle.invoke()                                              # стрелка справа: «Состояние» и форма скачивания
         self.assertEqual((panel.compact, app.download_actions.compact, toggle.cget("text")), (True, True, "⟨⟨"))
+        self.assertEqual(panel._side_bars["changes"].toggle_btn.cget("text"), "Показать")
+        panel._side_bars["changes"].toggle_btn.invoke()              # «Скрыть» справа делает то же самое
+        self.assertEqual((panel.compact, app.download_actions.compact, toggle.cget("text")), (False, False, "⟩⟩"))
+        toggle.invoke()
         self.assertEqual(app.buttons_view_var.get(), "icons")
         menu = app.buttons_menu
         self.assertEqual([menu.entrycget(i, "label") for i in range(menu.index("end") + 1)],
@@ -8873,7 +8909,7 @@ class ButtonsViewWindowTests(unittest.TestCase):
         self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (False, False))
         menu.invoke(1)
         self.assertEqual([bar.compact for bar in self.side_bars(app)], [True] * len(self.side_bars(app)))
-        self.assertEqual(left.toggle_btn.cget("text"), "⟩⟩")
+        self.assertEqual(left.toggle_btn.cget("text"), "Показать")
 
     def test_saved_view_is_used_at_start_and_builds_in_dark_theme(self):
         from svnhelper.config import Config, SettingsStore

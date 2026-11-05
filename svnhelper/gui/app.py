@@ -637,14 +637,6 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self.update_now_btn = ttk.Button(self.update_bar, text="Обновить сейчас", style="Accent.TButton",
                                          command=self._start_self_update)
         self._offered_version = ""   # о какой версии уже спрашивали: по каждой новой версии окно один раз
-        # полоса «Нет связи с сервером»: одна на окно, прячется при первом успешном ответе сервера
-        self.offline_bar = tk.Frame(root, background=p.warn_bg, padx=px(16), pady=px(6), highlightthickness=1,
-                                    highlightbackground=p.warn_border, highlightcolor=p.warn_border)
-        offline_label = tk.Label(self.offline_bar, text=messages.OFFLINE_BAR, background=p.warn_bg,
-                                 foreground=p.text, anchor="w", justify="left", wraplength=px(900),
-                                 font=(FONT_FAMILY, 10))
-        offline_label.pack(side="left", fill="x", expand=True)
-        self._autowrap(offline_label, self.offline_bar, px(40))
         self._schedule_update_poll()
         self._update_check_pending = False   # ждём общие настройки после «Проверить обновление программы»
 
@@ -750,17 +742,14 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         root.after(600, self._paste_from_clipboard)
 
     def _set_offline(self, offline: bool) -> None:
-        """Полоса «Нет связи с сервером» под шапкой: показывается один раз, прячется при первом ответе сервера."""
+        """«Нет связи с сервером» - состояние в нижней панели (HintBar.set_status): появляется при первой неудаче,
+        уходит при первом ответе сервера. Окно по высоте не меняется."""
         if offline == self._offline:
             return
         self._offline = offline
-        gap = self.px(6)
-        if offline:
-            self.offline_bar.pack(fill="x", padx=self.px(12), pady=(0, gap), before=self.mine_tab)
-        else:
-            self.offline_bar.pack_forget()
+        self.hint_bar.set_status(messages.OFFLINE_BAR if offline else "")
+        if not offline:
             self._tab_loads.retry_failed()      # связь вернулась: вкладки, которые не прочитались, читаются заново
-        self._fit_height_for_bar(self.offline_bar, offline, margin=gap)   # как полоса «Доступна новая версия»
         self._refresh_lamp()
         if hasattr(self, "mine_tree"):
             self._on_offline_changed()

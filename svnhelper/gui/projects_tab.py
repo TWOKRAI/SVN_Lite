@@ -22,7 +22,7 @@ from .project_panel import ProjectPanel, PROJECT_TABS
 from .models import (AUTO_CHECK_SEC, JobStamp, REFRESH_SEC, line_cell, lock_holder_text, LOCK_WARN_DAYS, LockResult, log,
                      MineItem, PROGRESS_MS, shorten_path, UpdateJob)
 from . import hints
-from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip, ViewToggle
+from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip, ViewArrow
 
 
 # Кнопка next_step (B_*) -> главное действие окна. Кнопки входа и папки проектов main_button не выбирает (это дела
@@ -159,7 +159,7 @@ class ProjectsTabMixin:
         row.on_toggle = lambda: self.set_buttons_compact("left", not self.actions_row.compact)
         row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
         # имя выбранного проекта не дублируется над кнопками: оно в шапке колонки «Состояние проекта»
-        self.check_btn = ttk.Button(row, text="⟳", command=self._on_refresh_tab)      # пояснение - в панели подсказок
+        self.check_btn = ttk.Button(row, text="Обновить", command=self._on_refresh_tab)      # пояснение - в панели подсказок
         self.special_btn = ttk.Button(row, text="", state="disabled")  # «Починить папку» / «Разобрать конфликт»
         self.update_btn = ttk.Button(row, text="Получить новое", command=self._on_update_selected, state="disabled")
         self.publish_btn = ttk.Button(row, text=localrepo.PUBLISH_BUTTON, command=self._on_publish_project,
@@ -198,10 +198,10 @@ class ProjectsTabMixin:
                                            collapsed=self.settings.mine_col3_collapsed)
         for column in (self.mine_col2, self.mine_col3):
             column.bind(CollapsibleColumn.EVENT, self._on_mine_column_toggled)
-        # вид кнопок справа («Состояние проекта» и форма «Скачивание»): стрелка в заголовке колонки, а не над кнопками -
-        # так она не отнимает строку у шести кнопок «Веток» в самом низком окне
-        self.buttons_right_toggle = ViewToggle(
-            self.mine_col3.header, px, "right", compact=self.settings.buttons_compact_right,
+        # вид кнопок справа («Состояние проекта» и форма «Скачивание»): крупная стрелка слева от названия колонки;
+        # в самой колонке кнопок её нет, чтобы кнопки стояли на уровне шапки проекта и не сдвигались
+        self.buttons_right_toggle = ViewArrow(
+            self.mine_col3.header, "right", compact=self.settings.buttons_compact_right,
             command=lambda: self.set_buttons_compact("right", not self.settings.buttons_compact_right))
         self.mine_col3.add_header_widget(self.buttons_right_toggle)
         # форма скачивания первой: в ней папка для проектов (dir_var), её берёт и список своих проектов
@@ -371,6 +371,7 @@ class ProjectsTabMixin:
             on_save=self._on_panel_save, on_release=self._on_panel_release, on_lock=lambda: self._on_get_lock(),
             on_save_local=self._on_save_local_clicked, compact=self.settings.buttons_compact_right)
         panel.grid(row=0, column=0, sticky="nsew")
+        panel.on_toggle_view = lambda: self.set_buttons_compact("right", not self.settings.buttons_compact_right)
         self.project_tabs = panel.tabs
         self.project_tab_frames: dict[str, ttk.Frame] = panel.frames
         self._commit_panel: CommitPanel = panel.commit_panel
@@ -495,6 +496,7 @@ class ProjectsTabMixin:
             self.select_list_mode("mine")
         self.mine_col3.expand()            # событие <<ColumnToggled>> само поправит раскладку и settings
         self.project_tabs.select(frame)
+        self.project_panel.sync_actions()      # колонка кнопок справа сменяется сразу, не по отложенному событию Tk
         self._load_project_tab()
 
     # -- подвкладки колонки «Проекты»: «Мои проекты» | «Скачать проект» ----------------------
@@ -1469,6 +1471,7 @@ class ProjectsTabMixin:
         # файл изменён, но не занят: подсвечена «Занять файл…» - открываем её вкладку, а не «Изменения»
         tab = "locks" if self._main_action_of(item) == "lock" else "changes"
         self.project_tabs.select(self.project_tab_frames[tab])
+        self.project_panel.sync_actions()
 
     # вкладка «Изменения»: панель постоянная, список правок берётся из последней проверки проекта
 

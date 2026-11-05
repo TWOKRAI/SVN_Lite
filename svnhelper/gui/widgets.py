@@ -548,12 +548,14 @@ SIDE_STYLE = "Side."          # приставка стиля кнопок ко�
 SIDE_ICON = 18                # ячейка значка рядом с подписью
 SIDE_ICON_COMPACT = 24        # ячейка значка компактной кнопки
 SIDE_PAD = (8, 2)             # отступы кнопки с подписью (меньше, чем у обычной: кнопка в две строки и так выше)
-# отступы значка компактной кнопки: 24 + 2 * 8 + рамка = 44 в ширину, 40 в высоту (шесть кнопок «Веток» со стрелкой
-# вида помещаются в самое низкое окно, 640 px)
+# отступы значка компактной кнопки: 24 + 2 * 8 + рамка = 44 в ширину; высота такая же, как у развёрнутой кнопки
+# (_render), 6 - наименьший отступ сверху и снизу
 SIDE_COMPACT_PAD = (8, 6)
 SIDE_TEXT_MIN = 64            # подпись развёрнутой колонки не уже этого
 SIDE_LINES = 2                # строк подписи
-SIDE_TOGGLE_ARROWS = ("⟨⟨", "⟩⟩")         # стрелки переключателя вида: к левому краю, к правому
+SIDE_HIDE_LABEL = "Скрыть"                  # первая кнопка колонки: скрыть подписи (оставить значки)
+SIDE_SHOW_LABEL = "Показать"                # она же в виде «только значки»: вернуть подписи
+SIDE_TOGGLE_ARROWS = ("⟨⟨", "⟩⟩")           # стрелка вида в заголовке правой колонки: к левому краю, к правому
 SIDE_VIEW_MENU = "Кнопки"                   # пункт меню «Вид»
 SIDE_VIEW_LABELS = {False: "С подписями", True: "Только значки"}
 _COUNTER = re.compile(r"\((\d+)\)\s*$")    # «Получить новое (12)»: счётчик в конце подписи
@@ -585,14 +587,13 @@ def fit_two_lines(parent: tk.Misc, text: str, room: int) -> str:
     return " ".join(hints.fit_lines(text, room, SIDE_LINES, lambda t: text_width(parent, t)).split("\n"))
 
 
-class ViewToggle(ttk.Button):
-    """Стрелка «⟨⟨» / «⟩⟩»: колонка кнопок только со значками или с подписями. Стрелка смотрит туда, куда уедут кнопки:
-    к краю окна side ("left" | "right") - свернуть до значков, обратно - показать подписи. command() вызывается по
-    нажатию; что показывать, говорит set_compact (подсказка у стрелки и пояснение в панели подсказок - по виду)."""
+class ViewArrow(ttk.Button):
+    """Крупная стрелка «⟨⟨» / «⟩⟩» в заголовке колонки: колонка кнопок только со значками или с подписями. Стоит вне
+    колонки кнопок и её не сдвигает. Смотрит туда, куда уедут кнопки: к краю окна side ("left" | "right") - свернуть
+    до значков, обратно - показать подписи. command() вызывается по нажатию; вид говорит set_compact."""
 
-    def __init__(self, parent: tk.Misc, px: Callable[[int], int], side: str, command: Callable[[], None],
-                 compact: bool = False):
-        super().__init__(parent, style="Ghost.TButton", width=0, padding=(px(4), 0), command=command)
+    def __init__(self, parent: tk.Misc, side: str, command: Callable[[], None], compact: bool = False):
+        super().__init__(parent, style="Arrow.Ghost.TButton", width=0, command=command)
         self.side, self.compact = side, compact
         self._side_tip = Tooltip(self, lambda: hints.HINTS[self.hint_key()][0])
         self.set_compact(compact)
@@ -619,10 +620,11 @@ class SideButtons(ttk.Frame):
 
     С px (масштаб экрана) у колонки значки и два вида (раздел 11 docs/PLAN_ui_v4.md): развёрнутый - значок слева от
     подписи в две строки, компактный (compact) - квадратные кнопки только со значком, подпись во всплывающей
-    подсказке и в панели подсказок. Вверху колонки - стрелка переключения вида (ViewToggle; toggle=False - без неё:
-    стрелку ставит владелец, например в заголовок колонки окна); она вызывает on_toggle() (окно переключает вид всех
-    колонок своей стороны и запоминает его), без on_toggle колонка переключается сама.
-    side ("left" | "right") - у какого края окна колонка: туда смотрит стрелка «свернуть до значков».
+    подсказке и в панели подсказок. Первая кнопка колонки - «Скрыть» со значком глаза (toggle_btn; toggle=False - без
+    неё): в виде «только значки» она называется «Показать»; вызывает on_toggle() (окно переключает вид всех колонок
+    своей стороны и запоминает его), без on_toggle колонка переключается сама. Она не входит в items кнопок
+    владельца, но рисуется и подгоняется вместе с ними.
+    side ("left" | "right") - у какого края окна колонка.
     Без px - прежняя колонка подписей без значков и переключателя.
     """
 
@@ -642,10 +644,16 @@ class SideButtons(ttk.Frame):
         # распорка задаёт одну ширину колонки на всех вкладках: кнопки везде одного размера (ttk: цвет фона - из темы)
         self._spacer = ttk.Frame(self, width=width, height=1)
         self._spacer.pack(side="top")
-        self.toggle_btn: Optional[ViewToggle] = None
+        self.toggle_btn: Optional[IconButton] = None
         if px is not None:
             if toggle:
-                self.toggle_btn = ViewToggle(self, px, side, self._on_toggle_click, self._compact)
+                button = ttk.Button(self, text=SIDE_SHOW_LABEL if self._compact else SIDE_HIDE_LABEL,
+                                    command=self._on_toggle_click)
+                button._side_gap = gap                      # type: ignore[attr-defined]
+                key = self._toggle_hint_key()
+                hints.hint(button, key)
+                self._make_icon_button(button, key)
+                self.toggle_btn = button                    # type: ignore[assignment]
             # тема сменилась (ttk рассылает <<ThemeChanged>> всем виджетам): значки перекрашиваются в цвет текста
             self.bind("<<ThemeChanged>>", lambda _e: self._recolor(), add="+")
 
@@ -667,11 +675,14 @@ class SideButtons(ttk.Frame):
             return
         self._compact = compact
         if self.toggle_btn is not None:
-            self.toggle_btn.set_compact(compact)
-        for widget in self._items:
-            if isinstance(widget, IconButton):
-                self._render(widget)
+            self.toggle_btn.configure(text=SIDE_SHOW_LABEL if compact else SIDE_HIDE_LABEL)
+            self.set_hint(self.toggle_btn, self._toggle_hint_key())
+        for widget in self._buttons():
+            self._render(widget)
         self._repack()
+
+    def _toggle_hint_key(self) -> str:
+        return "buttons.expand" if self._compact else "buttons.compact"
 
     def _on_toggle_click(self) -> None:
         if self.on_toggle is not None:
@@ -747,13 +758,13 @@ class SideButtons(ttk.Frame):
     def _repack(self) -> None:
         for widget in self._items:
             widget.pack_forget()
-        # компактные кнопки с рамкой различимы и при половинном зазоре: колонка ниже
-        gap = (lambda g: g // 2) if self._compact else (lambda g: g)       # noqa: E731
+        gap = lambda g: g       # noqa: E731    зазоры те же, что в развёрнутом виде: кнопки не сдвигаются по высоте
+        first = True
         if self.toggle_btn is not None:
             self.toggle_btn.pack_forget()
             if any(isinstance(w, ttk.Button) and w not in self._hidden for w in self._items):
-                self.toggle_btn.pack(side="top", anchor="e" if self.side == "left" else "w", pady=(0, gap(self._gap)))
-        first = True
+                self.toggle_btn.pack(side="top", fill="x")
+                first = False
         for widget in self._items:
             if self._shown(widget):
                 widget.pack(side="top", fill="x", pady=(0 if first else gap(widget._side_gap), 0))  # type: ignore[attr-defined]
@@ -770,7 +781,8 @@ class SideButtons(ttk.Frame):
     # -- ширина и вид кнопок ---------------------------------------------------------------
 
     def _buttons(self, include_hidden: bool = True) -> list["IconButton"]:
-        return [w for w in self._items if isinstance(w, IconButton) and (include_hidden or w not in self._hidden)]
+        buttons = [w for w in self._items if isinstance(w, IconButton) and (include_hidden or w not in self._hidden)]
+        return ([self.toggle_btn] if isinstance(self.toggle_btn, IconButton) else []) + buttons
 
     def natural_room(self, include_hidden: bool = True) -> int:
         """Ширина подписи, при которой самая длинная подпись колонки помещается в две строки (шаблоны - по полному
@@ -854,8 +866,15 @@ class SideButtons(ttk.Frame):
             badge = getattr(button, "icon_badge", "") or counter_of(label)       # номер шаблона или счётчик
             images = self._icon_images(button, px(SIDE_ICON_COMPACT), badge)
             if images is not None:
-                button.show(text=label, image=images, compound="image", width=0, style=self._side_style(button),
-                            padding=(px(SIDE_COMPACT_PAD[0]), px(SIDE_COMPACT_PAD[1])))
+                # высота та же, что у развёрнутой кнопки (блок подписи в две строки): при смене вида кнопки
+                # меняют только ширину и стоят на тех же местах по вертикали
+                style_name = self._side_style(button)
+                icon = px(SIDE_ICON_COMPACT)
+                height = 2 * px(SIDE_PAD[1]) + max(px(SIDE_ICON), self._linespace(style_name) * SIDE_LINES)
+                top = max(px(SIDE_COMPACT_PAD[1]), (height - icon) // 2)
+                bottom = max(px(SIDE_COMPACT_PAD[1]), height - icon - top)
+                button.show(text=label, image=images, compound="image", width=0, style=style_name,
+                            padding=(px(SIDE_COMPACT_PAD[0]), top, px(SIDE_COMPACT_PAD[0]), bottom))
                 return
         text = display_label(label)
         room = self._room or self.natural_room()
@@ -969,12 +988,12 @@ class CollapsibleColumn(ttk.Frame):
         self.rowconfigure(1, weight=1)
 
         self.header = ttk.Frame(self)
-        self.header.columnconfigure(0, weight=1)
+        self.header.columnconfigure(1, weight=1)
         self.title_label = ttk.Label(self.header, text=title, style="Section.TLabel")
-        self.title_label.grid(row=0, column=0, sticky="w")
-        self.toggle_btn = ttk.Button(self.header, text=self._arrow(collapse=True), width=2, style="Ghost.TButton",
-                                     command=self.toggle)
-        self.toggle_btn.grid(row=0, column=1, sticky="e")
+        self.title_label.grid(row=0, column=1, sticky="w")
+        self.toggle_btn = ttk.Button(self.header, text=self._arrow(collapse=True), width=2,
+                                     style="Arrow.Ghost.TButton", command=self.toggle)
+        self.toggle_btn.grid(row=0, column=2, sticky="e")
         Tooltip(self.toggle_btn, lambda: "Свернуть")
         self.body = ttk.Frame(self)
 
@@ -1009,9 +1028,8 @@ class CollapsibleColumn(ttk.Frame):
             self.configure(width=width)
 
     def add_header_widget(self, widget: tk.Misc) -> None:
-        """Кладёт widget (ребёнок self.header) в заголовок колонки слева от стрелки сворачивания."""
-        self.toggle_btn.grid(row=0, column=2, sticky="e")
-        widget.grid(row=0, column=1, sticky="e", padx=(0, 4))
+        """Кладёт widget (ребёнок self.header) в заголовок колонки слева от названия."""
+        widget.grid(row=0, column=0, sticky="w", padx=(0, 6))
 
     def set_title(self, title: str, collapsed_title: str = "") -> None:
         """Новое название колонки (заголовок, подсказка полосы и подпись свёрнутой полосы, сразу перерисованная)."""
@@ -1046,7 +1064,7 @@ class CollapsibleColumn(ttk.Frame):
             self.redraw()
         else:
             self.strip.grid_remove()
-            self.header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+            self.header.grid(row=0, column=0, sticky="ew", pady=0)
             self.body.grid(row=1, column=0, sticky="nsew")
             self.configure(width=self._width)
 
@@ -1060,7 +1078,7 @@ class CollapsibleColumn(ttk.Frame):
         canvas.delete("all")
         width = int(canvas.winfo_width()) if canvas.winfo_width() > 1 else self._strip_width
         middle = width // 2
-        arrow_font = tkfont.Font(root=self, family=FONT_FAMILY, size=12, weight="bold")
+        arrow_font = tkfont.Font(root=self, family=FONT_FAMILY, size=theme.ARROW_FONT_SIZE - 6, weight="bold")
         line = arrow_font.metrics("linespace")          # отступы по высоте шрифта: верно при любом масштабе
         canvas.create_text(middle, line // 2 + 4, text=self._arrow(collapse=False), fill=p.accent_text,
                            font=arrow_font, anchor="center", tags=("arrow",))

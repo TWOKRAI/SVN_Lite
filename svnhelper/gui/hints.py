@@ -43,8 +43,8 @@ GENERIC_REASON = "для выбранного проекта это сейчас
 # ключ -> (коротко, подробно). Подробный текст говорит, что делает элемент и когда он нужен.
 HINTS: dict[str, tuple[str, str]] = {
     # колонка слева: проект целиком
-    "project.check": ("Проверить состояние",
-                      "Проверить состояние: заново узнать у сервера, что изменилось в проектах, и перечитать "
+    "project.check": ("Обновить",
+                      "Обновить: заново узнать у сервера, что изменилось в проектах, и перечитать "
                       "открытую вкладку."),
     "project.resolve": ("Разобрать конфликт",
                         "Разобрать конфликт: вы и коллега изменили одно и то же. Для каждого такого файла "
@@ -158,9 +158,9 @@ HINTS: dict[str, tuple[str, str]] = {
     "lines.new_tag": ("Зафиксировать версию…",
                       "Зафиксировать версию: запомнить проект таким, как сейчас, под именем (например, «выдано "
                       "заказчику»). Такую версию потом можно только смотреть."),
-    # переключатель вида колонки кнопок (стрелка вверху колонки, меню «Вид → Кнопки»)
-    "buttons.compact": ("Свернуть до значков",
-                        "Свернуть до значков: кнопки колонки станут маленькими, только со значками. Что делает "
+    # переключатель вида колонки кнопок (первая кнопка колонки, меню «Вид → Кнопки»)
+    "buttons.compact": ("Скрыть подписи",
+                        "Скрыть подписи: кнопки колонки станут маленькими, только со значками. Что делает "
                         "кнопка, видно при наведении."),
     "buttons.expand": ("Показать подписи", "Показать подписи: кнопки колонки снова со значками и подписями."),
     # сама панель
@@ -408,7 +408,7 @@ class HintBar(ttk.Frame):
         self.reason = reason
         self._hover: Optional[tuple[tk.Misc, Callable[[], str]]] = None
         self._focus: Optional[tuple[tk.Misc, Callable[[], str]]] = None
-        self._error = self._result = self._background = ""
+        self._error = self._result = self._background = self._status = ""
         self._background_short: Optional[str] = None
         self._background_click: Optional[Callable[[], None]] = None
         # проактивная подсказка: о каком проекте, подпись состояния, когда сменилась, ключ «Скрыть», ждущая смена
@@ -501,7 +501,8 @@ class HintBar(ttk.Frame):
         return self._shown()[1]
 
     def source(self) -> str:
-        """Чей текст слева: "hover" | "focus" | "error" | "result" | "background" | "" (пусто, «только ход работы»)."""
+        """Чей текст слева: "hover" | "focus" | "error" | "result" | "status" | "background" | "" (пусто,
+        «только ход работы»)."""
         return self._shown()[0]
 
     def _shown(self) -> tuple[str, str]:
@@ -513,7 +514,7 @@ class HintBar(ttk.Frame):
                     return name, slot[1]()
                 except tk.TclError:          # виджет уже уничтожен
                     continue
-        for name, text in (("error", self._error), ("result", self._result)):
+        for name, text in (("error", self._error), ("result", self._result), ("status", self._status)):
             if text:
                 return name, text
         background = self.background()
@@ -579,6 +580,16 @@ class HintBar(ttk.Frame):
         if self._focus is not None and self._focus[0] is widget:
             self._focus = None
         self._render()
+
+    def set_status(self, text: str) -> None:
+        """Состояние программы, пока оно держится («Нет связи с сервером»): виден, когда нет наведения, фокуса, совета
+        и результата, и важнее фонового текста (подсказки про проект). Пустая строка - состояния больше нет."""
+        if text != self._status:
+            self._status = text
+            self._render()
+
+    def status(self) -> str:
+        return self._status
 
     def show_error(self, text: str) -> None:
         """Совет о сбое без окна («Нужен вход на сервер»): виден ERROR_MS, важнее результата и фонового текста."""
@@ -753,6 +764,9 @@ class HintBar(ttk.Frame):
         shown = fit_lines(self.text(), room, self.lines(), self._measure)
         if str(self.text_label.cget("text")) != shown:
             self.text_label.configure(text=shown)
+        style = "Warn.TLabel" if self.source() == "status" else "TLabel"       # состояние программы - цветом
+        if str(self.text_label.cget("style")) != style:
+            self.text_label.configure(style=style)
         cursor = "hand2" if self.clickable() else ""
         if str(self.text_label.cget("cursor")) != cursor:
             self.text_label.configure(cursor=cursor)

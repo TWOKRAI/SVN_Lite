@@ -13,6 +13,7 @@ from tkinter import ttk
 from typing import Callable
 
 FONT_FAMILY = "Segoe UI"
+ARROW_FONT_SIZE = 22        # стрелки заголовков колонок (обычный шрифт кнопок - 10); больше не влезает в окно 900x640
 SEMIBOLD_FAMILY = "Segoe UI Semibold"
 STATUS_DOT = "●"
 
@@ -336,6 +337,9 @@ def apply(root: tk.Misc, px: Callable[[int], int] = lambda v: v, mode: str = "li
         ghost_states = [("pressed", p.button_hover), ("active", p.button)]
         s.map(name, background=ghost_states, lightcolor=ghost_states, darkcolor=ghost_states,
               bordercolor=ghost_states, foreground=[("disabled", p.disabled_text)])
+
+    # крупные стрелки заголовков колонок (сворачивание и вид кнопок): тот же цвет, шрифт вдвое крупнее обычного
+    s.configure("Arrow.Ghost.TButton", font=(FONT_FAMILY, ARROW_FONT_SIZE, "bold"), padding=(px(2), 0))
 
     s.configure("TMenubutton", background=p.button, foreground=p.text, bordercolor=p.border_strong,
                 lightcolor=p.button, darkcolor=p.button, arrowcolor=p.muted, padding=pad, relief="flat",
