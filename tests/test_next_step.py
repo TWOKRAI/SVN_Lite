@@ -183,10 +183,28 @@ class NextStepData(unittest.TestCase):
         step = next_step(svn(status(), other=("сушилки", "conflict")))
         self.assertEqual((step.data["project"], step.data["project_code"]), ("сушилки", "conflict"))
 
-    def test_files_count_ignores_conflicted_entries_and_falls_back_to_counter(self):
+    def test_files_count_ignores_conflicted_entries_and_the_bare_counter(self):
         both = status(conflicts=1, local_changes=[change("a", "conflicted"), change("b"), change("c")])
         self.assertEqual(next_step(svn(both)).data["files"], 2)
-        self.assertEqual(next_step(svn(status(modified=4))).data["files"], 4)
+        # счётчик без списка - это папки incomplete/obstructed, а не правки (ревью v4, находка 2)
+        self.assertEqual(next_step(svn(status(modified=4))).data["files"], 0)
+
+    def test_interrupted_get_new_is_not_a_change(self):
+        """Ревью v4, находка 2: после прерванного «Получить новое» папки остаются `incomplete` - svn считает их в
+        `modified`, но в `local_changes` их нет, и сохранять нечего. Правки считаются только по списку (как у прежних
+        main_action и ops): без нового - «всё в порядке» (подсвечена «Получить новое», она и доделает папку), с новым -
+        просто «Получить новое», без «потом сохраните свои»."""
+        incomplete = status(modified=2)
+        step = next_step(svn(incomplete))
+        self.assertEqual((step.code, step.button, step.op), ("nothing", "update", "nothing"))
+        step = next_step(svn(status(modified=2, incoming=3309)))
+        self.assertEqual((step.code, step.text_key, step.op, step.data["with_changes"]),
+                         ("get_new", "get_new", "get_new", False))
+        self.assertEqual(ns.main_button(svn(incomplete)), "update")
+        local = next_step(svn(incomplete, local=True))      # у проекта с историей на компьютере - «отправить», не «сохранить»
+        self.assertEqual((local.code, local.button, local.op), ("publish", "publish", "nothing"))
+        self.assertNotIn("сохраните свои", messages.step_text(next_step(svn(status(modified=2, incoming=1))),
+                                                              "detailed"))
 
     def test_incoming_comes_from_the_largest_counter(self):
         self.assertEqual(next_step(svn(status(incoming=0, incoming_files=FILES))).data["incoming"], 3)
@@ -361,7 +379,8 @@ class CardParity(unittest.TestCase):
                "check": "«⟳»", "checking": "Идёт проверка", "broken": "«Починить папку»", "publish": "«Отправить на сервер…»"}
 
     def test_server_project_card_matches_code(self):
-        cases = [(WcStatus(conflicts=1), "conflict"), (WcStatus(incoming=1, modified=1), "get_new_with_changes"),
+        cases = [(WcStatus(conflicts=1), "conflict"),
+                 (WcStatus(incoming=1, modified=1, local_changes=ONE), "get_new_with_changes"),
                  (WcStatus(incoming=1), "get_new"), (WcStatus(modified=1, local_changes=ONE), "save"),
                  (WcStatus(), "nothing"), (None, "check")]
         for st, key in cases:

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_publish as tp  # noqa: E402
 from svnhelper import config, localrepo, publish, server  # noqa: E402
 from svnhelper.config import FilterRules, SettingsStore  # noqa: E402
-from svnhelper.svn_core import CancelToken, ErrorKind, SvnClient, SvnError, WcStatus  # noqa: E402
+from svnhelper.svn_core import CancelToken, ErrorKind, LocalChange, SvnClient, SvnError, WcStatus  # noqa: E402
 
 FOLDER = "261028_отбраковщик @ 100%"
 SVNADMIN = shutil.which("svnadmin")
@@ -492,7 +492,8 @@ class PureHelpersTests(unittest.TestCase):
     def test_status_texts_and_auto_comment(self):
         from datetime import datetime
         self.assertEqual(localrepo.status_line(WcStatus(), False, False)[::2], ("Всё сохранено у вас", "Можно отправить проект на сервер"))
-        self.assertEqual(localrepo.status_line(WcStatus(modified=1), False, False)[1], "new")
+        self.assertEqual(localrepo.status_line(WcStatus(modified=1, local_changes=[LocalChange("a.txt", "modified")]), False,
+                                               False)[1], "new")
         self.assertEqual(localrepo.status_line(None, True, False)[2], "Идёт проверка…")
         self.assertEqual(localrepo.status_line(None, False, True)[0], "История на этом компьютере потеряна")
         self.assertRegex(localrepo.auto_comment(datetime(2026, 10, 28, 9, 5)), r"^Сохранено у себя 28\.10\.2026 09:05$")

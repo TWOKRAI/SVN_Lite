@@ -86,11 +86,12 @@ class UiTextsTests(unittest.TestCase):
     def test_local_history_texts_are_plain_russian(self):
         """T.6: тексты локальной истории (в том числе собираемые на ходу) без терминов svn и слов «ревизия», «репозиторий»."""
         from svnhelper import localrepo
-        from svnhelper.svn_core import WcStatus
+        from svnhelper.svn_core import LocalChange, WcStatus
+        changed = WcStatus(modified=1, local_changes=[LocalChange("a.txt", "modified")])
         texts = [v for k, v in vars(localrepo).items() if k.isupper() and isinstance(v, str) and CYRILLIC.search(v)]
         texts += list(localrepo.MESSAGES.values())
         texts += [localrepo.saved_text(3), localrepo.auto_comment()]
-        for status, missing in ((None, False), (WcStatus(), False), (WcStatus(modified=1), False), (None, True)):
+        for status, missing in ((None, False), (WcStatus(), False), (changed, False), (None, True)):
             texts += list(localrepo.status_line(status, False, missing))
         self.assertGreater(len(texts), 20)
         found = []
@@ -124,7 +125,7 @@ class UiTextsTests(unittest.TestCase):
         """Ревью 2026-11-02, п.5 и 7: потерянная история, «Только на этом компьютере», отправка без истории,
         примеры ссылок, откат создания: без «хранилище», «SVN», терминов svn и слов «ревизия», «репозиторий»."""
         from svnhelper import localrepo, messages, publish, server
-        from svnhelper.svn_core import ErrorKind, WcStatus
+        from svnhelper.svn_core import ErrorKind, LocalChange, WcStatus
         texts = [localrepo.RESTORE_BUTTON, localrepo.RESTORE_DONE, localrepo.RESTORING_TEXT, localrepo.CONTINUE_ASK,
                  localrepo.CONTINUE_ASK_FOUND, localrepo.NOT_FOUND_TEXT, localrepo.NOT_FOUND_TODO, localrepo.SAVE_NOW_ASK,
                  localrepo.MESSAGES[localrepo.HISTORY_NOT_FOUND], localrepo.MESSAGES[localrepo.ALREADY_VERSIONED],
@@ -133,7 +134,7 @@ class UiTextsTests(unittest.TestCase):
                  messages.LINES_PICK_PROJECT, server.example_url(""), server.example_url("svn://srv.local", ["proj"]),
                  *messages.status_line("plain", None, False), *messages.status_line("svn", None, False),
                  *localrepo.status_line(None, False, True, found=True), *localrepo.status_line(None, False, True)]
-        for text in (WcStatus(), WcStatus(modified=1)):
+        for text in (WcStatus(), WcStatus(modified=1, local_changes=[LocalChange("a.txt", "modified")])):
             texts += list(localrepo.status_line(text, False, False))
         for text in ("", "http:/oops", "/без_схемы"):
             try:

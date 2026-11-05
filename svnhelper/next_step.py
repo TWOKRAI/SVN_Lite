@@ -191,14 +191,16 @@ def _basename(path: str) -> str:
 
 
 def _changes(status: "WcStatus") -> int:
-    """Сколько своих правок (без конфликтных файлов). Правки считаются и по списку, и по счётчику: у проверки без
-    списка счётчик тоже означает правки."""
+    """Сколько своих правок (без конфликтных файлов) - только по списку `local_changes`, как у прежних `main_action` и
+    ops. Счётчик `status.modified` сюда не идёт: в нём и папки `incomplete`/`obstructed` (прерванное «Получить
+    новое», чужой файл на месте нужного), которые сохранять нечего."""
     listed = sum(1 for c in status.local_changes if c.kind != "conflicted")
-    return listed or status.modified
+    return listed or len(status.local_changes)
 
 
 def _has_changes(status: "WcStatus") -> bool:
-    return bool(status.local_changes) or status.modified > 0
+    """Есть свои правки, которые можно сохранить (`local_changes`, в том числе новые файлы)."""
+    return bool(status.local_changes)
 
 
 def _first_change(status: "WcStatus", *, kind: Optional[str] = None, needs_lock: bool = False) -> str:

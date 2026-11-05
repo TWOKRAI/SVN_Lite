@@ -317,6 +317,16 @@ class StatusTests(OpsBase):
             self.assertIn("«" + NAME + "»", row["message"])
             self.assertTrue(row["server_checked"])
 
+    def test_interrupted_get_new_keeps_old_codes(self):
+        """Ревью v4, находка 2: после прерванного «Получить новое» папки `incomplete` есть в счётчике `modified`, но не в
+        `local_changes`. Коды ops прежние: без нового на сервере - nothing (а не save), с новым - get_new."""
+        for kwargs, (state, action) in ((dict(modified=2), ("up_to_date", "nothing")),
+                                        (dict(modified=2, incoming=3, incoming_files=["a", "b", "c"]),
+                                         ("incoming", "get_new"))):
+            ops_projects.clear_status_cache()
+            row = self.status_of(**kwargs)
+            self.assertEqual((row["state"], row["next_action"], row["local_changes"]), (state, action, 0), kwargs)
+
     def test_tag_with_changes_is_not_saved(self):
         tag = WcInfo("svn://srv/konstruktor/p/tags/v1", 9, "svn://srv/konstruktor", "")
         with mock.patch.object(self.client, "info", return_value=tag):

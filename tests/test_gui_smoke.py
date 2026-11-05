@@ -372,14 +372,15 @@ class MineTabTests(unittest.TestCase):
 
     def test_status_line_in_table(self):
         from svnhelper.gui.models import MineItem
-        from svnhelper.svn_core import WcStatus
+        from svnhelper.svn_core import LocalChange, WcStatus
         root, app, _base = self.make_app("st", scan=False)
         try:
             item = MineItem("p", "x", "svn")
             self.assertEqual(app._row_values(item)[0][3], "Нажмите «⟳»")
             item.checking = True
             self.assertEqual(app._row_values(item)[0][3], "Идёт проверка…")
-            item.checking, item.status = False, WcStatus(modified=1)
+            item.checking = False
+            item.status = WcStatus(modified=1, local_changes=[LocalChange("a.txt", "modified")])
             values, tag = app._row_values(item)
             self.assertEqual((values[2], tag), ("● Несохранённые правки", "new"))      # в таблице короче, чем в подробностях
             self.assertIn("Сохранить отмеченное", values[3])
@@ -3265,10 +3266,11 @@ class BranchTextGuiTests(unittest.TestCase):
 
     def test_header_is_short_and_without_repeats(self):
         from svnhelper import server
-        from svnhelper.svn_core import WcStatus
+        from svnhelper.svn_core import LocalChange, WcStatus
         root, app, tmp = self.make_app()
         item = self.make_item(app, tmp, server.Line("branch", "задача"),
-                              status=WcStatus(modified=2, incoming=1, unversioned=3))
+                              status=WcStatus(modified=2, incoming=1, unversioned=3,
+                                              local_changes=[LocalChange("a.txt", "modified")]))
         title, status, tag, branch, todo, note = app._header_fields(item)
         self.assertEqual((title, status, branch), ("proj", "Есть новое на сервере и ваши правки",
                                                    "задача · сохранение № 5"))
@@ -4561,6 +4563,10 @@ class MainActionTests(unittest.TestCase):
             ("svn", WcStatus(conflicts=1), False, "resolve"),             # конфликт
             ("svn", WcStatus(conflicts=1, local_changes=changes, incoming=1), False, "resolve"),   # конфликт важнее
             ("svn", WcStatus(local_changes=changes, incoming=1), True, "update"),   # версия: правки не сохраняются
+            # ревью v4, находка 2: прерванное «Получить новое» (папки incomplete только в счётчике) - не правки, иначе
+            # подсветилась бы «Сохранить отмеченное» на вкладке, которой не видно
+            ("svn", WcStatus(modified=2), False, "update"),
+            ("svn", WcStatus(modified=2, incoming=5), False, "update"),
         ]
         for state, status, read_only, expected in cases:
             with self.subTest(state=state, conflicts=getattr(status, "conflicts", None), read_only=read_only):

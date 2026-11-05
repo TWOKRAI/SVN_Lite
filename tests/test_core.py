@@ -94,19 +94,22 @@ class MessagesTests(unittest.TestCase):
                                "2 месяца назад", "год назад"])
 
     def test_status_line(self):
-        from svnhelper.svn_core import LockInfo, WcStatus
+        from svnhelper.svn_core import LocalChange, LockInfo, WcStatus
         sl = messages.status_line
+        one = [LocalChange("a.txt", "modified")]        # свои правки - только по списку (ревью v4, находка 2)
         self.assertEqual(sl("plain", None, False)[1], "plain")
         self.assertEqual(sl("broken", None, False), ("Папка повреждена", "bad", "Нажмите «Починить папку»"))
         self.assertEqual(sl("svn", None, False)[2], "Нажмите «⟳»")
         self.assertEqual(sl("svn", None, True)[2], "Идёт проверка…")
         self.assertEqual(sl("svn", WcStatus(conflicts=1, modified=2), True)[1:],
                          ("bad", "Нажмите «Разобрать конфликт»"))
-        self.assertEqual(sl("svn", WcStatus(incoming=1, modified=1), True),
+        self.assertEqual(sl("svn", WcStatus(incoming=1, modified=1, local_changes=one), True),
                          ("Есть новое на сервере и ваши правки", "new",
                           "Сначала «Получить новое», потом «Сохранить отмеченное»"))
         self.assertEqual(sl("svn", WcStatus(incoming=1), True)[0], "Есть новое на сервере")
-        self.assertEqual(sl("svn", WcStatus(modified=1), True)[0], "Есть несохранённые правки")
+        self.assertEqual(sl("svn", WcStatus(modified=1, local_changes=one), True)[0], "Есть несохранённые правки")
+        # прерванное «Получить новое»: папки incomplete есть в счётчике, но сохранять нечего
+        self.assertEqual(sl("svn", WcStatus(modified=2), True), ("Актуален", "ok", "Ничего делать не нужно"))
         self.assertEqual(sl("svn", WcStatus(), True), ("Актуален", "ok", "Ничего делать не нужно"))
         locked = WcStatus(my_locks=[LockInfo("a", "me"), LockInfo("b", "me")])
         self.assertTrue(sl("svn", locked, True)[2].endswith("Не забудьте освободить занятые файлы (2)"))
