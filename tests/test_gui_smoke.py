@@ -5207,6 +5207,50 @@ class ProjectPanelTabsTests(unittest.TestCase):
             real.run("svn", "unlock", other_file, "--username", "petrov")
             root.destroy()
 
+    def test_release_selected_file_with_unsaved_changes_asks_first(self):
+        """Ревью v4, находка 9: «Освободить» по выбранным строкам «Занятых» не освобождает молча файл с несохранёнными
+        правками (окно выбора такие файлы не отмечает): сначала вопрос, «Нет» - ничего не освобождается."""
+        from svnhelper import messages
+        from svnhelper.svn_core import LocalChange, LockInfo, WcStatus
+        root, app, item = self.ready("p_release_unsaved")
+        try:
+            panel = app.project_panel
+            app.open_project_tab("locks")
+            changed, clean = os.path.join(item.path, "Рама.cdw"), os.path.join(item.path, "Узел.cdw")
+            item.status = WcStatus(my_locks=[LockInfo(changed, "me"), LockInfo(clean, "me")],
+                                   local_changes=[LocalChange(changed, "modified", locked_by_me=True)])
+            app._refresh_row(item)
+            tree = panel.locks_tree
+            rows = {tree.set(i, "file"): i for i in tree.get_children()}
+            self.assertEqual(set(rows), {"Рама.cdw", "Узел.cdw"})
+            # файл без правок освобождается сразу, без вопроса
+            tree.selection_set(rows["Узел.cdw"])
+            root.update()
+            with mock.patch("tkinter.messagebox.askyesno") as ask, mock.patch.object(app, "_run_locks") as run:
+                panel.release_btn.invoke()
+            ask.assert_not_called()
+            run.assert_called_once_with(item, [clean], lock=False)
+            # среди выбранных файл с правками: сначала вопрос с его именем
+            tree.selection_set(rows["Рама.cdw"], rows["Узел.cdw"])
+            root.update()
+            for agree in (False, True):
+                with self.subTest(agree=agree), mock.patch("tkinter.messagebox.askyesno", return_value=agree) as ask, \
+                        mock.patch.object(app, "_run_locks") as run:
+                    panel.release_btn.invoke()
+                    ask.assert_called_once()
+                    self.assertEqual(ask.call_args[0][0], messages.UNLOCK_UNSAVED_TITLE)
+                    self.assertIn("«Рама.cdw»", ask.call_args[0][1])
+                    self.assertNotIn("Узел", ask.call_args[0][1])
+                    if agree:
+                        run.assert_called_once()
+                        self.assertEqual(set(run.call_args[0][1]), {changed, clean})
+                    else:
+                        run.assert_not_called()
+            self.assertEqual(messages.unlock_unsaved_question(["a", "b", "c", "d", "e"]).split(".")[0],
+                             "Несохранённые правки есть в «a», «b», «c» и ещё 2 файла")
+        finally:
+            root.destroy()
+
     # колонка кнопок справа в панели «Состояние проекта»
 
     def side_texts(self, app):

@@ -1517,13 +1517,30 @@ class ProjectsTabMixin:
             self._shown_locks = key
 
     def _on_panel_release(self, paths: list[str]) -> None:
-        """«Освободить…» на вкладке «Занятые»: выбранные свои файлы, а без выбора - окно выбора своих файлов."""
+        """«Освободить…» на вкладке «Занятые»: выбранные свои файлы, а без выбора - окно выбора своих файлов.
+        Среди выбранных есть файлы с несохранёнными правками - сначала вопрос (окно выбора такие файлы не отмечает:
+        освобождённый файл займёт коллега, и правки разойдутся)."""
         if not paths:
             self._on_release_lock()
             return
         item = self._selected_item()
-        if item is not None and item.state == "svn" and self.client and not self._path_busy(item.path):
-            self._run_locks(item, paths, lock=False)
+        if item is None or item.state != "svn" or not self.client or self._path_busy(item.path):
+            return
+        unsaved = self._unsaved_of(item, paths)
+        if unsaved and not messagebox.askyesno(
+                messages.UNLOCK_UNSAVED_TITLE, messages.unlock_unsaved_question([os.path.basename(p) for p in unsaved]),
+                icon="warning", default="no", parent=self.root):
+            return
+        self._run_locks(item, paths, lock=False)
+
+    @staticmethod
+    def _unsaved_of(item: MineItem, paths: list[str]) -> list[str]:
+        """Те из paths, в которых по последней проверке проекта есть несохранённые правки."""
+        def key(path: str) -> str:
+            return os.path.normcase(os.path.abspath(path if os.path.isabs(path) else os.path.join(item.path, path)))
+
+        changed = {key(c.path) for c in item.status.local_changes} if item.status is not None else set()
+        return [p for p in paths if key(p) in changed]
 
     # вкладки «Новое» и «История»: читаются, когда их открывают, и заново, когда у проекта что-то поменялось
 
