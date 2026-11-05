@@ -921,7 +921,9 @@ class DownloadTabMixin:
         if job is not self.job or job.phase != "checkout":
             return
         count = job.progress.count
-        if job.total:
+        if job.cancel.cancelled:                # «Отмену» в панели уже нажали: ход не затирает «Отмена…»
+            self.status_var.set("Отмена…")
+        elif job.total:
             self.progress.configure(value=min(count, job.total))
             percent = min(100, count * 100 // job.total)
             self._set_download_tab_label(percent)

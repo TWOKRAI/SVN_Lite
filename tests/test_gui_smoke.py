@@ -1054,6 +1054,8 @@ class MineTabTests(unittest.TestCase):
             self.assertTrue(app.upd.cancel.cancelled)
             self.assertEqual(bar.progress_text(), "Отмена…")
             self.assertEqual(str(bar.cancel_btn.cget("state")), "disabled")    # второй раз не нажать
+            app._tick_update(app.upd)                                  # ход не затирает «Отмена…»
+            self.assertEqual(bar.progress_text(), "Отмена…")
             app.upd = None
             app._update_buttons()
             self.assertFalse(bar.progress_active)

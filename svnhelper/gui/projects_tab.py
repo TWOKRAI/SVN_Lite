@@ -2444,6 +2444,7 @@ class ProjectsTabMixin:
         if job is not self.upd:
             return
         self.mine_status.set("Останавливаю…" if self._closing
+                             else "Отмена…" if job.cancel.cancelled       # «Отмену» в панели уже нажали
                              else f"Получено файлов: {messages.format_number(job.progress.count)}")
         self.root.after(PROGRESS_MS, self._tick_update, job)
 
