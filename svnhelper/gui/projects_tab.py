@@ -191,7 +191,7 @@ class ProjectsTabMixin:
 
         # колонки 2 и 3
         self.mine_col2 = CollapsibleColumn(tab, "Проекты", side="left", width=px(self._col2_width("mine")),
-                                           strip_width=px(self.MINE_STRIP_WIDTH), arrow_style="ArrowSmall.Ghost.TButton",
+                                           strip_width=px(self.MINE_STRIP_WIDTH),
                                            collapsed=self.settings.mine_col2_collapsed)
         self.mine_col3 = CollapsibleColumn(tab, "Состояние проекта", side="right", width=px(self.MINE_COL3_WIDTH),
                                            strip_width=px(self.MINE_STRIP_WIDTH), collapsed_title="Состояние",
@@ -199,6 +199,7 @@ class ProjectsTabMixin:
                                            collapsed=self.settings.mine_col3_collapsed)
         for column in (self.mine_col2, self.mine_col3):
             column.bind(CollapsibleColumn.EVENT, self._on_mine_column_toggled)
+            column.header.bind("<Configure>", lambda _e: self._align_left_column(), add="+")
         # форма скачивания первой: в ней папка для проектов (dir_var), её берёт и список своих проектов
         self._build_download_form(self.mine_col3.body)
         if not self.settings.project_dirs and self.dir_var.get().strip():   # первый запуск: папка по умолчанию
@@ -426,7 +427,8 @@ class ProjectsTabMixin:
         if col2.collapsed or self._list_mode() == "download":
             self.actions_row.grid_remove()
         else:
-            self.actions_row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
+            self._left_pad = self._header_height()
+            self.actions_row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)), pady=(self._left_pad, 0))
         wide2 = col3.collapsed and not col2.collapsed
         both = not col2.collapsed and not col3.collapsed
         tab.columnconfigure(1, weight=1 if wide2 else 0)
@@ -438,6 +440,21 @@ class ProjectsTabMixin:
         else:
             self.mine_sash.grid_remove()
         self._apply_mine_view(wide2)
+
+    def _header_height(self) -> int:
+        """Высота строки заголовков колонок («Проекты», «Состояние проекта»): под ней начинаются кнопки справа."""
+        return max(self.mine_col2.header.winfo_reqheight(), self.mine_col3.header.winfo_reqheight())
+
+    def _align_left_column(self) -> None:
+        """Кнопки слева начинаются на том же уровне, что кнопки справа (под строкой заголовков колонок): колонки
+        кнопок зеркальны."""
+        row = self.actions_row
+        if not row.winfo_manager():
+            return
+        height = self._header_height()
+        if height != getattr(self, "_left_pad", -1):
+            self._left_pad = height
+            row.grid_configure(pady=(height, 0))
 
     def _apply_mine_view(self, wide: bool) -> None:
         """Узкий вид (колонка 3 развёрнута): «Проект» + строка состояния. Широкий (колонка 3 свёрнута): таблица.

@@ -8922,8 +8922,8 @@ class ButtonsViewWindowTests(unittest.TestCase):
         self.assertEqual(left.toggle_btn.cget("text"), "Показать")
 
     def test_tab_views_differ_in_width_and_collapse_arrows_have_set_sizes(self):
-        """У вкладки со значками колонка узкая, у соседней с подписями прежняя; стрелки заголовков: у «Проектов» на 15%
-        мельче, чем у «Состояния проекта»."""
+        """У вкладки со значками колонка узкая, у соседней с подписями прежняя; стрелки заголовков обеих колонок одного
+        размера и стоят на одном уровне."""
         root, app, _ = self.make_app()
         panel = app.project_panel
         bars = panel._side_bars
@@ -8934,9 +8934,8 @@ class ButtonsViewWindowTests(unittest.TestCase):
         import re
         style = ttk.Style(root)
         big = int(re.findall(r"\d+", str(style.lookup("Arrow.Ghost.TButton", "font")))[0])
-        small = int(re.findall(r"\d+", str(style.lookup("ArrowSmall.Ghost.TButton", "font")))[0])
-        self.assertEqual((big, small), (19, 16))
-        self.assertEqual(app.mine_col2.toggle_btn.cget("style"), "ArrowSmall.Ghost.TButton")
+        self.assertEqual(big, 19)
+        self.assertEqual(app.mine_col2.toggle_btn.cget("style"), "Arrow.Ghost.TButton")
         self.assertEqual(app.mine_col3.toggle_btn.cget("style"), "Arrow.Ghost.TButton")
         self.assertEqual(app.mine_col2.toggle_btn.cget("text"), app.mine_col3.toggle_btn.cget("text"))
         self.assertLess(app.mine_col3.toggle_btn.grid_info()["column"], app.mine_col3.title_label.grid_info()["column"])
@@ -8944,6 +8943,25 @@ class ButtonsViewWindowTests(unittest.TestCase):
         self.assertEqual(len([w for w in app.mine_col3.header.winfo_children() if isinstance(w, ttk.Button)]), 1)
         app.mine_col3.toggle_btn.invoke()                            # стрелка слева сворачивает «Состояние проекта»
         self.assertTrue(app.mine_col3.collapsed)
+
+    def test_columns_headers_and_button_columns_are_mirrored(self):
+        """Заголовки «Проекты» и «Состояние проекта» с их стрелками на одном уровне, кнопки слева и справа начинаются
+        на одной высоте (под заголовками) при всех масштабах."""
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale):
+                root, app, _ = self.make_app(visible=True, scale=scale)
+                app.select_list_mode("mine")
+                root.geometry(f"{app.px(1300)}x{app.px(760)}")
+                app.open_project_tab("locks")
+                root.update()
+                c2, c3 = app.mine_col2, app.mine_col3
+                self.assertEqual(c2.title_label.winfo_rooty(), c3.title_label.winfo_rooty())
+                self.assertEqual(c2.toggle_btn.winfo_rooty(), c3.toggle_btn.winfo_rooty())
+                self.assertEqual(c2.toggle_btn.winfo_height(), c3.toggle_btn.winfo_height())
+                left = app.actions_row.toggle_btn.winfo_rooty()
+                right = app.project_panel._side_bars["locks"].toggle_btn.winfo_rooty()
+                self.assertEqual(left, right)
+                self.assertGreaterEqual(left, c2.toggle_btn.winfo_rooty() + c2.toggle_btn.winfo_height())
 
     def test_saved_view_is_used_at_start_and_builds_in_dark_theme(self):
         from svnhelper.config import Config, SettingsStore
