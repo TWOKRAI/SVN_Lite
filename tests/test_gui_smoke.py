@@ -8374,6 +8374,55 @@ class HintBarTests(unittest.TestCase):
             time.sleep(0.01)
             self.assertLess(time.monotonic(), end, "таймаут ожидания")
 
+    def test_bar_height_set_by_hand(self):
+        """Высота панели меняется мышью за кромку: лишние строки появляются, предел - место окна, двойной щелчок и
+        выбор режима возвращают обычную высоту."""
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        bar.slack = lambda: 100
+        saved = []
+        bar.on_resized = saved.append
+        auto = int(str(bar.cget("height")))
+        self.assertEqual(bar.lines(), 2)
+        low, high = bar.height_limits()
+        self.assertEqual(high, bar._frame(2) + 100)
+        bar.set_custom_height(auto + 60)
+        self.assertEqual(int(str(bar.cget("height"))), auto + 60)
+        self.assertEqual(bar.lines(), (auto + 60 - 10) // bar._linespace())
+        self.assertGreater(bar.lines(), 2)
+        self.assertEqual(bar.set_custom_height(10_000), high)            # выше предела не растёт
+        self.assertEqual(bar.set_custom_height(1), low)                  # ниже одной строки не сжимается
+        self.assertEqual(bar.lines(), 1)
+        # перетаскивание: вверх на 40 px - выше на 40 px, запоминается при отпускании
+        bar.set_custom_height(0)
+        self.assertEqual(int(str(bar.cget("height"))), auto)
+        class Event:
+            def __init__(self, y):
+                self.y_root = y
+        bar.winfo_height = lambda: auto                                   # окно не показано: высоту задаём сами
+        bar._grip_press(Event(500))
+        bar._grip_motion(Event(460))
+        self.assertEqual(int(str(bar.cget("height"))), auto + 40)
+        self.assertEqual(saved, [])
+        bar._grip_release()
+        self.assertEqual(saved, [auto + 40])
+        bar._grip_reset()
+        self.assertEqual((int(str(bar.cget("height"))), saved[-1]), (auto, 0))
+        # окно стало ниже: панель сжимается до того, что окно может отдать
+        bar.set_custom_height(auto + 90)
+        bar.slack = lambda: 20
+        bar._on_window_configure(type("E", (), {"widget": root})())
+        self.assertEqual(bar._custom, bar._frame(2) + 20)
+        # режим сбрасывает высоту; в «только ход работы» высота по режиму
+        bar.set_custom_height(auto + 20)
+        bar.set_mode(hints.MODE_SHORT)
+        self.assertEqual((bar._custom, bar.lines()), (0, 1))
+        bar.set_custom_height(low + 30)
+        self.assertTrue(bar.custom_active())
+        bar.mode = hints.MODE_PROGRESS
+        self.assertFalse(bar.custom_active())
+        self.assertEqual(bar.lines(), 1)
+
     def test_priority_hover_error_result_background_and_leave_delay(self):
         from svnhelper.gui import hints
         root, bar = self.make_bar()
@@ -8665,6 +8714,64 @@ class HintBarWindowTests(unittest.TestCase):
 
     make_app = ListModeTests.make_app
     pump = ListModeTests.pump
+
+    def _menus(self, app):
+        """Три меню шапки: [(кнопка в строке меню, меню)] по порядку «Настройки», «Вид», «Справка»."""
+        buttons = [w for w in app.menu_bar.winfo_children() if isinstance(w, ttk.Menubutton)]
+        return [(b, app.root.nametowidget(str(b.cget("menu")))) for b in buttons]
+
+    def test_menu_bar_and_items_have_hints(self):
+        """Хвост U4: кнопки строки меню и каждый пункт выпадающих меню (и вложенных) объясняет панель внизу."""
+        from svnhelper.gui import hints
+        root, app, _ = self.make_app()
+        bar = app.hint_bar
+        menus = self._menus(app)
+        self.assertEqual([hints.key_of(b) for b, _m in menus], ["menu.settings", "menu.view", "menu.help"])
+        for _button, menu in menus + [(None, app.hint_menu), (None, app.buttons_menu)]:
+            self.assertTrue(menu.bind("<<MenuSelect>>"), menu)       # Tk шлёт его сам, когда меню открыто и пункт подсвечен
+        for button, _menu in menus:
+            button.event_generate("<Enter>")
+            self.assertEqual(bar.text(), hints.HINTS[hints.key_of(button)][1])
+            button.event_generate("<Leave>")
+            self.pump(root, lambda: bar.hovered() is None)
+        all_menus = [m for _b, m in menus] + [app.hint_menu, app.buttons_menu]
+        for menu in all_menus:
+            keys = menu._hint_keys
+            count = menu.index("end") + 1
+            self.assertEqual(len(keys), count, menu)
+            for index in range(count):
+                kind = menu.type(index)
+                with self.subTest(menu=str(menu), index=index, kind=kind):
+                    if kind == "separator":
+                        self.assertIsNone(keys[index])
+                        continue
+                    self.assertIsNotNone(keys[index], menu.entrycget(index, "label"))
+                    self.assertIn(keys[index], hints.HINTS)
+                    state = menu.entrycget(index, "state")
+                    menu.entryconfigure(index, state="normal")      # Tk серый пункт не подсвечивает: проверяем без серости
+                    menu.activate(index)
+                    menu._hint_select()
+                    shown = bar.text()
+                    self.assertTrue(shown.startswith(hints.HINTS[keys[index]][1].rstrip(".")), shown)
+                    menu.entryconfigure(index, state=state)
+        # меню закрылось (пункт больше не подсвечен): пояснение уходит
+        app.buttons_menu.activate("none")
+        app.buttons_menu._hint_select()
+        self.pump(root, lambda: bar.hovered() is None)
+
+    def test_hint_menu_rejects_unknown_key_and_is_silent_without_bar(self):
+        from svnhelper.gui import hints
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            menu = tk.Menu(root, tearoff=False)
+            menu.add_command(label="x")
+            with self.assertRaises(KeyError):
+                hints.hint_menu(menu, ["нет такого"])
+            hints.hint_menu(menu, ["menu.about"])                    # панели нет - просто ничего не делает
+            self.assertFalse(hasattr(menu, "_hint_keys"))
+        finally:
+            root.destroy()
 
     def test_bar_at_bottom_and_view_menu_switches_mode(self):
         from svnhelper.config import SettingsStore

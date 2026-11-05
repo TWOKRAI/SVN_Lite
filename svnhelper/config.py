@@ -495,6 +495,7 @@ class Settings:
     # панель подсказок внизу окна (меню «Вид → Подсказки внизу»): detailed - 2 строки, short - 1 строка,
     # progress - только ход работы (полоса появляется на время операции); допустимые значения - HINT_MODES
     hint_mode: str = "detailed"
+    hint_height: int = 0       # высота панели, которую человек задал мышью (px при масштабе 100%); 0 - по режиму
     # колонки кнопок (меню «Вид → Кнопки», стрелка вверху колонки): True - только значки, False - значки с подписями.
     # left - колонка слева (проект целиком), right - справа («Состояние проекта» и форма «Скачивание»)
     buttons_compact_left: bool = False
@@ -724,6 +725,8 @@ def _parse_settings(data: dict) -> Settings:
         if type(data.get("mine_col2_download_width")) is int and 100 <= data["mine_col2_download_width"] <= 2000
         else 0,
         hint_mode=text("hint_mode") if text("hint_mode") in HINT_MODES else HINT_MODES[0],
+        hint_height=data["hint_height"] if type(data.get("hint_height")) is int and 20 <= data["hint_height"] <= 600
+        else 0,
         buttons_compact_left=flag("buttons_compact_left") is True,
         buttons_compact_right=flag("buttons_compact_right") is True,
         buttons_compact_tabs={k: v for k, v in data["buttons_compact_tabs"].items()

@@ -31,6 +31,8 @@ MODE_LABELS = {MODE_DETAILED: "Подробно (2 строки)", MODE_SHORT: "
                MODE_PROGRESS: "Только ход работы"}
 MENU_TITLE = "Подсказки внизу"
 SMALL_WINDOW = 700        # окно ниже этого (px до масштаба экрана): всегда одна строка
+GRIP_HEIGHT = 5           # ручка на верхней кромке панели, за которую меняют её высоту (px до масштаба экрана)
+MAX_LINES = 12            # выше этого панель не растёт, сколько бы места ни было
 
 HOVER_DELAY_MS = 150      # уход с элемента возвращает прежний текст не сразу: между соседними кнопками не мигает
 ERROR_MS = 15_000         # сколько виден совет о тихом сбое
@@ -165,9 +167,56 @@ HINTS: dict[str, tuple[str, str]] = {
     "buttons.expand": ("Показать подписи", "Показать подписи: кнопки колонки снова со значками и подписями."),
     # сама панель
     "bar.cancel": ("Отмена", "Отмена: остановить операцию. То, что уже пришло, останется в папке."),
+    "bar.resize": ("Высота панели",
+                   "Высота панели: потяните за эту кромку вверх или вниз, чтобы подсказки помещались целиком. "
+                   "Двойной щелчок возвращает обычную высоту."),
     "bar.hide": ("Скрыть подсказку",
                  "Скрыть: эта подсказка не появится для проекта, пока не изменится то, о чём она (например, число "
                  "файлов)."),
+    # строка меню в шапке и её пункты («Ещё ▾» у колонки кнопок описана выше, project.more)
+    "menu.settings": ("Настройки", "Настройки: параметры программы, общие настройки, журнал и выход."),
+    "menu.view": ("Вид", "Вид: тема окна, полоса подсказок внизу и вид кнопок."),
+    "menu.help": ("Справка",
+                  "Справка: шпаргалка, документы, обновление программы, ИИ-помощник и сведения о программе."),
+    "menu.params": ("Параметры",
+                    "Параметры (F12): сервер, ваш логин и пароль, уведомления, автозапуск. Там же проверка "
+                    "подключения."),
+    "menu.reload_shared": ("Обновить общие настройки",
+                           "Обновить общие настройки: заново прочитать общий файл настроек, который ведёт "
+                           "администратор."),
+    "menu.log": ("Открыть журнал",
+                 "Открыть журнал: файл, куда программа записывает свои ошибки. Он нужен, если администратор просит "
+                 "прислать подробности."),
+    "menu.exit": ("Выйти из программы",
+                  "Выйти из программы: закрыть окно и значок в области уведомлений. Если остались несохранённые "
+                  "правки, программа спросит."),
+    "menu.theme.system": ("Как в Windows", "Как в Windows: окно светлое или тёмное так же, как сама Windows."),
+    "menu.theme.light": ("Светлая", "Светлая: светлое окно."),
+    "menu.theme.dark": ("Тёмная", "Тёмная: тёмное окно, меньше слепит вечером."),
+    "menu.hints": ("Подсказки внизу",
+                   "Подсказки внизу: сколько места занимает полоса с пояснениями внизу окна."),
+    "menu.hints.detailed": ("Подробно", "Подробно: пояснение в две строки."),
+    "menu.hints.short": ("Коротко", "Коротко: пояснение в одну строку, окно ниже."),
+    "menu.hints.progress": ("Только ход работы",
+                            "Только ход работы: полосы нет, она появляется на время долгих операций."),
+    "menu.buttons": ("Кнопки", "Кнопки: с подписями или маленькие, только со значками. Действует на все колонки."),
+    "menu.buttons.labels": ("С подписями", "С подписями: у каждой кнопки значок и название."),
+    "menu.buttons.icons": ("Только значки",
+                           "Только значки: кнопки маленькие, название видно при наведении. Остаётся больше места "
+                           "под таблицу."),
+    "menu.cheatsheet": ("Шпаргалка", "Шпаргалка: короткая памятка по программе, откроется в браузере."),
+    "menu.docs": ("Документы",
+                  "Документы: инструкции и регламенты из общей папки на сервере. Пункт серый, если папка не задана "
+                  "в общих настройках или в ней ничего нет."),
+    "menu.update": ("Проверить обновление",
+                    "Проверить обновление программы: узнать, есть ли на сервере более новая версия."),
+    "menu.shortcut": ("Ярлык на рабочем столе",
+                      "Создать ярлык: значок программы на рабочем столе. Пункт серый, если программа запущена не "
+                      "как SVN-lite.exe."),
+    "menu.agent": ("ИИ-помощник",
+                   "ИИ-помощник: что разрешено помощнику (например, Claude), какие проекты ему видны и как его "
+                   "подключить."),
+    "menu.about": ("О программе", "О программе: версия, сервер и контакт администратора."),
 }
 
 # причина, почему кнопка серая, если окно не назвало общей (идёт операция, не выбран проект)
@@ -355,6 +404,39 @@ def hint_tabs(notebook: ttk.Notebook, keys: Sequence[str]) -> None:
     notebook.bind("<Destroy>", lambda _e: bar.forget(notebook), add="+")
 
 
+def hint_menu(menu: tk.Menu, keys: Sequence[Optional[str]]) -> None:
+    """Выпадающее меню: keys[i] - ключ пункта с номером i (None - разделитель или пункт без пояснения). Пока пункт
+    подсвечен (<<MenuSelect>>), панель показывает его пояснение. Серый пункт Tk не подсвечивает, поэтому почему он
+    серый, сказано в самом тексте. Меню - своё окно верхнего уровня, поэтому панель берётся установленная
+    (installed() без виджета), а не по окну меню."""
+    for key in keys:
+        if key is not None and key not in HINTS:
+            raise KeyError(f"нет подсказки «{key}»")
+    bar = installed()
+    if bar is None:
+        return
+    menu._hint_keys = list(keys)            # type: ignore[attr-defined]
+
+    def active() -> Optional[int]:
+        try:
+            index = menu.index("active")
+        except tk.TclError:
+            return None
+        return index if isinstance(index, int) and 0 <= index < len(keys) else None
+
+    def select(_event=None) -> None:
+        index = active()
+        if index is None or keys[index] is None:
+            bar.unhover(menu)
+        else:
+            bar.hover(menu, lambda: describe(keys[index], bar.mode))  # type: ignore[arg-type]
+
+    menu._hint_select = select              # type: ignore[attr-defined]    его же зовут тесты (на закрытом меню Tk события не шлёт)
+    menu.bind("<<MenuSelect>>", select, add="+")
+    menu.bind("<Unmap>", lambda _e: bar.unhover(menu), add="+")
+    menu.bind("<Destroy>", lambda _e: bar.forget(menu), add="+")
+
+
 def fit_lines(text: str, width: int, lines: int, measure: Callable[[str], int]) -> str:
     """Текст, разбитый по словам на строки не шире width (пикселей) и не больше lines строк; не поместилось -
     последняя строка кончается «…». width <= 1 (панель ещё не разложена): текст как есть, одной строкой."""
@@ -426,6 +508,10 @@ class HintBar(ttk.Frame):
         self._progress = ""
         self._cancel_cmd: Optional[Callable[[], None]] = None
         self._small = False
+        self._custom = 0                     # высота, которую человек задал мышью (реальные px); 0 - по режиму
+        self._drag: Optional[tuple[int, int]] = None      # (y мыши, высота панели) в начале перетаскивания
+        self.slack: Optional[Callable[[], int]] = None    # сколько px окно может отдать панели, не обрезав остальное
+        self.on_resized: Optional[Callable[[int], None]] = None   # высота изменена человеком: окно её запоминает
         self._dead = False                   # панель уничтожена (окно закрывается): больше ничего не рисуем
         self.grid_propagate(False)
         self.columnconfigure(0, weight=1)
@@ -443,6 +529,16 @@ class HintBar(ttk.Frame):
         self.hide_btn = ttk.Button(self, text="✕", style="Small.TButton", width=2, command=self.hide)
         self.hide_btn.grid(row=0, column=3, sticky="e", padx=(px(8), 0))
         self.hide_btn.grid_remove()
+        # ручка высоты: тонкая полоса на верхней кромке панели, поверх её содержимого (place не трогает раскладку)
+        self.grip = ttk.Frame(self, style="Card.TFrame", height=px(GRIP_HEIGHT), cursor="sb_v_double_arrow")
+        self.grip.place(x=0, y=0, relwidth=1)
+        line = ttk.Separator(self.grip, orient="horizontal", cursor="sb_v_double_arrow")
+        line.place(relx=0.5, rely=0.5, anchor="center", width=px(40))
+        for widget in (self.grip, line):
+            widget.bind("<ButtonPress-1>", self._grip_press, add="+")
+            widget.bind("<B1-Motion>", self._grip_motion, add="+")
+            widget.bind("<ButtonRelease-1>", self._grip_release, add="+")
+            widget.bind("<Double-Button-1>", self._grip_reset, add="+")
         self.bind("<Configure>", lambda _e: self._render(), add="+")
         top = self.winfo_toplevel()
         top.bind("<Configure>", self._on_window_configure, add="+")
@@ -462,15 +558,72 @@ class HintBar(ttk.Frame):
     def _measure(self, text: str) -> int:
         return int(self.tk.call("font", "measure", self._font(), text))
 
-    def lines(self) -> int:
-        """Сколько строк текста слева: «подробно» - 2, «коротко» и окно ниже SMALL_WINDOW - 1."""
+    def _linespace(self) -> int:
+        return int(self.tk.call("font", "metrics", self._font(), "-linespace"))
+
+    def _frame(self, lines: int) -> int:
+        """Высота панели под lines строк текста: строки, кнопка «Отмена» не ниже, отступы и рамка Card.TFrame (2)."""
+        return max(lines * self._linespace(), self.cancel_btn.winfo_reqheight()) + 2 * self.px(4) + 2
+
+    def custom_active(self) -> bool:
+        """Высоту задал человек (ручка на кромке), и панель с текстом: в режиме «только ход работы» она всегда в строку."""
+        return bool(self._custom) and self.mode != MODE_PROGRESS
+
+    def auto_lines(self) -> int:
+        """Строк по режиму: «подробно» - 2, «коротко» и окно ниже SMALL_WINDOW - 1."""
         return 2 if self.mode == MODE_DETAILED and not self._small else 1
 
+    def lines(self) -> int:
+        """Сколько строк текста слева: по высоте, которую задал человек, иначе по режиму."""
+        if self.custom_active():
+            inner = self._custom - 2 * self.px(4) - 2
+            return max(1, min(MAX_LINES, inner // max(1, self._linespace())))
+        return self.auto_lines()
+
+    def height_limits(self) -> tuple[int, int]:
+        """(наименьшая, наибольшая) высота панели при перетаскивании: одна строка и обычная высота плюс то, что может
+        отдать окно (slack), но не больше MAX_LINES строк."""
+        low = self._frame(1)
+        room = max(0, self.slack()) if self.slack is not None else 0
+        return low, max(low, min(self._frame(MAX_LINES), self._frame(self.auto_lines()) + room))
+
+    def set_custom_height(self, height: int, notify: bool = False) -> int:
+        """Высота панели height px (0 - по режиму); приводится к height_limits. notify - сообщить окну (on_resized):
+        так делает перетаскивание, а восстановление из настроек и подгонка под окно - нет. Возвращает принятую высоту."""
+        if height > 0:
+            low, high = self.height_limits()
+            height = max(low, min(high, int(height)))
+        else:
+            height = 0
+        self._custom = height
+        self._apply_height()
+        self._render()
+        if notify and self.on_resized is not None:
+            self.on_resized(height)
+        return height
+
+    def _grip_press(self, event) -> None:
+        self._drag = (event.y_root, self.winfo_height())
+
+    def _grip_motion(self, event) -> None:
+        if self._drag is None:
+            return
+        start_y, start_height = self._drag
+        self.set_custom_height(start_height + (start_y - event.y_root))      # вверх - выше
+
+    def _grip_release(self, _event=None) -> None:
+        if self._drag is not None:
+            self._drag = None
+            if self.on_resized is not None:
+                self.on_resized(self._custom)
+
+    def _grip_reset(self, _event=None) -> None:
+        """Двойной щелчок по ручке: обычная высота по режиму."""
+        self._drag = None
+        self.set_custom_height(0, notify=True)
+
     def _apply_height(self) -> None:
-        linespace = int(self.tk.call("font", "metrics", self._font(), "-linespace"))
-        pad = self.px(4)
-        inner = max(self.lines() * linespace, self.cancel_btn.winfo_reqheight())
-        height = inner + 2 * pad + 2          # 2 - рамка Card.TFrame
+        height = max(self._custom, self._frame(1)) if self.custom_active() else self._frame(self.auto_lines())
         if int(str(self.cget("height")) or 0) != height:
             self.configure(height=height)
 
@@ -484,6 +637,10 @@ class HintBar(ttk.Frame):
             self._small = small
             self._apply_height()
             self._render()
+        if self._custom:       # окно стало ниже: панель не должна отнимать у таблиц место, которого нет
+            high = self.height_limits()[1]
+            if self._custom > high:
+                self.set_custom_height(high)
 
     # -- режим ----------------------------------------------------------------------
 
@@ -491,6 +648,7 @@ class HintBar(ttk.Frame):
         if mode not in MODES:
             raise ValueError(f"режим подсказок: {', '.join(MODES)}, получено {mode!r}")
         self.mode = mode
+        self._custom = 0                      # выбрали режим - высота снова по режиму
         self._apply_height()
         self._render()
 

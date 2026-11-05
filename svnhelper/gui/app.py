@@ -16,7 +16,7 @@ import webbrowser
 from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import messagebox, ttk
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from .. import (__version__, autostart, docs, installer, messages, publish, selfupdate, server, templates, theme, tortoise,
                 tray, winutil)
@@ -515,10 +515,13 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self.bold_font = tkfont.Font(family=FONT_FAMILY, size=10, weight="bold")
         ttk.Style(self.root).configure("Todo.TLabel", font=self.bold_font)
 
-    def _add_menu_button(self, title: str, menu: tk.Menu) -> None:
-        """Пункт строки меню: кнопка слева, список выпадает под ней."""
-        ttk.Menubutton(self.menu_bar, text=title, style="MenuBar.TMenubutton", menu=menu,
-                       direction="below").pack(side="left")
+    def _add_menu_button(self, title: str, menu: tk.Menu, key: str, item_keys: Sequence[Optional[str]]) -> None:
+        """Пункт строки меню: кнопка слева, список выпадает под ней. key - пояснение кнопки в панели подсказок,
+        item_keys - пояснения пунктов списка по номерам (None - разделитель)."""
+        button = ttk.Menubutton(self.menu_bar, text=title, style="MenuBar.TMenubutton", menu=menu, direction="below")
+        button.pack(side="left")
+        hints.hint(button, key)
+        hints.hint_menu(menu, item_keys)
 
     def set_theme(self, mode: str) -> None:
         """Светлая, тёмная или как в Windows: перекрашивает открытое окно сразу и запоминает выбор."""
@@ -670,6 +673,9 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         # подключались к ней (hints.hint); пакуется снизу до рабочей области - над ней потом встанет место под чат
         self.hint_bar = HintBar(root, px, mode=self.settings.hint_mode, reason=self._disabled_reason)
         hints.install(self.hint_bar)
+        self.hint_bar.slack = self._hint_slack
+        self.hint_bar.on_resized = self._on_hint_resized
+        hints.hint(self.hint_bar.grip, "bar.resize")
         hints.hint(self.hint_bar.cancel_btn, "bar.cancel")
         hints.hint(self.hint_bar.hide_btn, "bar.hide")
 
@@ -686,7 +692,8 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         menu.add_command(label="Открыть журнал", command=self._open_log)
         menu.add_separator()
         menu.add_command(label="Выйти из программы", command=self._request_exit)
-        self._add_menu_button("Настройки", menu)
+        self._add_menu_button("Настройки", menu, "menu.settings",
+                              ["menu.params", "menu.reload_shared", None, "menu.log", None, "menu.exit"])
         self.theme_var = tk.StringVar(value=self.settings.theme)
         view_menu = tk.Menu(root, tearoff=False)
         for mode in theme.MODES:
@@ -699,6 +706,7 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             self.hint_menu.add_radiobutton(label=hints.MODE_LABELS[mode], value=mode, variable=self.hint_mode_var,
                                            command=lambda m=mode: self.set_hint_mode(m))
         view_menu.add_cascade(label=hints.MENU_TITLE, menu=self.hint_menu)
+        hints.hint_menu(self.hint_menu, [f"menu.hints.{mode}" for mode in hints.MODES])
         # «Кнопки: с подписями | только значки» - для обеих колонок кнопок сразу (у каждой есть и своя стрелка)
         self.buttons_view_var = tk.StringVar()
         self.buttons_menu = tk.Menu(view_menu, tearoff=False)
@@ -707,8 +715,10 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
                                               variable=self.buttons_view_var,
                                               command=lambda c=compact: self.set_buttons_compact("both", c))
         view_menu.add_cascade(label=SIDE_VIEW_MENU, menu=self.buttons_menu)
+        hints.hint_menu(self.buttons_menu, [f"menu.buttons.{self.BUTTONS_VIEW[compact]}" for compact in (False, True)])
         self._sync_buttons_view_var()
-        self._add_menu_button("Вид", view_menu)
+        self._add_menu_button("Вид", view_menu, "menu.view",
+                              [f"menu.theme.{mode}" for mode in theme.MODES] + [None, "menu.hints", "menu.buttons"])
         self.help_menu = help_menu = tk.Menu(root, tearoff=False)
         help_menu.add_command(label="Шпаргалка", command=self._open_help)
         self.docs_menu = tk.Menu(help_menu, tearoff=False)
@@ -720,7 +730,9 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         help_menu.add_command(label="ИИ-помощник…", command=self._open_agent_dialog)
         help_menu.add_separator()
         help_menu.add_command(label="О программе", command=self._on_about)
-        self._add_menu_button("Справка", help_menu)
+        self._add_menu_button("Справка", help_menu, "menu.help",
+                              ["menu.cheatsheet", "menu.docs", "menu.update", "menu.shortcut", "menu.agent", None,
+                               "menu.about"])
         root.bind("<F12>", lambda _e: self._open_settings())
         root.bind("<Control-comma>", lambda _e: self._open_settings())
         root.bind("<FocusIn>", self._on_focus_in)
@@ -737,6 +749,8 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             self._bar_heights = {self.hint_bar: self.hint_bar.winfo_reqheight() + px(self.HINT_BAR_GAP)}
         root.minsize(self._min_width, self._min_height)
         center_window(root, width, self._base_height)
+        if self.settings.hint_height:       # высоту панели, заданную мышью в прошлый раз, берём после размеров окна
+            self.hint_bar.set_custom_height(round(self.settings.hint_height * px(100) / 100))
         self._update_buttons()
         self._refresh_lamp()
         root.after(600, self._paste_from_clipboard)
@@ -757,6 +771,19 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
     # -- панель подсказок внизу окна -------------------------------------------------------
 
     HINT_BAR_GAP = 8          # отступ под панелью (px до масштаба экрана)
+
+    def _hint_slack(self) -> int:
+        """Сколько высоты окно может отдать панели подсказок: сверх наименьшей высоты окна (с обычной панелью). Окно ещё не
+        показано (высоты нет) - берём ту, с которой оно откроется."""
+        height = self.root.winfo_height() if self.root.winfo_ismapped() else getattr(self, "_base_height", 0)
+        return max(0, height - getattr(self, "_min_height", height))
+
+    def _on_hint_resized(self, height: int) -> None:
+        """Человек потянул за кромку панели: высота запоминается (px при масштабе 100%, 0 - по режиму)."""
+        value = round(height * 100 / self.px(100)) if height else 0
+        if self.settings.hint_height != value:
+            self.settings.hint_height = value
+            self.settings_store.save()
 
     def _place_hint_bar(self) -> None:
         """Панель видна всегда, а в режиме «только ход работы» - только пока идёт операция. Появилась или исчезла -
@@ -781,11 +808,11 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         if bar.winfo_manager():          # высота панели меняется: окно отдаёт прежнюю и берёт новую
             bar.pack_forget()
             self._fit_height_for_bar(bar, False)
-        bar.set_mode(mode)
+        bar.set_mode(mode)                # режим сбрасывает высоту, заданную мышью
         self._place_hint_bar()
         self.hint_mode_var.set(mode)
-        if self.settings.hint_mode != mode:
-            self.settings.hint_mode = mode
+        if self.settings.hint_mode != mode or self.settings.hint_height:
+            self.settings.hint_mode, self.settings.hint_height = mode, 0
             self.settings_store.save()
 
     # -- колонки кнопок: с подписями | только значки (docs/PLAN_ui_v4.md, раздел 11) ---------------------

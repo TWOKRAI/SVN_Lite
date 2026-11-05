@@ -2101,7 +2101,8 @@ class ProjectsTabMixin:
 
     def _lamp_state(self) -> tuple[str, bool, str]:
         """(цвет, крутится ли, подсказка) для индикатора в шапке: серый — нечего показывать, зелёный — всё
-        актуально, жёлтый — нужно получить новое или сохранить, красный — ошибка или конфликт."""
+        актуально, жёлтый — нужно получить новое или сохранить, красный — ошибка или конфликт. Подсказка короткая, без
+        имён проектов: какой проект и что с ним делать, говорят таблица и панель подсказок внизу."""
         p = self.palette
         busy = self._mine_spinning or self._lines_view_loading or self.job is not None
         if self.client is None:
@@ -2118,12 +2119,11 @@ class ProjectsTabMixin:
         else:
             warn_text = ""
         if bad:
-            color, text = p.danger, "Есть ошибка или конфликт: " + ", ".join(i.display_name for i in bad[:3])
+            color, text = p.danger, "Есть ошибка или конфликт"
         elif offline:
             color, text = p.warning, "Нет связи с сервером"
         elif warn or warn_text:
-            names = ", ".join(i.display_name for i in warn[:3])
-            color, text = p.warning, (f"Нужно получить новое или сохранить: {names}" if warn else warn_text)
+            color, text = p.warning, "Нужно получить новое или сохранить" if warn else warn_text
         elif any(i.checked for i in items):
             color, text = p.success, "Всё актуально"
         else:

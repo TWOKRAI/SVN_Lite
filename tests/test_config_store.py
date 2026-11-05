@@ -124,6 +124,18 @@ class SettingsStoreTests(unittest.TestCase):
                 self.path.write_text(json.dumps({"hint_mode": wrong}), encoding="utf-8")
                 self.assertEqual(SettingsStore(self.path).settings.hint_mode, "detailed")
 
+    def test_hint_height_is_saved_and_checked(self):
+        """Высота нижней панели, заданная мышью: целое число px, иначе 0 (по режиму)."""
+        self.assertEqual(SettingsStore(self.path).settings.hint_height, 0)
+        store = SettingsStore(self.path)
+        store.settings.hint_height = 90
+        store.save()
+        self.assertEqual(SettingsStore(self.path).settings.hint_height, 90)
+        for wrong in ("90", 5, 5000, None, True, 40.5):
+            with self.subTest(value=wrong):
+                self.path.write_text(json.dumps({"hint_height": wrong}), encoding="utf-8")
+                self.assertEqual(SettingsStore(self.path).settings.hint_height, 0)
+
     def test_buttons_compact_is_saved_and_checked(self):
         """U4.8: вид колонок кнопок (только значки) хранится в settings.json для каждой стороны отдельно; не «да/нет» -
         значение по умолчанию (с подписями)."""
