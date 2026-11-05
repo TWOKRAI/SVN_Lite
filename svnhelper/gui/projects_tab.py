@@ -191,11 +191,11 @@ class ProjectsTabMixin:
 
         # колонки 2 и 3
         self.mine_col2 = CollapsibleColumn(tab, "Проекты", side="left", width=px(self._col2_width("mine")),
-                                           strip_width=px(self.MINE_STRIP_WIDTH),
+                                           strip_width=px(self.MINE_STRIP_WIDTH), px=px,
                                            collapsed=self.settings.mine_col2_collapsed)
         self.mine_col3 = CollapsibleColumn(tab, "Состояние проекта", side="right", width=px(self.MINE_COL3_WIDTH),
                                            strip_width=px(self.MINE_STRIP_WIDTH), collapsed_title="Состояние",
-                                           arrow_left=True,
+                                           arrow_left=True, px=px,
                                            collapsed=self.settings.mine_col3_collapsed)
         for column in (self.mine_col2, self.mine_col3):
             column.bind(CollapsibleColumn.EVENT, self._on_mine_column_toggled)

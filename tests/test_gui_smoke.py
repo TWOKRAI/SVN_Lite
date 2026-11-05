@@ -8921,28 +8921,51 @@ class ButtonsViewWindowTests(unittest.TestCase):
         self.assertEqual([bar.compact for bar in self.side_bars(app)], [True] * len(self.side_bars(app)))
         self.assertEqual(left.toggle_btn.cget("text"), "Показать")
 
-    def test_tab_views_differ_in_width_and_collapse_arrows_have_set_sizes(self):
-        """У вкладки со значками колонка узкая, у соседней с подписями прежняя; стрелки заголовков обеих колонок одного
-        размера и стоят на одном уровне."""
+    def test_tab_views_differ_in_width(self):
+        """У вкладки со значками колонка узкая, у соседней с подписями прежняя."""
         root, app, _ = self.make_app()
-        panel = app.project_panel
-        bars = panel._side_bars
+        bars = app.project_panel._side_bars
         app.set_buttons_compact("right", True, tab="locks")
         root.update()
         self.assertLess(bars["locks"].winfo_reqwidth(), bars["changes"].winfo_reqwidth())
         self.assertEqual(bars["changes"].winfo_reqwidth(), bars["lines"].winfo_reqwidth())
-        import re
-        style = ttk.Style(root)
-        big = int(re.findall(r"\d+", str(style.lookup("Arrow.Ghost.TButton", "font")))[0])
-        self.assertEqual(big, 19)
-        self.assertEqual(app.mine_col2.toggle_btn.cget("style"), "Arrow.Ghost.TButton")
-        self.assertEqual(app.mine_col3.toggle_btn.cget("style"), "Arrow.Ghost.TButton")
-        self.assertEqual(app.mine_col2.toggle_btn.cget("text"), app.mine_col3.toggle_btn.cget("text"))
-        self.assertLess(app.mine_col3.toggle_btn.grid_info()["column"], app.mine_col3.title_label.grid_info()["column"])
-        self.assertGreater(app.mine_col2.toggle_btn.grid_info()["column"], app.mine_col2.title_label.grid_info()["column"])
-        self.assertEqual(len([w for w in app.mine_col3.header.winfo_children() if isinstance(w, ttk.Button)]), 1)
-        app.mine_col3.toggle_btn.invoke()                            # стрелка слева сворачивает «Состояние проекта»
-        self.assertTrue(app.mine_col3.collapsed)
+
+    @staticmethod
+    def tip_direction(canvas, tag=None):
+        """Куда смотрит шеврон на холсте: «right», если вершина правее концов."""
+        item = canvas.find_withtag(tag) if tag else canvas.find_all()
+        x = canvas.coords(item[0])
+        return "right" if x[2] > x[0] else "left"
+
+    def test_collapse_arrows_are_mirrored_chevrons_that_flip_on_collapse(self):
+        """Стрелка сворачивания - один вытянутый шеврон, у левой колонки «‹», у правой «›»; на свёрнутой полосе она
+        того же размера и смотрит в обратную сторону (разворачивание)."""
+        from svnhelper.gui.widgets import ChevronButton
+        root, app, _ = self.make_app(visible=True)
+        app.select_list_mode("mine")
+        root.update()
+        c2, c3 = app.mine_col2, app.mine_col3
+        self.assertIsInstance(c2.toggle_btn, ChevronButton)
+        self.assertEqual((c2.toggle_btn.direction, c3.toggle_btn.direction), ("left", "right"))
+        self.assertEqual((self.tip_direction(c2.toggle_btn), self.tip_direction(c3.toggle_btn)), ("left", "right"))
+        line = c3.toggle_btn.coords(c3.toggle_btn.find_all()[0])
+        self.assertAlmostEqual(abs(line[2] - line[0]) / abs(line[5] - line[1]), 0.9, delta=0.06)     # вытянут вширь
+        self.assertLess(c3.toggle_btn.grid_info()["column"], c3.title_label.grid_info()["column"])    # слева от названия
+        self.assertGreater(c2.toggle_btn.grid_info()["column"], c2.title_label.grid_info()["column"])
+        self.assertEqual(len([w for w in c3.header.winfo_children() if isinstance(w, ChevronButton)]), 1)
+        self.assertEqual(len([w for w in c3.header.winfo_children() if isinstance(w, ttk.Button)]), 0)
+        header_line = c3.toggle_btn.coords(c3.toggle_btn.find_all()[0])
+        c2.collapse()
+        c3.collapse()
+        root.update()
+        self.assertEqual((self.tip_direction(c2.strip, "arrow"), self.tip_direction(c3.strip, "arrow")),
+                         ("right", "left"))                        # на полосе наоборот: показать колонку
+        strip_line = c3.strip.coords(c3.strip.find_withtag("arrow")[0])
+        self.assertEqual((abs(strip_line[2] - strip_line[0]), abs(strip_line[5] - strip_line[1])),
+                         (abs(header_line[2] - header_line[0]), abs(header_line[5] - header_line[1])))   # тот же размер
+        c3.expand()
+        c3.toggle_btn.invoke()                                      # стрелка слева сворачивает «Состояние проекта»
+        self.assertTrue(c3.collapsed)
 
     def test_columns_headers_and_button_columns_are_mirrored(self):
         """Заголовки «Проекты» и «Состояние проекта» с их стрелками на одном уровне, кнопки слева и справа начинаются
@@ -8957,7 +8980,8 @@ class ButtonsViewWindowTests(unittest.TestCase):
                 c2, c3 = app.mine_col2, app.mine_col3
                 self.assertEqual(c2.title_label.winfo_rooty(), c3.title_label.winfo_rooty())
                 self.assertEqual(c2.toggle_btn.winfo_rooty(), c3.toggle_btn.winfo_rooty())
-                self.assertEqual(c2.toggle_btn.winfo_height(), c3.toggle_btn.winfo_height())
+                self.assertEqual((c2.toggle_btn.winfo_height(), c2.toggle_btn.winfo_width()),
+                                 (c3.toggle_btn.winfo_height(), c3.toggle_btn.winfo_width()))
                 left = app.actions_row.toggle_btn.winfo_rooty()
                 right = app.project_panel._side_bars["locks"].toggle_btn.winfo_rooty()
                 self.assertEqual(left, right)
@@ -8977,7 +9001,7 @@ class ButtonsViewWindowTests(unittest.TestCase):
                   SvnClient("svn"), os.path.join(work_dir, "log.txt"), startup_jobs=False)
         self.assertEqual((app.actions_row.compact, app.project_panel.compact, app.download_actions.compact),
                          (False, True, True))
-        self.assertEqual(app.mine_col3.toggle_btn.cget("text"), "⟨⟨")      # стрелка сворачивания слева от названия
+        self.assertEqual(app.mine_col3.toggle_btn.direction, "right")        # стрелка сворачивания слева от названия
         for mode in ("dark", "light"):
             app.set_theme(mode)
             for compact in (True, False):

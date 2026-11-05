@@ -555,7 +555,6 @@ SIDE_TEXT_MIN = 64            # подпись развёрнутой колон
 SIDE_LINES = 2                # строк подписи
 SIDE_HIDE_LABEL = "Скрыть"                  # первая кнопка колонки: скрыть подписи (оставить значки)
 SIDE_SHOW_LABEL = "Показать"                # она же в виде «только значки»: вернуть подписи
-COLLAPSE_ARROW = "⟨⟨"                       # стрелка в заголовке колонки окна: свернуть колонку
 SIDE_VIEW_MENU = "Кнопки"                   # пункт меню «Вид»
 SIDE_VIEW_LABELS = {False: "С подписями", True: "Только значки"}
 _COUNTER = re.compile(r"\((\d+)\)\s*$")    # «Получить новое (12)»: счётчик в конце подписи
@@ -937,12 +936,73 @@ def popup_menu_under(button: tk.Misc, menu: tk.Menu) -> None:
         menu.grab_release()
 
 
+def chevron_points(cx: float, cy: float, height: float, width: float, direction: str) -> list[float]:
+    """Вершины шеврона «›» (direction "right") или «‹» ("left") с центром (cx, cy): ломаная из трёх точек."""
+    half_w, half_h = width / 2, height / 2
+    tip = half_w if direction == "right" else -half_w
+    return [cx - tip, cy - half_h, cx + tip, cy, cx - tip, cy + half_h]
+
+
+class ChevronButton(tk.Canvas):
+    """Стрелка сворачивания колонки в её заголовке: один шеврон «‹» или «›», вытянутый по горизонтали (ширина в 1,8 раза
+    больше, чем у символа шрифта той же высоты), нарисованный линиями. Цвета - из темы (перекрашивается при её
+    смене), под курсором и в фокусе - рамка. Как ttk.Button: invoke(), command, state не нужен."""
+
+    HEIGHT, WIDTH = 20, 18               # размер шеврона (px до масштаба экрана): он же и на свёрнутой полосе
+    BOX = (38, 32)                       # размер кнопки: ширина, высота
+
+    def __init__(self, parent: tk.Misc, px: Callable[[int], int], command: Callable[[], None], direction: str = "right"):
+        super().__init__(parent, width=px(self.BOX[0]), height=px(self.BOX[1]), highlightthickness=1, borderwidth=0,
+                         cursor="hand2", takefocus=1)
+        self.px, self.command, self.direction = px, command, direction
+        self._hover = False
+        self.bind("<Enter>", lambda _e: self._set_hover(True), add="+")
+        self.bind("<Leave>", lambda _e: self._set_hover(False), add="+")
+        self.bind("<ButtonRelease-1>", self._on_release, add="+")
+        self.bind("<Key-Return>", lambda _e: self.invoke(), add="+")
+        self.bind("<Key-space>", lambda _e: self.invoke(), add="+")
+        self.bind("<FocusIn>", lambda _e: self.draw(), add="+")
+        self.bind("<FocusOut>", lambda _e: self.draw(), add="+")
+        self.bind("<Configure>", lambda _e: self.draw(), add="+")
+        self.bind("<<ThemeChanged>>", lambda _e: self.draw(), add="+")
+        self.draw()
+
+    def invoke(self) -> None:
+        self.command()
+
+    def _on_release(self, event: tk.Event) -> None:
+        if 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height():
+            self.invoke()
+
+    def _set_hover(self, hover: bool) -> None:
+        self._hover = hover
+        self.draw()
+
+    def draw(self) -> None:
+        p = theme.PALETTE
+        style = ttk.Style(self)
+        base = str(style.lookup("TFrame", "background") or p.surface)
+        background = p.button if self._hover else base
+        focus = str(self) == str(self.focus_get()) if self.winfo_exists() else False
+        self.configure(background=background, highlightbackground=background,
+                       highlightcolor=p.accent_text if focus else background)
+        self.delete("all")
+        width, height = int(self.winfo_width()), int(self.winfo_height())
+        if width <= 1:
+            width, height = self.px(self.BOX[0]), self.px(self.BOX[1])
+        self.create_line(*chevron_points(width / 2, height / 2, self.px(self.HEIGHT), self.px(self.WIDTH),
+                                         self.direction), fill=p.text, width=max(2, self.px(3)), capstyle="round",
+                         joinstyle="round")
+
+
 class CollapsibleColumn(ttk.Frame):
     """Колонка окна, которую можно свернуть в узкую полосу с вертикальной подписью.
 
     Развёрнутая: заголовок (название и стрелка) и self.body, куда вызывающий кладёт содержимое.
     Свёрнутая: полоса шириной strip_width (Canvas) со стрелкой и названием снизу вверх; щелчок по ней разворачивает.
-    side — куда колонка сворачивается: "left" (стрелка «‹») или "right" (стрелка «›»).
+    side — куда колонка сворачивается: "left" или "right". Стрелка сворачивания в заголовке (ChevronButton) смотрит
+    туда же («‹» у левой колонки, «›» у правой), на свёрнутой полосе - в обратную сторону и того же размера: при
+    сворачивании и разворачивании она разворачивается.
     При каждой смене состояния генерируется событие <<ColumnToggled>> (состояние — свойство collapsed).
     Ширину развёрнутой колонки задаёт раскладка окна (grid с весами), сама колонка размер не навязывает:
     width — только запрошенная ширина, чтобы широкое содержимое (таблица) не растягивало окно.
@@ -952,7 +1012,7 @@ class CollapsibleColumn(ttk.Frame):
 
     def __init__(self, parent: tk.Misc, title: str, side: str = "left", *, width: int = 260,
                  strip_width: int = 28, collapsed: bool = False, collapsed_title: str = "",
-                 arrow_style: str = "Arrow.Ghost.TButton", arrow_left: bool = False):
+                 arrow_left: bool = False, px: Callable[[int], int] = lambda v: v):
         super().__init__(parent)
         if side not in ("left", "right"):
             raise ValueError(f"side: left | right, получено {side!r}")
@@ -969,8 +1029,8 @@ class CollapsibleColumn(ttk.Frame):
         self.header.columnconfigure(1, weight=1)
         self.title_label = ttk.Label(self.header, text=title, style="Section.TLabel")
         self.title_label.grid(row=0, column=1, sticky="w")
-        self.toggle_btn = ttk.Button(self.header, text=COLLAPSE_ARROW, width=0, style=arrow_style,
-                                     command=self.toggle)
+        self.px = px
+        self.toggle_btn = ChevronButton(self.header, px, self.toggle, side)     # смотрит туда, куда уедет колонка
         if arrow_left:            # стрелка слева от названия (у «Состояния проекта»), иначе справа от него
             self.toggle_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
         else:
@@ -1026,12 +1086,6 @@ class CollapsibleColumn(ttk.Frame):
 
     # -- вид ---------------------------------------------------------------------
 
-    def _arrow(self, collapse: bool) -> str:
-        """Стрелка показывает, куда уедет колонка: при сворачивании - к своему краю, при разворачивании - обратно."""
-        towards_edge = "‹" if self.side == "left" else "›"
-        back = "›" if self.side == "left" else "‹"
-        return towards_edge if collapse else back
-
     def _place(self) -> None:
         if self._collapsed:
             self.header.grid_remove()
@@ -1055,12 +1109,12 @@ class CollapsibleColumn(ttk.Frame):
         canvas.delete("all")
         width = int(canvas.winfo_width()) if canvas.winfo_width() > 1 else self._strip_width
         middle = width // 2
-        arrow_font = tkfont.Font(root=self, family=FONT_FAMILY, size=theme.ARROW_FONT_SIZE - 6, weight="bold")
-        line = arrow_font.metrics("linespace")          # отступы по высоте шрифта: верно при любом масштабе
-        canvas.create_text(middle, line // 2 + 4, text=self._arrow(collapse=False), fill=p.accent_text,
-                           font=arrow_font, anchor="center", tags=("arrow",))
+        top = self.px(ChevronButton.BOX[1]) // 2
+        canvas.create_line(*chevron_points(middle, top, self.px(ChevronButton.HEIGHT), self.px(ChevronButton.WIDTH),
+                                           "right" if self.side == "left" else "left"), fill=p.accent_text, width=max(2, self.px(3)), capstyle="round",
+                           joinstyle="round", tags=("arrow",))
         # название снизу вверх, начинается под стрелкой
-        canvas.create_text(middle, line + 8, text=self.collapsed_title, angle=90, fill=p.muted,
+        canvas.create_text(middle, 2 * top + 8, text=self.collapsed_title, angle=90, fill=p.muted,
                            font=(FONT_FAMILY, 10, "bold"), anchor="e", tags=("title",))
 
 
