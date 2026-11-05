@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
@@ -28,6 +29,8 @@ AUDIT_VERSION = 1
 MAX_FILES = 50              # файлов в одной строке журнала
 COMMENT_LIMIT = 200         # знаков комментария в журнале
 LOCK_TIMEOUT = 5.0          # секунд ждать общий замок журнала
+KEEP_MONTHS = 12            # месяцев хранения журнала действий (технический журнал agentlog короче, 3 месяца: он нужен для разбора сбоев, а этот для ответственности)
+_NAME_RE = re.compile(r"^audit_(\d{4})-(\d{2})\.jsonl$")
 
 
 def untrusted(text: object, limit: int = MAX_COMMENT) -> str:
@@ -44,6 +47,28 @@ def audit_dir() -> Path:
 
 def audit_path(now: Optional[datetime] = None) -> Path:
     return audit_dir() / f"audit_{(now or datetime.now()):%Y-%m}.jsonl"
+
+
+def prune_old(now: Optional[datetime] = None, folder: Optional[Path] = None) -> int:
+    """Удаляет файлы журнала старше KEEP_MONTHS месяцев. Вызывается при первой записи месяца. Возвращает число
+    удалённых; ошибки (файл занят) пишет в журнал программы и не пробрасывает."""
+    now = now or datetime.now()
+    folder = folder or audit_dir()
+    limit = now.year * 12 + now.month - KEEP_MONTHS
+    removed = 0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 0
+    for name in names:
+        match = _NAME_RE.match(name)
+        if match and int(match.group(1)) * 12 + int(match.group(2)) < limit:
+            try:
+                os.remove(folder / name)
+                removed += 1
+            except OSError:
+                log.warning("Старый журнал действий помощника не удалён: %s", name)
+    return removed
 
 
 def _files(files: Iterable) -> tuple:
@@ -108,9 +133,12 @@ def record(ctx, operation: str, outcome: str = "ok", **fields) -> bool:
         line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
         path = audit_path(now)
         path.parent.mkdir(parents=True, exist_ok=True)
+        first_of_month = not path.exists()
         with named_lock("audit", LOCK_TIMEOUT):
             with open(path, "ab") as handle:
                 handle.write(line)
+        if first_of_month:
+            prune_old(now, path.parent)
         return True
     except Exception:                                   # журнал важен, но операции он не ломает
         log.exception("Не удалось записать журнал действий помощника")

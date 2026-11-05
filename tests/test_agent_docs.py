@@ -23,8 +23,10 @@ SECRETS = re.compile(r"password|passwd|--username|--user\b|login\s*[=:]\s*\S|use
                      r"пароль\s*[:=]\s*\S", re.IGNORECASE)
 SVNLITE_CALL = re.compile(r"svnlite(?:\.exe)?[ \t]+([A-Za-z][A-Za-z-]*)")
 DOC_FILES = ("AGENT_RULES.md", "SKILL.md", "INSTALL_AGENT.md", "claude_code_permissions.sample.json")
-# команды записи появятся в AG.5; в документах они могут стоять только в правилах `ask` образца разрешений
-WRITE_COMMANDS = {"save", "lock", "unlock", "new-project", "publish"}
+# команды записи: пары `<имя>-plan` (читают) и `<имя>-apply` (пишут, в образце разрешений только в `ask`)
+WRITE_BASES = ("get-new", "save", "lock", "unlock", "branch", "switch", "rollback", "create-project", "publish")
+PLAN_COMMANDS = {f"{base}-plan" for base in WRITE_BASES}
+APPLY_COMMANDS = {f"{base}-apply" for base in WRITE_BASES}
 
 
 def read_doc(name: str) -> str:
@@ -97,6 +99,7 @@ class AgentDocsTests(unittest.TestCase):
     def test_skill_describes_every_read_command(self):
         used = set(SVNLITE_CALL.findall(read_doc("SKILL.md")))
         self.assertEqual({c for c in self.commands if c != "project-info"} - used, set())
+        self.assertGreaterEqual(self.commands, PLAN_COMMANDS | APPLY_COMMANDS | {"commands"})
 
     def test_skill_frontmatter(self):
         text = read_doc("SKILL.md")
@@ -104,7 +107,10 @@ class AgentDocsTests(unittest.TestCase):
         front = text.split("---\n")[1]
         fields = dict(line.split(": ", 1) for line in front.strip().splitlines())
         self.assertEqual(fields["name"], "svn-lite")
-        self.assertEqual(fields["allowed-tools"], "Bash(svnlite:*)")
+        # allowed-tools перечисляет только чтение и планы: любая запись (`…-apply`) требует вопроса человеку
+        allowed = re.findall(r"Bash\(svnlite ([a-z-]+):\*\)", fields["allowed-tools"])
+        self.assertEqual(set(allowed), self.commands - {"mcp", "project-info"} - APPLY_COMMANDS)
+        self.assertNotIn("Bash(svnlite:*)", fields["allowed-tools"])
         self.assertGreater(len(fields["description"]), 40)
 
     def test_exit_codes_in_skill_match_help(self):
@@ -116,10 +122,11 @@ class AgentDocsTests(unittest.TestCase):
 
     def test_mcp_tools_named_in_docs_exist(self):
         tools = mcp_tool_names()
-        self.assertEqual(len(tools), 10)
+        self.assertEqual(len(tools), 11)
+        tools = tools | {f"{b.replace('-', '_')}_{kind}" for b in WRITE_BASES for kind in ("plan", "apply")}
         skill = read_doc("SKILL.md")
         install = read_doc("INSTALL_AGENT.md")
-        for tool in tools:
+        for tool in (*tools, "job_status"):
             self.assertIn(f"`{tool}`", skill)
             self.assertIn(f"`{tool}`", install)
 
@@ -138,7 +145,7 @@ class AgentDocsTests(unittest.TestCase):
     def test_rules_cover_required_topics(self):
         text = read_doc("AGENT_RULES.md")
         for fragment in ("сохранил на сервер, сохранение № 7", "занять файл", "данные коллег",
-                         "Запись выключена и появится позже", "VPN", "откройте SVN-lite и войдите", "не повторять",
+                         "Запись выключена и включается только человеком", "VPN", "откройте SVN-lite и войдите", "не повторять",
                          "settings.json", "agent_policy.json", "Subversion\\auth"):
             self.assertIn(fragment.lower(), text.lower())
         for code in ("3", "4", "7", "8"):
@@ -163,21 +170,28 @@ class AgentDocsTests(unittest.TestCase):
         for command in re.findall(r"^Bash\(svnlite ([a-z-]+)", "\n".join(permissions["allow"]), re.MULTILINE):
             self.assertIn(command, self.commands - {"mcp"})
         self.assertEqual({re.match(r"Bash\(svnlite ([a-z-]+)", rule).group(1) for rule in permissions["allow"]},
-                         self.commands - {"mcp", "project-info"})
-        for rule in permissions["ask"]:
-            self.assertRegex(rule, r"--apply|svnlite (save|lock|unlock|new-project|publish) ")
+                         self.commands - {"mcp", "project-info"} - APPLY_COMMANDS)
+        self.assertEqual({re.match(r"Bash\(svnlite ([a-z-]+)", rule).group(1) for rule in permissions["ask"]},
+                         APPLY_COMMANDS)
         for rule in ("Bash(svn *)", "Bash(svn.exe *)", "Bash(svnadmin *)"):
             self.assertIn(rule, permissions["deny"])
         for tool in ("Read", "Edit"):
             self.assertTrue(any(r.startswith(f"{tool}(") and "SvnHelper" in r for r in permissions["deny"]), tool)
             self.assertTrue(any(r.startswith(f"{tool}(") and "Subversion" in r and "auth" in r
                                 for r in permissions["deny"]), tool)
-        self.assertFalse(WRITE_COMMANDS & {m for r in permissions["allow"] for m in re.findall(r"svnlite ([a-z-]+)", r)})
+        self.assertFalse(APPLY_COMMANDS & {m for r in permissions["allow"] for m in re.findall(r"svnlite ([a-z-]+)", r)})
 
-    def test_write_marked_as_not_available_yet(self):
+    def test_write_is_documented_as_off_by_default_with_two_steps(self):
         for name in ("AGENT_RULES.md", "SKILL.md", "INSTALL_AGENT.md"):
-            self.assertIn("появится позже", read_doc(name), name)
-        self.assertEqual(self.commands & WRITE_COMMANDS, set(), "команды записи появились: обновите документы")
+            text = read_doc(name).lower()
+            self.assertIn("выключена", text, name)
+            self.assertIn("план", text, name)
+            self.assertIn("согласи", text, name)
+        install = read_doc("INSTALL_AGENT.md")
+        for fragment in ("write_confirm", "write_full", "read_only", "rollback", "branches", "SVNLITE_DATA_DIR",
+                         "agent_policy", "12 месяцев"):
+            self.assertIn(fragment, install)
+        self.assertNotIn("Bash(svnlite:*)", read_doc("SKILL.md").split("---")[1])
 
     def test_no_files_for_working_copies(self):
         install = read_doc("INSTALL_AGENT.md")

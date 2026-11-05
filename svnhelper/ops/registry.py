@@ -1,7 +1,8 @@
 """Реестр операций: единственный источник для консольной программы, описаний инструментов MCP и текстового помощника.
 
-Каждая операция описана в `texts.OPERATIONS` (название и описание словами сотрудника, живые фразы, параметры) и
-регистрируется декоратором `@operation("имя")`. Вызов `op(ctx, **params)` всегда возвращает Result и не бросает
+Каждая операция чтения описана в `texts.OPERATIONS` (название и описание словами сотрудника, живые фразы, параметры) и
+регистрируется декоратором `@operation("имя")`. Операции записи (`<имя>_plan` и `<имя>_apply`) описаны в
+`texts_write.WRITE_OPERATIONS` и регистрируются каркасом `writing.register`. Вызов `op(ctx, **params)` всегда возвращает Result и не бросает
 исключений: ошибки превращаются в ErrorInfo (`errors.from_exception`). Операции чтения: read_only=True.
 """
 from __future__ import annotations
@@ -165,8 +166,6 @@ def check_operation(op: Operation) -> list:
             problems.append(f"param {param.name}: unknown type")
         if not param.description_ru.strip():
             problems.append(f"param {param.name}: no description_ru")
-    if not op.read_only:
-        problems.append("write operations are not part of this delivery")
     return problems
 
 
@@ -178,7 +177,7 @@ def all_operations() -> list:
     return list(REGISTRY.values())
 
 
-def run(ctx, name: str, **params) -> Result:
+def run(ctx, name: str, /, **params) -> Result:
     """Вызов операции по имени. Неизвестное имя - ответ с ошибкой, а не исключение."""
     op = REGISTRY.get(name)
     if op is None:

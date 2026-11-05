@@ -109,11 +109,14 @@ def change(path, kind="modified", **kw):
 
 class RegistryTests(unittest.TestCase):
     def test_every_operation_is_fully_described(self):
-        self.assertEqual(sorted(REGISTRY), sorted(["doctor", "projects", "status", "changes", "incoming", "history",
-                                                   "locks", "templates", "project_info", "server_projects"]))
+        reads = ["doctor", "projects", "status", "changes", "incoming", "history", "locks", "templates", "project_info",
+                 "server_projects", "commands"]
+        writes = ["get_new", "save", "lock", "unlock", "branch", "switch", "rollback", "create_project", "publish"]
+        self.assertEqual(sorted(REGISTRY), sorted(reads + [f"{w}_plan" for w in writes]
+                                                  + [f"{w}_apply" for w in writes]))
         for op in all_operations():
             self.assertEqual(check_operation(op), [], op.name)
-            self.assertTrue(op.read_only, op.name)
+            self.assertEqual(op.read_only, not op.name.endswith("_apply"), op.name)
             self.assertTrue(op.name.isascii(), op.name)
             self.assertRegex(op.title_ru, "[А-Яа-я]")
             self.assertRegex(op.description_ru, "[А-Яа-я]")
@@ -134,8 +137,7 @@ class RegistryTests(unittest.TestCase):
         for broken in (Operation("status", "", good.description_ru, good.examples_ru),
                        Operation("status", "Название", "", good.examples_ru),
                        Operation("status", "Название", good.description_ru, ["одна фраза"]),
-                       Operation("статус", "Название", good.description_ru, good.examples_ru),
-                       Operation("status", "Название", good.description_ru, good.examples_ru, read_only=False)):
+                       Operation("статус", "Название", good.description_ru, good.examples_ru)):
             self.assertNotEqual(check_operation(broken), [])
 
     def test_texts_have_no_svn_terms(self):

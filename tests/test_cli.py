@@ -48,7 +48,8 @@ class CliInProcessTests(OpsBase):
     COMMANDS = {"doctor": ["doctor"], "projects": ["projects"], "status": ["status", NAME],
                 "changes": ["changes", NAME], "incoming": ["incoming", NAME],
                 "history": ["history", NAME, "--limit", "5"], "locks": ["locks", NAME], "templates": ["templates"],
-                "project_info": ["info", NAME], "server_projects": ["server-projects", "konstruktor"]}
+                "project_info": ["info", NAME], "server_projects": ["server-projects", "konstruktor"],
+                "commands": ["commands"]}
 
     def setUp(self):
         super().setUp()
@@ -64,7 +65,8 @@ class CliInProcessTests(OpsBase):
         return run_cli(list(argv), self.ctx)
 
     def test_commands_come_from_the_registry(self):
-        self.assertEqual(sorted(self.COMMANDS), sorted(op.name for op in all_operations()))
+        reading = [op.name for op in all_operations() if op.read_only and not op.name.endswith("_plan")]
+        self.assertEqual(sorted(self.COMMANDS), sorted(reading))
         for op in all_operations():
             code, out, err = run_cli([cli.command_name(op.name), "--help"])
             self.assertEqual((op.name, code, err), (op.name, 0, ""))
@@ -88,6 +90,14 @@ class CliInProcessTests(OpsBase):
             self.assertEqual((name, code), (name, 0 if data["ok"] else data["error"]["exit_code"]))
             self.assertTrue(data["ok"], (name, data["text"]))
             self.assertTrue(result.text)
+
+    def test_write_commands_are_refused_with_code_6_while_policy_is_read_only(self):
+        for argv in (["save-plan", NAME, "--message-file", "-"], ["save-apply", NAME, "--message-file", "-"], ["get-new-plan", NAME],
+                     ["lock-apply", NAME, "--files", "a.txt"], ["rollback-plan", NAME, "--revision", "3"]):
+            with mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO("Комментарий к сохранению".encode()))):
+                code, out, _err = self.cli(*argv)
+            data = json.loads(out)
+            self.assertEqual((argv[0], code, data["ok"]), (argv[0], 6, False))
 
     def test_status_all_and_offline_do_not_touch_the_server(self):
         code, out, _err = self.cli("status", "--all", "--offline")

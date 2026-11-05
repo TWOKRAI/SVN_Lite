@@ -1294,6 +1294,33 @@ class SvnClient:
                      _IMPORT_RE, progress, cancel, "import", cwd=src)
         return progress.count
 
+    # -- отмена сохранения (AG.5, откат помощника) -----------------------------------
+
+    def log_range(self, url: str, first: int, last: Optional[int] = None,
+                  cancel: Optional[CancelToken] = None) -> list[LogEntry]:
+        """Сохранения с номерами first..last (last=None: до последнего) с изменёнными путями (`svn log -v -r`) по
+        адресу url (закодированному). Пустой диапазон (first больше последнего номера) даёт []. Нет такого номера:
+        SvnError(NOT_FOUND) для одного номера."""
+        span = f"{first}:{last if last is not None else 'HEAD'}"
+        try:
+            return parse_log_xml(self.run(["log", "--xml", "-v", "-r", span, url + "@"], cancel, timeout=300))
+        except SvnError as exc:
+            if "E160006" in exc.codes and last is None and first > 1:
+                return []
+            raise
+
+    def reverse_merge(self, path: str, url: str, revision: int, cancel: Optional[CancelToken] = None) -> None:
+        """Обращает правки сохранения № revision в рабочей копии (`svn merge -c -N`, источник - её же адрес url). Конфликты
+        не разрешает. Папка копии передаётся как рабочая, путь «.»: '@' в имени папки не мешает."""
+        self.run(["merge", "-c", f"-{revision}", "--accept", "postpone", url + "@", "."], cancel, timeout=600, cwd=path)
+
+    def revert_paths(self, root: str, paths: Sequence[str]) -> None:
+        """Возвращает пути рабочей копии к сохранённому состоянию (`svn revert -R`). Используется только для отмены
+        собственной незавершённой правки программы (обратное слияние, которое не удалось сохранить); человеку и помощнику
+        такой команды не отдаётся."""
+        with tempfile.TemporaryDirectory(prefix="svnhelper_") as tmp:
+            self.run(["revert", "-R", *_targets_args(tmp, "revert.txt", list(paths))], timeout=300, cwd=root)
+
     def switch(self, path: str, url: str, progress: Optional[CheckoutProgress] = None,
                cancel: Optional[CancelToken] = None) -> UpdateResult:
         """Переключает рабочую копию на другую линию. Конфликты не разрешает.

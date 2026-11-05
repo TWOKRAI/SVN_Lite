@@ -12,7 +12,8 @@ from urllib.parse import unquote
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Optional
 
-from .. import __version__, audit, localrepo, messages, mirrors, next_step, publish, server, theme, tortoise
+from .. import __version__, audit, folderlock, localrepo, messages, mirrors, next_step, publish, server, theme, tortoise
+from .. import config as config_module
 from ..config import add_project_dir, is_newer_version, same_dir
 from ..dialogs import ConflictDialog, FONT_FAMILY
 from ..svn_core import CommitResult, ErrorKind, SvnClient, SvnError, WcStatus
@@ -714,6 +715,10 @@ class ProjectsTabMixin:
         self._scan_running = True
 
         def work() -> list[MineItem]:
+            try:
+                self.settings_store.refresh()       # консольная программа могла создать проект с историей на компьютере
+            except Exception:                       # noqa: BLE001  (работаем по прежним данным, причина в журнале)
+                log.warning("Не удалось подтянуть настройки, изменённые другой программой", exc_info=True)
             names = sorted((n for n in os.listdir(base)
                             if not n.startswith(".") and os.path.isdir(os.path.join(base, n))), key=str.casefold)
             futures = [self._probe_pool.submit(self._probe_item, client, os.path.join(base, n), n) for n in names]
@@ -1934,6 +1939,25 @@ class ProjectsTabMixin:
         self.show_error(messages.CONFLICT_FAILED_TITLE, text, action=f"Решение конфликта проекта {item.name}",
                         kind=kind, raw=raw, extra={"Папка": item.path})
 
+    @staticmethod
+    def _held(path: str, func: Callable) -> Callable:
+        """Работа в фоне под межпроцессным замком папки (AG.0d): консольная программа и сервер помощника в это время
+        эту папку не трогают, а окно не работает с папкой одновременно с ними. Занята другой программой: исключение
+        FolderBusy с русским текстом (обычно окно отказывает раньше, по `_path_busy`)."""
+        def run():
+            with folderlock.hold(path, "window"):
+                return func()
+        return run
+
+    def _agent_changed_projects(self) -> bool:
+        """Появилась ли новая метка `agent/last_change.json` (её пишет помощник после записи). Файла нет: нет."""
+        try:
+            stamp = (config_module.data_dir() / "agent" / "last_change.json").stat().st_mtime_ns
+        except OSError:
+            return False
+        seen, self._agent_stamp = getattr(self, "_agent_stamp", None), stamp
+        return seen is not None and stamp != seen
+
     def _on_cleanup(self) -> None:
         """Починить папку: через TortoiseSVN, а если его нет, самим svn cleanup."""
         item = self._selected_item()
@@ -1961,7 +1985,7 @@ class ProjectsTabMixin:
                 return
             self._reprobe(item)
 
-        self.run_bg(lambda: client.cleanup(item.path), done)
+        self.run_bg(self._held(item.path, lambda: client.cleanup(item.path)), done)
 
     def _reprobe(self, item: MineItem) -> None:
         """Заново определяет, что за папка (после починки), и проверяет её на сервере."""
@@ -2017,6 +2041,9 @@ class ProjectsTabMixin:
         self._refresh_lamp()
         if (not self.client or self.upd or self.job or self._auto_auth_failed or self._mine_dirty
                 or self._scan_running):
+            return
+        if self._agent_changed_projects() and not (self._committing or self._locking):
+            self._scan_projects()                   # помощник изменил проект: строки читаются заново
             return
         if self.login.dialog_open or self.login.waiters or self.error_open:
             return
@@ -2285,7 +2312,7 @@ class ProjectsTabMixin:
             else:
                 self._commit_failed(item, [], comment, frozenset({"update", "lock"}), error, self._error_kind(error))
 
-        self.run_bg(lambda: localrepo.save(client, item.path, rules, comment), done)
+        self.run_bg(self._held(item.path, lambda: localrepo.save(client, item.path, rules, comment)), done)
 
     def _commit_load_failed(self, item: MineItem, kind: ErrorKind) -> None:
         if kind is ErrorKind.AUTH:
@@ -2352,6 +2379,7 @@ class ProjectsTabMixin:
             if item.local:      # корень папки догоняет сохранение: список прежних сохранений покажет и его
                 client.update(item.path)
             return result, []
+        work = self._held(item.path, work)       # папка занята и для консольной программы, и для сервера помощника
 
         def done(outcome, error, stamp: JobStamp) -> None:
             self._committing = False
@@ -2550,6 +2578,7 @@ class ProjectsTabMixin:
                             log.exception("Не удалось узнать, кто занял файл %s", f)
                     results.append(LockResult(f, exc, holder))
             return results
+        work = self._held(item.path, work)
 
         def done(results, error, stamp: JobStamp) -> None:
             self._locking = False
@@ -2646,6 +2675,10 @@ class ProjectsTabMixin:
         rules = self.config.filter
 
         def work():
+            with folderlock.hold(job.item.path, "window"):      # CLI и MCP в это время эту папку не трогают
+                return work_locked()
+
+        def work_locked():
             path = job.item.path
 
             def operation():

@@ -36,8 +36,13 @@ from svnhelper.svn_core import SvnClient                          # noqa: E402
 FAKE = [sys.executable, str(ROOT / "tests" / "fake_svn.py")]
 NAME = "261028_отбраковщик"
 CANARY = "КАНАРЕЙКА-пароль-9f3a"
-EXPECTED_TOOLS = ["doctor", "list_projects", "list_server_projects", "list_templates", "project_changes",
-                  "project_history", "project_incoming", "project_info", "project_locks", "project_status"]
+READ_TOOLS = ["doctor", "list_commands", "list_projects", "list_server_projects", "list_templates", "project_changes",
+              "project_history", "project_incoming", "project_info", "project_locks", "project_status"]
+WRITE_BASES = ["branch", "create_project", "get_new", "lock", "publish", "rollback", "save", "switch", "unlock"]
+PLAN_TOOLS = [f"{base}_plan" for base in WRITE_BASES]
+APPLY_TOOLS = [f"{base}_apply" for base in WRITE_BASES]
+EXPECTED_TOOLS = sorted(READ_TOOLS + PLAN_TOOLS + APPLY_TOOLS + ["job_status"])
+DESTRUCTIVE = {"create_project_apply", "publish_apply", "rollback_apply", "switch_apply"}
 
 
 def parse(result) -> dict:
@@ -100,7 +105,8 @@ class HelperTests(unittest.TestCase):
                 mcp_server.parse_resource_uri(bad)
 
     def test_every_read_operation_has_a_tool_name(self):
-        self.assertEqual(sorted(mcp_server.tool_name(name) for name in REGISTRY), EXPECTED_TOOLS)
+        self.assertEqual(sorted(mcp_server.tool_name(name) for name in REGISTRY), 
+                         sorted(READ_TOOLS + PLAN_TOOLS + APPLY_TOOLS))
 
     def test_description_comes_from_registry_and_warns_about_untrusted_text(self):
         for op in REGISTRY.values():
@@ -121,7 +127,11 @@ class SessionTests(McpBase):
             tools = (await client.list_tools()).tools
         self.assertEqual(sorted(t.name for t in tools), EXPECTED_TOOLS)
         for tool in tools:
-            self.assertIs(tool.annotations.readOnlyHint, True, tool.name)
+            apply = tool.name.endswith("_apply")
+            self.assertIs(tool.annotations.readOnlyHint, not apply, tool.name)
+            if apply:                       # запись: клиент спрашивает человека; повтор токена ничего не пишет
+                self.assertIs(tool.annotations.idempotentHint, True, tool.name)
+                self.assertIs(tool.annotations.destructiveHint, tool.name in DESTRUCTIVE, tool.name)
             self.assertIn("недоверенны", tool.description)
             self.assertEqual(tool.inputSchema["type"], "object")
         by_name = {t.name: t for t in tools}
@@ -382,7 +392,7 @@ class StdioTests(unittest.TestCase):
         self.assertEqual(messages[0]["result"]["serverInfo"]["name"], "svnlite")
         tools = messages[1]["result"]["tools"]
         self.assertEqual(sorted(t["name"] for t in tools), EXPECTED_TOOLS)
-        self.assertTrue(all(t["annotations"]["readOnlyHint"] is True for t in tools))
+        self.assertTrue(all(t["annotations"]["readOnlyHint"] is not t["name"].endswith("_apply") for t in tools))
         logs = list((data_dir / "logs").glob("svnlite_agent_*.log"))             # журнал отдельно от протокола
         self.assertEqual(len(logs), 1)
         self.assertIn("[mcp]", logs[0].read_text(encoding="utf-8"))

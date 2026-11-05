@@ -7,7 +7,7 @@ from typing import Optional
 from .. import __version__, agentlog, selfupdate, server
 from ..config import CONFIG_NAME, app_dir, data_dir, shared_cache_path
 from ..svn_core import SvnError
-from . import texts
+from . import texts, texts_write
 from .context import OpsContext, is_url
 from .errors import from_exception, no_svn
 from .registry import operation
@@ -102,7 +102,7 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
         differ = template.format(window=data["program"]["window_version"], cli=data["program"]["cli_version"])
         warnings.append(differ)
         text = f"{text} {differ}"
-    text = f"{text} {texts.policy_mode_text(data['policy'].get('mode', ''))}".rstrip()
+    text = f"{text} {texts_write.mode_text(data['policy'].get('file_mode', ''), data['policy'].get('mode', ''))}".rstrip()
     svn = {"server": ctx.config.server, "roots": list(ctx.config.repos), "templates_root": ctx.config.templates_root}
     if error is not None:
         return Result("doctor", False, data, text, warnings, [], error, svn)

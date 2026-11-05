@@ -17,11 +17,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from typing import Optional
 
 log = logging.getLogger("svnhelper.selfupdate")
 
@@ -187,6 +189,21 @@ def pending_cli_update() -> bool:
     return is_supported() and os.path.isfile(_pending_cli_path())
 
 
+VERSION_TIMEOUT = 15.0
+_VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)")
+
+
+def _exe_version(path: str) -> Optional[tuple]:
+    """Версия программы по `<exe> --version` («svnlite 1.2.9» -> (1, 2, 9)). None: не запустилась или версии нет."""
+    try:
+        done = subprocess.run([path, "--version"], capture_output=True, timeout=VERSION_TIMEOUT, stdin=subprocess.DEVNULL,
+                              creationflags=_CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _VERSION_RE.search((done.stdout or b"").decode("utf-8", "replace"))
+    return tuple(int(part) for part in match.group(1).split(".")) if done.returncode == 0 and match else None
+
+
 def apply_pending() -> list:
     """При запуске окна подменяет «svnlite.exe.new», который скрипт обновления не смог положить (файл был занят).
     Занят и сейчас: остаётся до следующего запуска. Повреждённый файл удаляется. Возвращает подменённые файлы.
@@ -201,6 +218,18 @@ def apply_pending() -> list:
         _check_exe(pending)
     except (OSError, UpdateError) as exc:
         log.warning("Отложенный %s повреждён и удалён: %s", pending, exc)
+        _remove(pending)
+        return []
+    new_version = _exe_version(pending)
+    if new_version is None:
+        log.warning("Версия отложенного %s не определена, файл удалён", pending)
+        _remove(pending)
+        return []
+    current = _exe_version(cli) if os.path.isfile(cli) else None
+    if current is not None and new_version < current:
+        # «.new» от прошлого выпуска (окно не обновилось или обновилось позже): свежий помощник не заменяется старым
+        log.warning("Отложенный %s (%s) старее установленного (%s), файл удалён", pending,
+                    ".".join(map(str, new_version)), ".".join(map(str, current)))
         _remove(pending)
         return []
     try:

@@ -44,10 +44,18 @@ log = logging.getLogger("svnhelper.agent_policy")
 
 POLICY_NAME = "agent_policy.json"
 FORMAT = 1
-FILE_MODES = ("read_only", "write")
+# Режимы из файла: read_only - только смотреть; write_confirm - писать после подтверждения (сначала план, потом применение
+# с токеном; клиент спрашивает человека на применении); write_full - писать без токена (лимиты, журнал и разрешения
+# остаются). Старое значение «write» читается как write_confirm.
+MODE_READ_ONLY, MODE_CONFIRM, MODE_FULL = "read_only", "write_confirm", "write_full"
+FILE_MODES = (MODE_READ_ONLY, MODE_CONFIRM, MODE_FULL)
+LEGACY_WRITE = "write"
+WRITE_FILE_MODES = (MODE_CONFIRM, MODE_FULL, LEGACY_WRITE)
 # разрешения: save_local и save_server - сохранить у себя и на сервер, lock - занять и освободить файл,
-# get_new - получить новое, create_local и create_server - создать проект на компьютере и на сервере, publish - отправить
-ACTIONS = ("save_local", "save_server", "lock", "get_new", "create_local", "create_server", "publish")
+# get_new - получить новое, create_local и create_server - создать проект на компьютере и на сервере, publish - отправить,
+# branches - создать ветку или версию и переключиться на неё, rollback - отменить сохранение новым сохранением
+ACTIONS = ("save_local", "save_server", "lock", "get_new", "create_local", "create_server", "publish", "branches",
+           "rollback")
 WRITE_WINDOW = 3600.0           # секунд, за которые считаются записи для лимита в час
 COUNTERS_LOCK = "policy"
 COUNTERS_TIMEOUT = 10.0
@@ -99,7 +107,7 @@ def clean_policy(raw: dict) -> tuple:
     clean = {key: (list(value) if isinstance(value, list) else value) for key, value in DEFAULTS.items()}
     problems: list = []
     mode = raw.get("mode", DEFAULTS["mode"])
-    if mode in FILE_MODES:
+    if mode in FILE_MODES or mode == LEGACY_WRITE:      # «write» старых файлов и окна: то же, что write_confirm
         clean["mode"] = mode
     else:
         problems.append(f"Режим помощника «{mode}» неизвестен: оставлен только просмотр (read_only).")
@@ -278,7 +286,14 @@ class Policy:
 
     @property
     def mode(self) -> str:
-        return stricter_mode(self.file_mode, self.ceiling)
+        """Итоговый режим off | read_only | write: меньший из потолка и файла (write_confirm и write_full для потолка
+        одно и то же: он решает, можно ли писать вообще)."""
+        return stricter_mode("write" if self.file_mode in WRITE_FILE_MODES else "read_only", self.ceiling)
+
+    @property
+    def confirm(self) -> bool:
+        """Нужно ли подтверждение: применение только по токену плана. Только write_full его не требует."""
+        return self.file_mode != MODE_FULL
 
     @classmethod
     def load(cls, ceiling: str = DEFAULT_AGENT_MAX_MODE, path: Optional[Path] = None) -> "Policy":
@@ -320,7 +335,8 @@ class Policy:
         return Policy.load(self.ceiling if ceiling is None else ceiling)
 
     def describe(self) -> dict:
-        return {"mode": self.mode, "file_mode": self.file_mode, "ceiling": self.ceiling, "signature": self.signature,
+        return {"mode": self.mode, "file_mode": self.file_mode, "confirm": self.confirm, "ceiling": self.ceiling,
+                "signature": self.signature,
                 "allow": list(self.allow), "allowed_dirs": list(self.allowed_dirs),
                 "limits": {key: getattr(self, key) for key in (*_INT_FIELDS, "mark_comments")},
                 "problems": list(self.problems)}
@@ -403,7 +419,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("show", help="показать действующую политику")
     setter = sub.add_parser("set", help="изменить политику (остальное остаётся как есть) и подписать")
-    setter.add_argument("--mode", choices=FILE_MODES, help="режим: только просмотр или запись")
+    setter.add_argument("--mode", choices=(*FILE_MODES, LEGACY_WRITE),
+                        help="режим: read_only - только просмотр, write_confirm - запись с подтверждением, "
+                             "write_full - запись без токена плана")
     setter.add_argument("--allow", help="разрешения через запятую (" + ", ".join(ACTIONS) + "); пусто - никаких")
     setter.add_argument("--allowed-dir", action="append", dest="allowed_dirs",
                         help="разрешённая папка (можно повторять); повтор «-» очищает список")

@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
-from .. import audit, checks, fsutil, messages, mirrors, server, theme, winutil
+from .. import audit, checks, folderlock, fsutil, messages, mirrors, server, theme, winutil
 from ..config import add_recent, load_tree_cache, save_tree_cache
 from ..progress import EtaTracker, format_eta
 from ..svn_core import CheckoutProgress, ErrorKind, Estimate, SvnError
@@ -975,8 +975,9 @@ class DownloadTabMixin:
             except SvnError as exc:
                 if exc.kind is ErrorKind.CANCELLED:
                     try:
-                        client.cleanup(job.dest)  # прерванная операция оставляет копию заблокированной
-                    except SvnError:
+                        with folderlock.hold(job.dest, "window"):
+                            client.cleanup(job.dest)  # прерванная операция оставляет копию заблокированной
+                    except (SvnError, folderlock.FolderLockError):
                         log.exception("Cleanup после отмены не удался")
                 raise
 

@@ -14,15 +14,29 @@
       "Bash(svnlite templates)",
       "Bash(svnlite templates *)",
       "Bash(svnlite server-projects)",
-      "Bash(svnlite server-projects *)"
+      "Bash(svnlite server-projects *)",
+      "Bash(svnlite commands)",
+      "Bash(svnlite commands *)",
+      "Bash(svnlite get-new-plan *)",
+      "Bash(svnlite save-plan *)",
+      "Bash(svnlite lock-plan *)",
+      "Bash(svnlite unlock-plan *)",
+      "Bash(svnlite branch-plan *)",
+      "Bash(svnlite switch-plan *)",
+      "Bash(svnlite rollback-plan *)",
+      "Bash(svnlite create-project-plan *)",
+      "Bash(svnlite publish-plan *)"
     ],
     "ask": [
-      "Bash(svnlite * --apply *)",
-      "Bash(svnlite save *)",
-      "Bash(svnlite lock *)",
-      "Bash(svnlite unlock *)",
-      "Bash(svnlite new-project *)",
-      "Bash(svnlite publish *)"
+      "Bash(svnlite get-new-apply *)",
+      "Bash(svnlite save-apply *)",
+      "Bash(svnlite lock-apply *)",
+      "Bash(svnlite unlock-apply *)",
+      "Bash(svnlite branch-apply *)",
+      "Bash(svnlite switch-apply *)",
+      "Bash(svnlite rollback-apply *)",
+      "Bash(svnlite create-project-apply *)",
+      "Bash(svnlite publish-apply *)"
     ],
     "deny": [
       "Bash(svn *)",

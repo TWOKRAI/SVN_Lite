@@ -193,6 +193,8 @@ def test_running_foreign_cli_does_not_block_window_update(tmp_path, monkeypatch)
     """svnlite.exe держит запущенный помощник (имитация: открытый файл). Окно подменяется без ожидания, занятый
     svnlite.exe остаётся прежним, новый ждёт «.new», а при следующем запуске окна подменяется."""
     server, app = make_install(tmp_path, monkeypatch)
+    versions = {"new": (1, 3, 0), "old": (1, 2, 9)}
+    monkeypatch.setattr(selfupdate, "_exe_version", lambda p: versions["new"] if p.endswith(".new") else versions["old"])
     prepared = selfupdate.prepare(str(server))
     script = tmp_path / "update.bat"
     script.write_text(selfupdate.swap_script(prepared.new_path, prepared.target, tuple(prepared.extras)),
@@ -220,6 +222,37 @@ def test_apply_pending_noop_when_nothing_pending_or_not_frozen(tmp_path, monkeyp
     monkeypatch.setattr(selfupdate, "is_supported", lambda: False)
     assert selfupdate.apply_pending() == []                       # запуск из исходников: ничего не трогаем
     assert (app / (CLI + ".new")).exists()
+
+
+def test_apply_pending_does_not_downgrade(tmp_path, monkeypatch):
+    """«.new» от прошлого выпуска не подменяет более свежий svnlite.exe."""
+    server, app = make_install(tmp_path, monkeypatch)
+    (app / (CLI + ".new")).write_bytes(MZ_BODY)
+    monkeypatch.setattr(selfupdate, "_exe_version", lambda p: (1, 2, 0) if p.endswith(".new") else (1, 2, 9))
+    assert selfupdate.apply_pending() == []
+    assert not (app / (CLI + ".new")).exists() and (app / CLI).read_bytes() == b"old cli"
+
+
+def test_apply_pending_drops_file_without_version(tmp_path, monkeypatch):
+    server, app = make_install(tmp_path, monkeypatch)
+    (app / (CLI + ".new")).write_bytes(MZ_BODY)
+    monkeypatch.setattr(selfupdate, "_exe_version", lambda p: None)
+    assert selfupdate.apply_pending() == []
+    assert not (app / (CLI + ".new")).exists() and (app / CLI).read_bytes() == b"old cli"
+
+
+def test_apply_pending_takes_newer_or_equal_version(tmp_path, monkeypatch):
+    server, app = make_install(tmp_path, monkeypatch)
+    (app / (CLI + ".new")).write_bytes(MZ_BODY)
+    monkeypatch.setattr(selfupdate, "_exe_version", lambda p: (1, 2, 9))
+    assert selfupdate.apply_pending() == [str(app / CLI)]
+
+
+def test_exe_version_parses_output(tmp_path):
+    script = tmp_path / "v.bat"
+    script.write_bytes(b"@echo svnlite 1.4.2" + bytes([13, 10]))
+    assert selfupdate._exe_version(str(script)) == (1, 4, 2)
+    assert selfupdate._exe_version(str(tmp_path / "nothing.exe")) is None
 
 
 def test_apply_pending_drops_corrupt_file(tmp_path, monkeypatch):

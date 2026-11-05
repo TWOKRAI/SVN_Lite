@@ -18,9 +18,9 @@ import logging
 import sys
 from typing import Optional
 
-from . import __version__, agentlog
+from . import __version__, agent_env, agentlog
 from .ops import all_operations, get, make_context, run
-from .ops.errors import OpsError, from_exception
+from .ops.errors import OpsError, from_exception, invalid_args
 from .ops.result import EXIT_ARGS, EXIT_OTHER, Result
 
 log = logging.getLogger("svnhelper.cli")
@@ -50,6 +50,8 @@ HELP_VERSION = "Показать версию и выйти."
 HELP_JSON = "Ответ в виде JSON (по умолчанию, когда вывод идёт не в консоль)."
 HELP_TEXT = "Ответ обычным текстом для человека."
 HELP_DETAILS = "Добавить технические подробности для администратора (адрес, коды ошибок)."
+HELP_COMMANDS_FILE = ("Записать справочник команд в файл Markdown (UTF-8) с вашими проектами: его можно отдать любому "
+                      "ИИ-чату, чтобы он подсказал команды для терминала.")
 HELP_OFFLINE = "Не обращаться к серверу: только то, что есть на этом компьютере."
 HELP_OFFLINE_DOCTOR = "Не проверять связь с сервером."
 
@@ -118,6 +120,31 @@ def _common_options() -> argparse.ArgumentParser:
     return common
 
 
+def _add_write_param(parser: argparse.ArgumentParser, param, first: bool) -> None:
+    """Параметр операции записи -> аргумент команды. Проект или папка (первый обязательный) позиционный; комментарий
+    берётся только из файла или со стандартного ввода (--message-file), чтобы кавычки и кодировка консоли его не
+    искажали; остальное параметрами с именем."""
+    flag = "--" + param.name.replace("_", "-")
+    if param.name == "message":
+        parser.add_argument("--message-file", dest="message_file", metavar="ФАЙЛ", default=None,
+                            help=param.description_ru + " Текст берётся из файла в UTF-8; «-» читает стандартный ввод.")
+    elif first and param.required and param.type == "string":
+        parser.add_argument(param.name, help=param.description_ru)
+    elif param.name == "fields":
+        parser.add_argument("--field", dest="fields", action="append", metavar="имя=значение", default=None,
+                            help=param.description_ru)
+    elif param.type == "list":
+        parser.add_argument(flag, dest=param.name, nargs="+", metavar="файл", default=None, help=param.description_ru)
+    elif param.type == "integer":
+        parser.add_argument(flag, dest=param.name, type=int, default=None, help=param.description_ru,
+                            required=param.required)
+    elif param.type == "boolean":
+        parser.add_argument(flag, dest=param.name, action="store_const", const=True, default=None,
+                            help=param.description_ru)
+    else:
+        parser.add_argument(flag, dest=param.name, default=None, help=param.description_ru, required=param.required)
+
+
 def _add_param(parser: argparse.ArgumentParser, param) -> None:
     """Параметр операции -> аргумент команды. Строки и списки позиционные, числа и логические флагами."""
     if param.name in FLAG_OVERRIDES:
@@ -155,11 +182,39 @@ def build_parser() -> argparse.ArgumentParser:
         cmd = sub.add_parser(command_name(op.name), aliases=COMMAND_ALIASES.get(op.name, []), help=op.title_ru,
                              description=op.description_ru, parents=[common], add_help=False, allow_abbrev=False)
         cmd.add_argument("-h", "--help", action="help", help=HELP_HELP)
-        for param in op.params:
-            _add_param(cmd, param)
+        if op.name == "commands":
+            cmd.add_argument("--file", metavar="ФАЙЛ", default=None, help=HELP_COMMANDS_FILE)
+        for index, param in enumerate(op.params):
+            if op.read_only and not op.name.endswith("_plan"):
+                _add_param(cmd, param)
+            else:
+                _add_write_param(cmd, param, index == 0)
         cmd.set_defaults(operation=op.name)
     sub.add_parser(MCP_COMMAND, help=HELP_MCP, add_help=False)      # только для справки: разбирается до argparse
     return parser
+
+
+def _save_catalog(result: Result, target: str) -> Result:
+    """Справочник команд в файл (UTF-8). Не записался: ответ с ошибкой, файла нет."""
+    try:
+        with open(target, "w", encoding="utf-8", newline=chr(10)) as handle:
+            handle.write(result.data.get("markdown", ""))
+    except OSError as exc:
+        return Result.failure("commands", from_exception(exc))
+    result.data["file"] = target
+    result.text = f"Справочник команд записан в файл: {target}. " + result.text
+    return result
+
+
+def read_message(source: str) -> str:
+    """Комментарий из файла (UTF-8) или со стандартного ввода («-»). Не прочитался: ответ с кодом 2."""
+    try:
+        if source == "-":
+            return sys.stdin.buffer.read().decode("utf-8-sig")
+        with open(source, "rb") as handle:
+            return handle.read().decode("utf-8-sig")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise invalid_args(f"Файл с комментарием не прочитан: {exc.__class__.__name__}. Нужен текст в кодировке UTF-8.") from exc
 
 
 def _params(args: argparse.Namespace, op_name: str) -> dict:
@@ -169,6 +224,9 @@ def _params(args: argparse.Namespace, op_name: str) -> dict:
         value = getattr(args, param.name, None)
         if value is not None and value != []:
             params[param.name] = value
+    message_file = getattr(args, "message_file", None)
+    if message_file:
+        params["message"] = read_message(message_file)
     return params
 
 
@@ -274,9 +332,16 @@ def main(argv: Optional[list] = None, ctx=None) -> int:
     details = bool(getattr(args, "details", False))
     try:
         if ctx is None:
+            agent_env.harden()                                  # папка данных, строгие замки, svn.exe вместе с программой
             agentlog.setup("cli")
             ctx = make_context(client_name="cli")
-        result = run(ctx, args.operation, **_params(args, args.operation))
+        params = _params(args, args.operation)
+        out_file = getattr(args, "file", None) if args.operation == "commands" else None
+        if out_file:
+            params["markdown"] = True
+        result = run(ctx, args.operation, **params)
+        if out_file and result.ok:
+            result = _save_catalog(result, out_file)
     except KeyboardInterrupt:
         sys.stderr.write(INTERRUPTED + "\n")
         return EXIT_OTHER

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from . import diag, projects, remote            # noqa: F401  (операции регистрируются при импорте)
+from . import write_files, write_lines, write_projects, write_undo      # noqa: F401  (операции записи)
+from . import catalog                                                   # noqa: F401  (каталог команд)
 from .context import OpsContext, ReadOnlyPolicy, make_context
 from .registry import REGISTRY, Operation, Param, all_operations, get, run
 from .result import ErrorInfo, Result
