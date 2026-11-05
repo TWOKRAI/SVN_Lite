@@ -1089,7 +1089,10 @@ class Tooltip:
         tip.configure(background=p.border_strong)       # рамка в цвет темы вместо системной чёрной
         tk.Label(tip, text=text, background=p.surface, foreground=p.text, padx=8, pady=4, justify="left",
                  wraplength=360, font=(FONT_FAMILY, 9)).pack(padx=1, pady=1)
+        # правым краем к правому краю виджета, но не левее окна: у узкой кнопки слева (только значок) подсказка
+        # иначе уходила бы за левый край окна
         x = self.widget.winfo_rootx() + self.widget.winfo_width() - tip.winfo_reqwidth()
+        x = max(x, self.widget.winfo_toplevel().winfo_rootx())
         tip.wm_geometry(f"+{max(0, x)}+{self.widget.winfo_rooty() + self.widget.winfo_height() + 6}")
 
     def _hide(self, _event=None) -> None:
