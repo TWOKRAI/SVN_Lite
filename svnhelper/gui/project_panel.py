@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Callable, Hashable
+from typing import Callable, Hashable, Optional
 
 import tkinter as tk
 from tkinter import ttk
@@ -203,9 +203,8 @@ class ProjectPanel(ttk.Frame):
     нет, и места она не занимает. Колонка лежит в панели, поэтому прячется и показывается вместе с ней при
     сворачивании «Состояния проекта». У кнопок значки; подпись в две строки, колонка не шире SIDE_MAX_WIDTH: подпись
     длиннее (шаблон комментария) укорачивается с «…», полный текст виден во всплывающей подсказке. compact - все
-    колонки только со значками (set_compact); их переключает первая кнопка каждой колонки «Скрыть» (on_toggle_view:
-    окно переключает вид всех колонок справа и запоминает его) и стрелка в заголовке колонки «Состояние проекта»
-    слева от названия (её ставит окно).
+    колонки только со значками (set_compact); у каждой вкладки вид свой (set_tab_compact), его переключает первая
+    кнопка её колонки «Скрыть» (on_toggle_view(ключ вкладки): окно запоминает вид).
     """
 
     SIDE_GAP = 4
@@ -216,14 +215,16 @@ class ProjectPanel(ttk.Frame):
     def __init__(self, parent: tk.Misc, px: Callable[[int], int], *, templates, recent_comments,
                  on_save: Callable[[list[str], str], None], on_release: Callable[[list[str]], None],
                  on_lock: Callable[[], None], on_save_local: Callable[[], None] = lambda: None,
-                 compact: bool = False):
+                 compact: bool = False, tab_compact: Optional[dict] = None):
         super().__init__(parent)
         self.px = px
         self._on_release, self._on_lock = on_release, on_lock
         self._local_view = False
         self._compact = compact
+        self._tab_compact: dict[str, bool] = dict(tab_compact or {})     # вкладка -> свой вид (иначе - как _compact)
         self._syncing = False
-        self.on_toggle_view: Callable[[], None] = lambda: self.set_compact(not self._compact)   # «Скрыть» в колонках
+        # «Скрыть» в колонке вкладки key: вид меняется только у этой вкладки (окно подменяет: запоминает вид)
+        self.on_toggle_view: Callable[[str], None] = lambda key: self.set_tab_compact(key, not self.tab_compact(key))
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self._no_side = ttk.Frame(self)      # «колонка» вкладки без кнопок (side): не показана
@@ -285,19 +286,32 @@ class ProjectPanel(ttk.Frame):
             if key not in self.frames:
                 raise ValueError(f"нет вкладки «{key}»")
             bar = self._side_bars[key] = SideButtons(self, self.px(self.SIDE_GAP), px=self.px,
-                                                     side="right", compact=self._compact)
+                                                     side="right", compact=self.tab_compact(key))
             bar.on_change = self.sync_actions
-            bar.on_toggle = lambda: self.on_toggle_view()
+            bar.on_toggle = lambda k=key: self.on_toggle_view(k)
         return bar
 
     @property
     def compact(self) -> bool:
         return self._compact
 
+    def tab_compact(self, key: str) -> bool:
+        """Колонка кнопок вкладки key сейчас только со значками (True) или с подписями (False)."""
+        return self._tab_compact.get(key, self._compact)
+
     def set_compact(self, compact: bool) -> None:
         """Колонки кнопок всех вкладок только со значками (True) или с подписями (False)."""
         self._compact = compact
+        self._tab_compact.clear()
         for bar in self._side_bars.values():
+            bar.set_compact(compact)
+        self.sync_actions()
+
+    def set_tab_compact(self, key: str, compact: bool) -> None:
+        """Колонка кнопок одной вкладки только со значками (True) или с подписями (False); остальные не меняются."""
+        self._tab_compact[key] = compact
+        bar = self._side_bars.get(key)
+        if bar is not None:
             bar.set_compact(compact)
         self.sync_actions()
 
@@ -315,7 +329,10 @@ class ProjectPanel(ttk.Frame):
         try:
             px = self.px
             bars = list(self._side_bars.values())
-            fit_columns(bars, px(self.SIDE_MAX_WIDTH), prepare=self._fit_templates)
+            # у вкладок вид свой: одна ширина у колонок с подписями и своя, узкая, у колонок только со значками
+            for group in ([b for b in bars if not b.compact], [b for b in bars if b.compact]):
+                if group:
+                    fit_columns(group, px(self.SIDE_MAX_WIDTH), prepare=self._fit_templates)
             current = self._side_bars.get(self.current_tab())
             for bar in bars:
                 if bar is current and bar.has_visible():     # колонки всех вкладок делят одно место справа

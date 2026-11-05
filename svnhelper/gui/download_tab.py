@@ -206,10 +206,11 @@ class DownloadTabMixin:
         self._hide_when_empty(info, self.info_var)
 
         # колонка кнопок справа, как у «Состояния проекта»: одна главная кнопка, остальные появляются по делу
-        # вид «только значки» переключает кнопка «Скрыть» вверху колонки и стрелка в заголовке «Состояния проекта»
+        # вид «только значки» у неё свой, его переключает кнопка «Скрыть» вверху колонки
         self.download_actions = actions = SideButtons(form, px(6), px=px, side="right",
-                                                      compact=self.settings.buttons_compact_right)
-        actions.on_toggle = lambda: self.set_buttons_compact("right", not self.settings.buttons_compact_right)
+                                                      compact=self.settings.buttons_compact_tabs.get(
+                                                          "download", self.settings.buttons_compact_right))
+        actions.on_toggle = lambda: self.set_buttons_compact("right", not actions.compact, tab="download")
         actions.grid(row=0, column=1, sticky="n", padx=(px(12), 0))
         self.download_btn = ttk.Button(actions, text="Скачать", style="Accent.TButton", command=self._on_download,
                                        state="disabled")

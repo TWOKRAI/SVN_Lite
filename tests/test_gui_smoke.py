@@ -8880,26 +8880,35 @@ class ButtonsViewWindowTests(unittest.TestCase):
         self.assertEqual((left.compact, panel.compact, app.download_actions.compact), (False, False, False))
         self.assertEqual(app.buttons_view_var.get(), "labels")
         self.assertEqual(left.toggle_btn.cget("text"), "Скрыть")
-        # справа «Скрыть» - первая кнопка в колонке каждой вкладки и формы скачивания, и ещё крупная стрелка слева от
-        # названия колонки «Состояние проекта»; обе переключают вид правых колонок
+        # справа «Скрыть» - первая кнопка в колонке каждой вкладки и формы скачивания; вид у каждой вкладки свой.
+        # Других переключателей вида нет: стрелка слева от «Состояние проекта» сворачивает панель
         self.assertTrue(all(bar.toggle_btn.cget("text") == "Скрыть" for bar in panel._side_bars.values()))
         self.assertEqual(app.download_actions.toggle_btn.cget("text"), "Скрыть")
-        toggle = app.buttons_right_toggle
-        self.assertEqual(toggle.master, app.mine_col3.header)
-        self.assertEqual(toggle.cget("text"), "⟩⟩")
-        self.assertLess(toggle.grid_info()["column"], app.mine_col3.title_label.grid_info()["column"])
+        self.assertFalse(hasattr(app, "buttons_right_toggle"))
         left.toggle_btn.invoke()                                     # «Скрыть» слева: только левая колонка
         self.assertEqual((left.compact, panel.compact), (True, False))
         self.assertEqual(app.buttons_view_var.get(), "")             # колонки в разном виде: пункт не отмечен
         saved = SettingsStore(self.settings_path).settings
         self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (True, False))
-        toggle.invoke()                                              # стрелка справа: «Состояние» и форма скачивания
-        self.assertEqual((panel.compact, app.download_actions.compact, toggle.cget("text")), (True, True, "⟨⟨"))
-        self.assertEqual(panel._side_bars["changes"].toggle_btn.cget("text"), "Показать")
-        panel._side_bars["changes"].toggle_btn.invoke()              # «Скрыть» справа делает то же самое
-        self.assertEqual((panel.compact, app.download_actions.compact, toggle.cget("text")), (False, False, "⟩⟩"))
-        toggle.invoke()
-        self.assertEqual(app.buttons_view_var.get(), "icons")
+        bars = panel._side_bars
+        bars["locks"].toggle_btn.invoke()                            # «Скрыть» на «Занятых»: только эта вкладка
+        self.assertEqual({key: bar.compact for key, bar in bars.items()},
+                         {"changes": False, "locks": True, "lines": False})
+        self.assertEqual((panel.tab_compact("locks"), panel.tab_compact("changes"), app.download_actions.compact),
+                         (True, False, False))
+        self.assertEqual(bars["locks"].toggle_btn.cget("text"), "Показать")
+        saved = SettingsStore(self.settings_path).settings
+        self.assertEqual(saved.buttons_compact_tabs, {"locks": True})
+        app.download_actions.toggle_btn.invoke()                     # форма «Скачивание» - тоже своя
+        self.assertTrue(app.download_actions.compact)
+        self.assertFalse(bars["changes"].compact)
+        self.assertEqual(SettingsStore(self.settings_path).settings.buttons_compact_tabs,
+                         {"locks": True, "download": True})
+        bars["locks"].toggle_btn.invoke()                            # и обратно
+        app.download_actions.toggle_btn.invoke()
+        self.assertEqual([bar.compact for bar in bars.values()], [False] * 3)
+        left.toggle_btn.invoke()
+        self.assertEqual(app.buttons_view_var.get(), "labels")
         menu = app.buttons_menu
         self.assertEqual([menu.entrycget(i, "label") for i in range(menu.index("end") + 1)],
                          ["С подписями", "Только значки"])
@@ -8907,9 +8916,34 @@ class ButtonsViewWindowTests(unittest.TestCase):
         self.assertEqual([bar.compact for bar in self.side_bars(app)], [False] * len(self.side_bars(app)))
         saved = SettingsStore(self.settings_path).settings
         self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (False, False))
+        self.assertEqual(saved.buttons_compact_tabs, {})              # меню отменяет и свой вид вкладок
         menu.invoke(1)
         self.assertEqual([bar.compact for bar in self.side_bars(app)], [True] * len(self.side_bars(app)))
         self.assertEqual(left.toggle_btn.cget("text"), "Показать")
+
+    def test_tab_views_differ_in_width_and_collapse_arrows_have_set_sizes(self):
+        """У вкладки со значками колонка узкая, у соседней с подписями прежняя; стрелки заголовков: у «Проектов» на 15%
+        мельче, чем у «Состояния проекта»."""
+        root, app, _ = self.make_app()
+        panel = app.project_panel
+        bars = panel._side_bars
+        app.set_buttons_compact("right", True, tab="locks")
+        root.update()
+        self.assertLess(bars["locks"].winfo_reqwidth(), bars["changes"].winfo_reqwidth())
+        self.assertEqual(bars["changes"].winfo_reqwidth(), bars["lines"].winfo_reqwidth())
+        import re
+        style = ttk.Style(root)
+        big = int(re.findall(r"\d+", str(style.lookup("Arrow.Ghost.TButton", "font")))[0])
+        small = int(re.findall(r"\d+", str(style.lookup("ArrowSmall.Ghost.TButton", "font")))[0])
+        self.assertEqual((big, small), (19, 16))
+        self.assertEqual(app.mine_col2.toggle_btn.cget("style"), "ArrowSmall.Ghost.TButton")
+        self.assertEqual(app.mine_col3.toggle_btn.cget("style"), "Arrow.Ghost.TButton")
+        self.assertEqual(app.mine_col2.toggle_btn.cget("text"), app.mine_col3.toggle_btn.cget("text"))
+        self.assertLess(app.mine_col3.toggle_btn.grid_info()["column"], app.mine_col3.title_label.grid_info()["column"])
+        self.assertGreater(app.mine_col2.toggle_btn.grid_info()["column"], app.mine_col2.title_label.grid_info()["column"])
+        self.assertEqual(len([w for w in app.mine_col3.header.winfo_children() if isinstance(w, ttk.Button)]), 1)
+        app.mine_col3.toggle_btn.invoke()                            # стрелка слева сворачивает «Состояние проекта»
+        self.assertTrue(app.mine_col3.collapsed)
 
     def test_saved_view_is_used_at_start_and_builds_in_dark_theme(self):
         from svnhelper.config import Config, SettingsStore
@@ -8925,7 +8959,7 @@ class ButtonsViewWindowTests(unittest.TestCase):
                   SvnClient("svn"), os.path.join(work_dir, "log.txt"), startup_jobs=False)
         self.assertEqual((app.actions_row.compact, app.project_panel.compact, app.download_actions.compact),
                          (False, True, True))
-        self.assertEqual(app.buttons_right_toggle.cget("text"), "⟨⟨")
+        self.assertEqual(app.mine_col3.toggle_btn.cget("text"), "⟨⟨")      # стрелка сворачивания слева от названия
         for mode in ("dark", "light"):
             app.set_theme(mode)
             for compact in (True, False):

@@ -22,7 +22,7 @@ from .project_panel import ProjectPanel, PROJECT_TABS
 from .models import (AUTO_CHECK_SEC, JobStamp, REFRESH_SEC, line_cell, lock_holder_text, LOCK_WARN_DAYS, LockResult, log,
                      MineItem, PROGRESS_MS, shorten_path, UpdateJob)
 from . import hints
-from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip, ViewArrow
+from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip
 
 
 # Кнопка next_step (B_*) -> главное действие окна. Кнопки входа и папки проектов main_button не выбирает (это дела
@@ -191,19 +191,14 @@ class ProjectsTabMixin:
 
         # колонки 2 и 3
         self.mine_col2 = CollapsibleColumn(tab, "Проекты", side="left", width=px(self._col2_width("mine")),
-                                           strip_width=px(self.MINE_STRIP_WIDTH),
+                                           strip_width=px(self.MINE_STRIP_WIDTH), arrow_style="ArrowSmall.Ghost.TButton",
                                            collapsed=self.settings.mine_col2_collapsed)
         self.mine_col3 = CollapsibleColumn(tab, "Состояние проекта", side="right", width=px(self.MINE_COL3_WIDTH),
                                            strip_width=px(self.MINE_STRIP_WIDTH), collapsed_title="Состояние",
+                                           arrow_left=True,
                                            collapsed=self.settings.mine_col3_collapsed)
         for column in (self.mine_col2, self.mine_col3):
             column.bind(CollapsibleColumn.EVENT, self._on_mine_column_toggled)
-        # вид кнопок справа («Состояние проекта» и форма «Скачивание»): крупная стрелка слева от названия колонки;
-        # в самой колонке кнопок её нет, чтобы кнопки стояли на уровне шапки проекта и не сдвигались
-        self.buttons_right_toggle = ViewArrow(
-            self.mine_col3.header, "right", compact=self.settings.buttons_compact_right,
-            command=lambda: self.set_buttons_compact("right", not self.settings.buttons_compact_right))
-        self.mine_col3.add_header_widget(self.buttons_right_toggle)
         # форма скачивания первой: в ней папка для проектов (dir_var), её берёт и список своих проектов
         self._build_download_form(self.mine_col3.body)
         if not self.settings.project_dirs and self.dir_var.get().strip():   # первый запуск: папка по умолчанию
@@ -369,9 +364,10 @@ class ProjectsTabMixin:
         self.project_panel = panel = ProjectPanel(
             body, self.px, templates=self.config.commit_templates, recent_comments=self.settings.recent_comments,
             on_save=self._on_panel_save, on_release=self._on_panel_release, on_lock=lambda: self._on_get_lock(),
-            on_save_local=self._on_save_local_clicked, compact=self.settings.buttons_compact_right)
+            on_save_local=self._on_save_local_clicked, compact=self.settings.buttons_compact_right,
+            tab_compact=self.settings.buttons_compact_tabs)
         panel.grid(row=0, column=0, sticky="nsew")
-        panel.on_toggle_view = lambda: self.set_buttons_compact("right", not self.settings.buttons_compact_right)
+        panel.on_toggle_view = lambda key: self.set_buttons_compact("right", not panel.tab_compact(key), tab=key)
         self.project_tabs = panel.tabs
         self.project_tab_frames: dict[str, ttk.Frame] = panel.frames
         self._commit_panel: CommitPanel = panel.commit_panel

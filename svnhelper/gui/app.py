@@ -20,7 +20,7 @@ from typing import Callable, Optional
 
 from .. import (__version__, autostart, docs, installer, messages, publish, selfupdate, server, templates, theme, tortoise,
                 tray, winutil)
-from ..config import (app_dir, apply_notify, build_config, Config, DEFAULT_SHARED_CONFIG, effective_credentials,
+from ..config import (app_dir, apply_notify, BUTTON_TABS, build_config, Config, DEFAULT_SHARED_CONFIG, effective_credentials, tab_compact,
                       fetch_shared, find_svn, is_newer_version, load_shared_cache, parse_mirrors_text, protect_text,
                       READ_WAIT_WINDOW, save_shared_cache, Settings, SettingsStore, SettingsUnreadable, setup_logging,
                       SharedConfigError)
@@ -792,30 +792,37 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
 
     BUTTONS_VIEW = {False: "labels", True: "icons"}      # значение пункта меню «Вид → Кнопки»
 
-    def set_buttons_compact(self, side: str, compact: bool) -> None:
+    def set_buttons_compact(self, side: str, compact: bool, tab: str = "") -> None:
         """Вид колонок кнопок: только значки (compact) или значки с подписями. side - "left" (колонка слева), "right"
         (справа: «Состояние проекта» и форма «Скачивание») или "both" (меню «Вид → Кнопки»). Запоминается."""
         if side not in ("left", "right", "both"):
             raise ValueError(f"сторона колонки: left | right | both, получено {side!r}")
         st = self.settings
-        before = (st.buttons_compact_left, st.buttons_compact_right)
+        before = (st.buttons_compact_left, st.buttons_compact_right, dict(st.buttons_compact_tabs))
         if side in ("left", "both"):
             self.actions_row.set_compact(compact)
             st.buttons_compact_left = compact
-        if side in ("right", "both"):
+        if side in ("right", "both") and tab:          # одна вкладка справа: «Скрыть» в её колонке
+            if tab == "download":
+                self.download_actions.set_compact(compact)
+            else:
+                self.project_panel.set_tab_compact(tab, compact)
+            st.buttons_compact_tabs[tab] = compact
+        elif side in ("right", "both"):                # все вкладки справа: меню «Вид → Кнопки»
             self.project_panel.set_compact(compact)
             self.download_actions.set_compact(compact)
-            self.buttons_right_toggle.set_compact(compact)
             st.buttons_compact_right = compact
+            st.buttons_compact_tabs = {}
         self._sync_buttons_view_var()
-        if (st.buttons_compact_left, st.buttons_compact_right) != before:
+        if (st.buttons_compact_left, st.buttons_compact_right, st.buttons_compact_tabs) != before:
             self.settings_store.save()
 
     def _sync_buttons_view_var(self) -> None:
-        """Пункт меню отмечен, когда обе колонки в одном виде; разные - не отмечен ни один."""
+        """Пункт меню отмечен, когда все колонки (слева и справа у каждой вкладки) в одном виде; разные - не отмечен
+        ни один."""
         st = self.settings
-        same = st.buttons_compact_left == st.buttons_compact_right
-        self.buttons_view_var.set(self.BUTTONS_VIEW[st.buttons_compact_left] if same else "")
+        views = {st.buttons_compact_left, *(tab_compact(st, key) for key in BUTTON_TABS)}
+        self.buttons_view_var.set(self.BUTTONS_VIEW[st.buttons_compact_left] if len(views) == 1 else "")
 
     def _disabled_reason(self, key: str) -> str:
         """Почему элемент с подсказкой key сейчас серый (общие причины окна); пусто - пусть скажет hints.REASONS."""

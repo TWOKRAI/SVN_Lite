@@ -555,7 +555,7 @@ SIDE_TEXT_MIN = 64            # подпись развёрнутой колон
 SIDE_LINES = 2                # строк подписи
 SIDE_HIDE_LABEL = "Скрыть"                  # первая кнопка колонки: скрыть подписи (оставить значки)
 SIDE_SHOW_LABEL = "Показать"                # она же в виде «только значки»: вернуть подписи
-SIDE_TOGGLE_ARROWS = ("⟨⟨", "⟩⟩")           # стрелка вида в заголовке правой колонки: к левому краю, к правому
+COLLAPSE_ARROW = "⟨⟨"                       # стрелка в заголовке колонки окна: свернуть колонку
 SIDE_VIEW_MENU = "Кнопки"                   # пункт меню «Вид»
 SIDE_VIEW_LABELS = {False: "С подписями", True: "Только значки"}
 _COUNTER = re.compile(r"\((\d+)\)\s*$")    # «Получить новое (12)»: счётчик в конце подписи
@@ -585,29 +585,6 @@ def two_line_width(parent: tk.Misc, text: str, lines: int = SIDE_LINES) -> int:
 def fit_two_lines(parent: tk.Misc, text: str, room: int) -> str:
     """Текст, который в ширине room занимает не больше двух строк (лишнее кончается «…»), одной строкой."""
     return " ".join(hints.fit_lines(text, room, SIDE_LINES, lambda t: text_width(parent, t)).split("\n"))
-
-
-class ViewArrow(ttk.Button):
-    """Крупная стрелка «⟨⟨» / «⟩⟩» в заголовке колонки: колонка кнопок только со значками или с подписями. Стоит вне
-    колонки кнопок и её не сдвигает. Смотрит туда, куда уедут кнопки: к краю окна side ("left" | "right") - свернуть
-    до значков, обратно - показать подписи. command() вызывается по нажатию; вид говорит set_compact."""
-
-    def __init__(self, parent: tk.Misc, side: str, command: Callable[[], None], compact: bool = False):
-        super().__init__(parent, style="Arrow.Ghost.TButton", width=0, command=command)
-        self.side, self.compact = side, compact
-        self._side_tip = Tooltip(self, lambda: hints.HINTS[self.hint_key()][0])
-        self.set_compact(compact)
-
-    def hint_key(self) -> str:
-        return "buttons.expand" if self.compact else "buttons.compact"
-
-    def set_compact(self, compact: bool) -> None:
-        to_left, to_right = SIDE_TOGGLE_ARROWS
-        towards_edge = to_left if self.side == "left" else to_right
-        back = to_right if self.side == "left" else to_left
-        self.compact = compact
-        self.configure(text=back if compact else towards_edge)
-        hints.hint(self, self.hint_key())
 
 
 class SideButtons(ttk.Frame):
@@ -974,7 +951,8 @@ class CollapsibleColumn(ttk.Frame):
     EVENT = "<<ColumnToggled>>"
 
     def __init__(self, parent: tk.Misc, title: str, side: str = "left", *, width: int = 260,
-                 strip_width: int = 28, collapsed: bool = False, collapsed_title: str = ""):
+                 strip_width: int = 28, collapsed: bool = False, collapsed_title: str = "",
+                 arrow_style: str = "Arrow.Ghost.TButton", arrow_left: bool = False):
         super().__init__(parent)
         if side not in ("left", "right"):
             raise ValueError(f"side: left | right, получено {side!r}")
@@ -991,9 +969,12 @@ class CollapsibleColumn(ttk.Frame):
         self.header.columnconfigure(1, weight=1)
         self.title_label = ttk.Label(self.header, text=title, style="Section.TLabel")
         self.title_label.grid(row=0, column=1, sticky="w")
-        self.toggle_btn = ttk.Button(self.header, text=self._arrow(collapse=True), width=2,
-                                     style="Arrow.Ghost.TButton", command=self.toggle)
-        self.toggle_btn.grid(row=0, column=2, sticky="e")
+        self.toggle_btn = ttk.Button(self.header, text=COLLAPSE_ARROW, width=0, style=arrow_style,
+                                     command=self.toggle)
+        if arrow_left:            # стрелка слева от названия (у «Состояния проекта»), иначе справа от него
+            self.toggle_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        else:
+            self.toggle_btn.grid(row=0, column=2, sticky="e")
         Tooltip(self.toggle_btn, lambda: "Свернуть")
         self.body = ttk.Frame(self)
 
@@ -1026,10 +1007,6 @@ class CollapsibleColumn(ttk.Frame):
         self._width = width
         if not self._collapsed:
             self.configure(width=width)
-
-    def add_header_widget(self, widget: tk.Misc) -> None:
-        """Кладёт widget (ребёнок self.header) в заголовок колонки слева от названия."""
-        widget.grid(row=0, column=0, sticky="w", padx=(0, 6))
 
     def set_title(self, title: str, collapsed_title: str = "") -> None:
         """Новое название колонки (заголовок, подсказка полосы и подпись свёрнутой полосы, сразу перерисованная)."""

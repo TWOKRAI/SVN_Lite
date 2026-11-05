@@ -462,6 +462,9 @@ def find_svnadmin(svn_exe: str = "") -> Optional[str]:
 HINT_MODES = ("detailed", "short", "progress")     # режимы панели подсказок; первый - по умолчанию (gui/hints.py)
 
 
+BUTTON_TABS = ("changes", "locks", "lines", "download")    # вкладки с колонкой кнопок справа
+
+
 @dataclass
 class Settings:
     last_dir: str = ""
@@ -495,7 +498,10 @@ class Settings:
     # колонки кнопок (меню «Вид → Кнопки», стрелка вверху колонки): True - только значки, False - значки с подписями.
     # left - колонка слева (проект целиком), right - справа («Состояние проекта» и форма «Скачивание»)
     buttons_compact_left: bool = False
-    buttons_compact_right: bool = False
+    buttons_compact_right: bool = False                    # справа по умолчанию (меню «Вид → Кнопки» ставит всем вкладкам)
+    # справа у каждой вкладки свой вид, его переключает «Скрыть» в её колонке: ключ вкладки (changes, locks, lines,
+    # download) -> True (только значки) | False; вкладки без записи - по buttons_compact_right
+    buttons_compact_tabs: dict = field(default_factory=dict)
     tray_on_close: bool = True                             # крестик окна сворачивает программу в трей, а не закрывает
     tray_hint_shown: bool = False                          # подсказка «программа продолжает работать у часов» уже показана
     # уведомления и фоновая проверка (Task E.2); допустимые значения и проверка - clean_notify
@@ -673,6 +679,11 @@ def clean_project_dirs(raw: object, last_dir: str = "") -> list[str]:
     return add_project_dir(dirs, last_dir)
 
 
+def tab_compact(settings: "Settings", key: str) -> bool:
+    """Вид кнопок справа у вкладки key: только значки (True) или с подписями."""
+    return settings.buttons_compact_tabs.get(key, settings.buttons_compact_right)
+
+
 def _parse_settings(data: dict) -> Settings:
     """Settings из содержимого settings.json; мусорные значения заменяются стандартными.
     Если data не словарь, бросает AttributeError."""
@@ -715,6 +726,9 @@ def _parse_settings(data: dict) -> Settings:
         hint_mode=text("hint_mode") if text("hint_mode") in HINT_MODES else HINT_MODES[0],
         buttons_compact_left=flag("buttons_compact_left") is True,
         buttons_compact_right=flag("buttons_compact_right") is True,
+        buttons_compact_tabs={k: v for k, v in data["buttons_compact_tabs"].items()
+                              if k in BUTTON_TABS and isinstance(v, bool)}
+        if isinstance(data.get("buttons_compact_tabs"), dict) else {},
         tray_on_close=flag("tray_on_close") is not False,
         tray_hint_shown=flag("tray_hint_shown") is True,
         local_histories={k: v for k, v in data["local_histories"].items()
