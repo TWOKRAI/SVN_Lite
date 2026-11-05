@@ -400,13 +400,13 @@ class GuiLocalPathTests(unittest.TestCase):
 
             def answer(title, text, **_kw):
                 asked.append(title)
-                return title != "Готово"     # создать — да, скачать — да, открыть папку — нет
+                return True                  # создать — да, скачать — да; окна «Готово» после скачивания больше нет
 
             with mock.patch("svnhelper.gui.download_tab.CreateProjectDialog", AutoCreate), \
                     mock.patch("tkinter.messagebox.askyesno", side_effect=answer), \
                     mock.patch("tkinter.messagebox.showerror") as err:
                 app._on_create_project()
-                self.pump(root, lambda: app.job is None and "Готово" in asked)
+                self.pump(root, lambda: app.job is None and "Проект создан" in asked)
                 err.assert_not_called()
             self.assertEqual(asked[:2], ["Создать проект?", "Проект создан"])
             App.show_error.assert_not_called()

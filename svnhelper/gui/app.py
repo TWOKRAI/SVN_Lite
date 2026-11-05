@@ -229,8 +229,8 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             landed, unsure = res
             for url in landed:              # проект уже на сервере, а скачать его программа не успела
                 name = unquote(url).rstrip("/").rsplit("/", 1)[-1]
-                self._created_notes.append(f"Проект «{name}» создан на сервере, но не скачан — скачайте на вкладке "
-                                           "«Скачать проект».")
+                self._created_notes.append(f"Проект «{name}» создан на сервере, но не скачан — скачайте: "
+                                           "«Скачать проект» в колонке «Проекты».")
             for url in unsure:              # каркас на сервере, но чей - по журналу не понять
                 self._created_notes.append(publish.unknown_owner_text(url))
             self._update_publish_banner()

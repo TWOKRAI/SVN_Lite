@@ -435,7 +435,7 @@ class NewProjectDialog(_BackgroundRun, tk.Toplevel):
         return self.storage_var.get() == STORAGE_SERVER and not self.list_offline
 
     def _on_change_place(self) -> None:
-        """«Изменить…»: выбор папки на сервере в дереве (тот же виджет, что на вкладке «Скачать проект»)."""
+        """«Изменить…»: выбор папки на сервере в дереве (тот же виджет, что на подвкладке «Скачать проект»)."""
         if self.state != "ready":
             return
         dialog = ServerPlaceDialog(self.app, self.server_segments, parent=self)
@@ -784,7 +784,7 @@ class NewProjectDialog(_BackgroundRun, tk.Toplevel):
         if self.state == "running":
             text = ("Остановить создание проекта? Уже созданное будет удалено." if self.phase != "download" else
                     "Проект уже создан на сервере. Остановить скачивание? Скачать его можно будет позже "
-                    "на вкладке «Скачать проект» или кнопкой «Скачать ещё раз».")
+                    "через «Скачать проект» в колонке «Проекты» или кнопкой «Скачать ещё раз».")
             if messagebox.askyesno("Остановить создание?", text, parent=self):
                 self.close_btn.configure(state="disabled")
                 self.status_var.set("Останавливаю…")

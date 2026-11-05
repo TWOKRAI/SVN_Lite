@@ -867,8 +867,8 @@ class ProjectsTabMixin:
             self.mine[self._insert_mine_row(item)] = item
         self._set_mine_empty(not items)
         if not items:
-            self._mine_hint(f"В папке {base} пока нет проектов. Скачайте проект на вкладке «Скачать проект» "
-                            "или создайте новый: ＋ Новый проект.")
+            self._mine_hint(f"В папке {base} пока нет проектов. Скачайте проект: «Скачать проект» в колонке "
+                            "«Проекты», или создайте новый: ＋ Новый проект.")
             self._open_download_on_first_scan()      # первый запуск: проектов ещё нет, начинаем со скачивания
         else:
             self._start_tab_chosen = True

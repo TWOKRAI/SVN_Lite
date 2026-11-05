@@ -908,6 +908,7 @@ class DownloadTabMixin:
         if job.total:
             self.progress.configure(value=min(count, job.total))
             percent = min(100, count * 100 // job.total)
+            self._set_download_tab_label(percent)
             text = f"Скачано {messages.format_number(count)} из {messages.format_number(job.total)} ({percent}%)"
             eta = format_eta(job.eta.update(count, job.total))
             self.status_var.set(f"{text}, {eta}" if eta else text)
@@ -990,7 +991,13 @@ class DownloadTabMixin:
 
     # -- завершение задачи -----------------------------------------------------------
 
+    def _set_download_tab_label(self, percent: Optional[int] = None) -> None:
+        """Ярлык подвкладки «Скачать проект»: пока идёт скачивание, с процентами («Скачать проект · 45%»)."""
+        title = dict(self.LIST_MODES)["download"]
+        self.list_tabs.tab(self.list_frames["download"], text=f"{title} · {percent}%" if percent is not None else title)
+
     def _end_job(self) -> None:
+        self._set_download_tab_label()
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
         self._show(self.progress, False)
@@ -1074,20 +1081,17 @@ class DownloadTabMixin:
         if job.audit_skipped:
             note = (note + "\n" if note else "") + "Проверка на мусор пропущена: не удалось подсчитать размер проекта."
         self._notify_done(job.started)
-        version = f"Сохранение № {result.revision} на сервере.\n" if result.revision else ""
-        extra = note + "\n\n" if note else ""
+        version = f" Сохранение № {result.revision} на сервере." if result.revision else ""
+        extra = f" {note}" if note else ""
         reminder = messages.TAG_EXPLAIN if job.line and job.line.read_only else messages.LOCK_REMINDER
-        text = (f"Проект «{job.name}» скачан.\n{version}Папка: {job.dest}\n\n{extra}"
-                f"{reminder}\n\nОткрыть папку проекта?")
-        open_it = messagebox.askyesno("Готово", text, parent=self.root)
+        text = f"Проект «{job.name}» скачан.{version}{extra} {reminder}"
         self._end_job()
         self.progress.configure(value=100)    # после успешного скачивания полоса остаётся полной
         self._show(self.progress, True)
-        if open_it:
-            try:
-                os.startfile(job.dest)  # type: ignore[attr-defined]
-            except (OSError, AttributeError):
-                log.exception("Не удалось открыть папку")
+        # результат в карточку нового проекта вместо окна «Готово»; «Открыть папку» и так в колонке слева
+        self._action_notes[os.path.normcase(os.path.normpath(job.dest))] = text
+        self._show_new_project(job.dest)
+        self.select_list_mode("mine")
 
     def _finish_cancelled(self, job: DownloadJob) -> None:
         self.status_var.set("Скачивание отменено")

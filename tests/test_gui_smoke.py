@@ -176,9 +176,14 @@ class GuiSmokeTests(unittest.TestCase):
                 err.assert_not_called()
             dest = os.path.join(cfg.work_dir, PROJECT)
             self.assertTrue(os.path.isfile(os.path.join(dest, "чертёж 1.txt")))
-            self.assertIn("«Занять файл…»", asked[0])
-            self.assertNotIn("Get lock", asked[0])
-            self.assertIn("Сохранение № 1 на сервере", asked[0])
+            # U4.4: окна «Готово» нет, результат в карточке нового проекта, он выделен в «Мои проекты»
+            self.assertEqual(asked, [])
+            note = app._action_notes[os.path.normcase(dest)]
+            self.assertIn("«Занять файл…»", note)
+            self.assertNotIn("Get lock", note)
+            self.assertIn("Сохранение № 1 на сервере", note)
+            self.assertEqual(app._list_mode(), "mine")
+            self.pump(root, lambda: app._selected_item() is not None and app._selected_item().name == PROJECT)
             self.assertEqual(store.settings.last_dir, cfg.work_dir)
             self.assertIn(cfg.work_dir, store.settings.project_dirs)       # папка скачивания - в общем списке
             app.show_error.assert_not_called()
@@ -218,7 +223,7 @@ class GuiSmokeTests(unittest.TestCase):
                 err.assert_not_called()
                 confirm.assert_called_once()
             self.assertEqual(sorted(n for n in os.listdir(junk_dest) if n != ".svn"), ["keep файл.txt"])
-            self.assertIn("Не оставлено в папке как лишнее: 3 файла", asked[-1])
+            self.assertIn("Не оставлено в папке как лишнее: 3 файла", app._action_notes[os.path.normcase(junk_dest)])
 
             # отказ в отчёте: ничего не скачивается
             shutil.rmtree(junk_dest, onerror=lambda f, path, _e: (os.chmod(path, 0o700), f(path)))
@@ -230,7 +235,8 @@ class GuiSmokeTests(unittest.TestCase):
             # вкладка «Мои проекты»: список, статус с сервера, обновление
             os.makedirs(os.path.join(cfg.work_dir, "просто папка"), exist_ok=True)
             app._scan_projects()
-            self.pump(root, lambda: len(app.mine) >= 2)
+            # после скачивания список уже искали: ждём именно новую папку, а не любые две строки
+            self.pump(root, lambda: "просто папка" in {i.name for i in app.mine.values()})
             by_name = {i.name: i for i in app.mine.values()}
             self.assertEqual(by_name[PROJECT].state, "svn")
             self.assertEqual(by_name["просто папка"].state, "plain")
@@ -3045,7 +3051,8 @@ class BranchesGuiTests(unittest.TestCase):
             dest = os.path.join(base, f"br_project__{self.BRANCH}")
             self.assertTrue(os.path.isfile(os.path.join(dest, "a.txt")))
             self.assertEqual(app.client.info(dest).url, self.line_url("branches", self.BRANCH))
-            self.assertIn("«Занять файл…»", asked[-1])
+            self.assertEqual(asked, [])                               # окна «Готово» нет, результат в карточке
+            self.assertIn("«Занять файл…»", app._action_notes[os.path.normcase(dest)])
             self.assertTrue(store.settings.recent[0]["url"].endswith(f"/branches/{self.BRANCH}"))
 
             # индикатор «уже скачано» учитывает выбранную ветку
@@ -3066,9 +3073,10 @@ class BranchesGuiTests(unittest.TestCase):
                     mock.patch("os.startfile", create=True):
                 app._on_download()
                 self.pump(root, lambda: app.job is None)
-            self.assertEqual(len(asked), 1)                           # только итоговое «Открыть папку?»
-            self.assertNotIn("«Занять файл…»", asked[0])
-            self.assertIn("сохранить нельзя", asked[0])
+            self.assertEqual(asked, [])                               # ни вопроса, ни окна «Готово»
+            tag_note = app._action_notes[os.path.normcase(os.path.join(base, f"br_project__{self.TAG}"))]
+            self.assertNotIn("«Занять файл…»", tag_note)
+            self.assertIn("сохранить нельзя", tag_note)
             self.assertTrue(os.path.isdir(os.path.join(base, f"br_project__{self.TAG}", ".svn")))
 
             # ссылка на ветку выбирает её сразу
