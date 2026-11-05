@@ -402,6 +402,13 @@ class WcStatus:
     incoming_files: list[str] = field(default_factory=list)          # пути, изменённые на сервере (только с -u)
 
     @property
+    def tracked_changes(self) -> int:
+        """Несохранённые правки в файлах под контролем SVN, по списку `local_changes`: без новых файлов и конфликтов.
+        Счётчик `modified` для этого не годится: в нём и папки incomplete/obstructed (прерванное «Получить новое»),
+        которые сохранять нечего (ревью v4, находка 2)."""
+        return sum(1 for c in self.local_changes if c.kind not in ("unversioned", "conflicted"))
+
+    @property
     def mixed(self) -> bool:
         """В копии есть записи разных версий (после Commit части файлов): для копирования берите max_revision."""
         return (self.min_revision is not None and self.max_revision is not None

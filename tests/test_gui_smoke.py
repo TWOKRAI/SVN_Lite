@@ -1113,6 +1113,28 @@ class MineTabTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_refresh_and_tick_while_scan_running_check_once_after_it(self):
+        """Ревью v4 (повторное), находка 2: пока идёт поиск проектов, автообновление и «⟳» не проверяют старые строки,
+        а откладывают одну проверку на конец поиска."""
+        root, app, _base = self.make_app("scan_busy")
+        try:
+            app.select_list_mode("mine")
+            root.update()
+            self.assertTrue(app.client)
+            app._mine_dirty = False
+            app._scan_running = True
+            app._check_all_after_scan = False
+            with mock.patch.object(app, "_check_status") as check, mock.patch.object(app, "_on_check_all") as check_all:
+                app._auto_refresh_tick()
+                self.assertFalse(app._check_all_after_scan)
+                app._on_refresh_tab()
+            check.assert_not_called()
+            check_all.assert_not_called()
+            self.assertTrue(app._check_all_after_scan)
+        finally:
+            app._scan_running = False
+            root.destroy()
+
     def test_results_and_quiet_errors_go_to_hint_bar(self):
         """U4.5: итог операции - слева в панели (если он не написан в видимой карточке), тихий сбой - советом;
         фоновая проверка проектов панель не трогает."""
@@ -3460,7 +3482,7 @@ class BranchTextGuiTests(unittest.TestCase):
 
     def test_unsaved_changes_refuse_switch_and_offer_saving_in_program(self):
         from svnhelper import server
-        from svnhelper.svn_core import WcStatus
+        from svnhelper.svn_core import LocalChange, WcStatus
         root, app, tmp = self.make_app()
         item = self.make_item(app, tmp, server.TRUNK_LINE)
         app.tortoise_exe = None                                  # TortoiseSVN не нужен: сохранение в самой программе
@@ -3471,7 +3493,8 @@ class BranchTextGuiTests(unittest.TestCase):
             with mock.patch("tkinter.messagebox.askyesno", return_value=agree) as ask, \
                     mock.patch.object(app, "_on_commit") as commit, \
                     mock.patch.object(app.client, "switch") as switch:
-                app._begin_switch(item, server.Line("branch", "b"), WcStatus(modified=3))
+                changes = [LocalChange(f"f{n}.txt", "modified") for n in range(3)]
+                app._begin_switch(item, server.Line("branch", "b"), WcStatus(modified=3, local_changes=changes))
             switch.assert_not_called()
             self.assertEqual(ask.call_args[0][1], "Сначала сохраните правки — их 3. Потом переключайтесь.\n\n"
                                                   "Перейти к сохранению сейчас?")

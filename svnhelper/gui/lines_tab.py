@@ -85,7 +85,7 @@ class LinesTabMixin:
         taken = [e.name for e in lines.get("tags" if kind == "tag" else "branches", [])]
         default = server.suggest_tag_name(date.today(), taken) if kind == "tag" else ""
         revision = status.max_revision or item.revision      # после Commit корень копии остаётся на старом номере
-        unsaved = status.modified + status.conflicts
+        unsaved = status.tracked_changes + status.conflicts
 
         def check_name(name: str, done: Callable[[bool], None]) -> None:
             """Есть ли такое имя на сервере (в фоне, окно не закрывается). Сбой проверки: решит само копирование."""
@@ -161,7 +161,7 @@ class LinesTabMixin:
         item = self._current(item) or item
         if item.line is None or (target == item.line and not status.switched):
             return
-        unsaved = status.modified + status.conflicts
+        unsaved = status.tracked_changes + status.conflicts
         if unsaved and (status.conflicts or not item.line.read_only):
             text = messages.SWITCH_UNSAVED.format(count=unsaved)
             if messagebox.askyesno("Переключиться нельзя", text + "\n\n" + messages.SWITCH_UNSAVED_ASK,

@@ -123,6 +123,22 @@ class LockInfoTests(unittest.TestCase):
     <entry path="c.bin"><wc-status item="normal" props="none"><lock><owner>x</owner><created>мусор</created></lock></wc-status></entry>
     <against revision="5"/></target></status>""".encode("utf-8")
 
+    def test_tracked_changes_ignore_incomplete_new_and_conflicted(self):
+        """Ревью v4 (повторное), находка 1: «несохранённые правки» для переключения и индикатора - по local_changes.
+        Прерванное «Получить новое» (incomplete), чужой файл на месте нужного (obstructed), новые файлы и конфликты
+        сохранить нечего или это другая беда."""
+        from svnhelper.svn_core import parse_status_xml
+        st = parse_status_xml(
+            b'<status><target path="w">'
+            b'<entry path="w/a.txt"><wc-status item="modified" props="none"/></entry>'
+            b'<entry path="w/dir"><wc-status item="incomplete" props="none"/></entry>'
+            b'<entry path="w/obs"><wc-status item="obstructed" props="none"/></entry>'
+            b'<entry path="w/new.txt"><wc-status item="unversioned" props="none"/></entry>'
+            b'<entry path="w/c.txt"><wc-status item="conflicted" props="none"/></entry>'
+            b'</target></status>')
+        self.assertEqual((st.modified, st.conflicts), (3, 1))     # в modified и папки incomplete/obstructed
+        self.assertEqual(st.tracked_changes, 1)
+
     def test_parse_locks(self):
         from datetime import datetime, timezone
         from svnhelper.svn_core import parse_status_xml

@@ -1983,6 +1983,9 @@ class ProjectsTabMixin:
         self._load_project_tab()
         if self._lines_tab_active():
             self._on_lines_refresh()
+        if self._scan_running:
+            self._check_all_after_scan = True      # поиск уже идёт и заменит строки: одна проверка после него
+            return
         for item in self.mine.values():
             if item.state == "svn":
                 self._refresh_row(item)    # описания перечитаются
@@ -1996,7 +1999,8 @@ class ProjectsTabMixin:
         if self.root.state() == "withdrawn":
             return                # окно спрятано в трей: смотреть на него некому, фоновые проверки делает уведомлятор
         self._refresh_lamp()
-        if not self.client or self.upd or self.job or self._auto_auth_failed or self._mine_dirty:
+        if (not self.client or self.upd or self.job or self._auto_auth_failed or self._mine_dirty
+                or self._scan_running):
             return
         if self.login.dialog_open or self.login.waiters or self.error_open:
             return
@@ -2091,7 +2095,7 @@ class ProjectsTabMixin:
         bad = [i for i in items if i.state == "broken" or i.history_missing or (i.status is None and i.error
                                                            and not self._is_offline_error(i.error))
                or (i.status is not None and i.status.conflicts)]
-        warn = [i for i in items if i.status is not None and (i.status.incoming or i.status.modified
+        warn = [i for i in items if i.status is not None and (i.status.incoming or i.status.tracked_changes
                                                               or i.status.switched)]
         if is_newer_version(self.config.latest_version, __version__):
             warn_text = f"Доступна новая версия программы {self.config.latest_version.strip()}"
