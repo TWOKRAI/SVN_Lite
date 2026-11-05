@@ -6,7 +6,7 @@
 программе и сервере MCP команды смены политики нет. Подпись защищает от случайной правки файла помощником, но не от
 враждебного процесса того же пользователя (он может вызвать DPAPI сам).
 
-Действует меньший из двух режимов: потолок администратора (`agent_max_mode` в svn_helper.json: off | read_only | write,
+Действует меньший из двух режимов: потолок администратора (`agent_max_mode` в svn_helper.json: off | read_only | write_confirm | write,
 по умолчанию read_only) и режим из файла политики (read_only | write). Нет файла политики или неверная подпись:
 read_only. Неверное значение в файле заменяется безопасным и пишется в журнал, как в `config.clean_notify`.
 
@@ -50,6 +50,7 @@ FORMAT = 1
 MODE_READ_ONLY, MODE_CONFIRM, MODE_FULL = "read_only", "write_confirm", "write_full"
 FILE_MODES = (MODE_READ_ONLY, MODE_CONFIRM, MODE_FULL)
 LEGACY_WRITE = "write"
+CEILING_CONFIRM = "write_confirm"   # потолок администратора: запись только с подтверждением (write_full недоступен)
 WRITE_FILE_MODES = (MODE_CONFIRM, MODE_FULL, LEGACY_WRITE)
 # разрешения: save_local и save_server - сохранить у себя и на сервер, lock - занять и освободить файл,
 # get_new - получить новое, create_local и create_server - создать проект на компьютере и на сервере, publish - отправить,
@@ -267,7 +268,8 @@ def _inside(path: str, bases: Iterable[str]) -> bool:
 
 @dataclass(frozen=True)
 class Policy:
-    """Действующая политика. `mode` - итоговый режим (off | read_only | write): меньший из потолка и файла."""
+    """Действующая политика. `mode` - итоговый режим (off | read_only | write): меньший из потолка и файла.
+    `confirm` - нужно ли подтверждение (всегда True при потолке write_confirm)."""
     file_mode: str = "read_only"            # режим из файла (после проверки подписи)
     ceiling: str = DEFAULT_AGENT_MAX_MODE   # потолок администратора (agent_max_mode)
     allow: tuple = ()
@@ -286,14 +288,16 @@ class Policy:
 
     @property
     def mode(self) -> str:
-        """Итоговый режим off | read_only | write: меньший из потолка и файла (write_confirm и write_full для потолка
-        одно и то же: он решает, можно ли писать вообще)."""
-        return stricter_mode("write" if self.file_mode in WRITE_FILE_MODES else "read_only", self.ceiling)
+        """Итоговый режим off | read_only | write: меньший из потолка и файла. Для режима из файла write_confirm и
+        write_full одинаково «пишет»; потолок write_confirm тоже даёт write, а нужное подтверждение даёт `confirm`."""
+        result = stricter_mode("write" if self.file_mode in WRITE_FILE_MODES else "read_only", self.ceiling)
+        return "write" if result == CEILING_CONFIRM else result
 
     @property
     def confirm(self) -> bool:
-        """Нужно ли подтверждение: применение только по токену плана. Только write_full его не требует."""
-        return self.file_mode != MODE_FULL
+        """Нужно ли подтверждение: применение только по токену плана. Не требует его только write_full, и то
+        если администратор не поставил потолок «запись только с подтверждением» (write_confirm)."""
+        return self.file_mode != MODE_FULL or self.ceiling == CEILING_CONFIRM
 
     @classmethod
     def load(cls, ceiling: str = DEFAULT_AGENT_MAX_MODE, path: Optional[Path] = None) -> "Policy":
@@ -461,6 +465,10 @@ def main(argv: Optional[list] = None) -> int:
         print(f"Политику записать не удалось: {exc}", file=sys.stderr)
         return 1
     print(f"Политика записана: режим {written['mode']}, разрешения: {', '.join(written['allow']) or 'нет'}.")
+    ceiling = build_config(SettingsStore().settings, load_shared_cache()).agent_max_mode
+    if ceiling == CEILING_CONFIRM and written["mode"] == MODE_FULL:
+        print("Внимание: потолок администратора agent_max_mode=write_confirm, поэтому запись останется "
+              "только с подтверждением (токен плана нужен всегда).")
     return 0
 
 

@@ -270,6 +270,38 @@ class CeilingTests(PolicyBase):
         self.denied(Policy.load(ceiling="read_only"), "lock")
         self.assertEqual(Policy.load(ceiling="garbage").mode, "read_only")      # неверный потолок: безопасный
 
+    def test_write_confirm_ceiling_forbids_write_full(self):
+        """Потолок «запись только с подтверждением»: режим итогово write, но токен плана нужен всегда."""
+        self.sign(mode="write_full", allow=["lock"])
+        confirm = Policy.load(ceiling="write_confirm")
+        self.assertEqual((confirm.mode, confirm.confirm, confirm.ceiling), ("write", True, "write_confirm"))
+        self.assertFalse(Policy.load(ceiling="write").confirm)                 # без потолка write_full не требует токена
+        self.assertEqual(confirm.describe()["confirm"], True)
+        self.sign(mode="write_confirm", allow=["lock"])
+        self.assertEqual((Policy.load(ceiling="write_confirm").mode, Policy.load(ceiling="write_confirm").confirm),
+                         ("write", True))
+        self.sign(mode="read_only", allow=["lock"])
+        self.assertEqual(Policy.load(ceiling="write_confirm").mode, "read_only")      # потолок не поднимает права
+        self.sign(mode="write_full", allow=["lock"])
+        self.assertEqual(Policy.load(ceiling="read_only").mode, "read_only")
+        self.assertEqual(Policy.load(ceiling="off").mode, "off")
+
+    def test_write_confirm_in_order_and_parsing(self):
+        self.assertEqual(clean_agent_mode(" Write_Confirm "), "write_confirm")
+        self.assertEqual(stricter_mode("write", "write_confirm"), "write_confirm")
+        self.assertEqual(stricter_mode("write_confirm", "read_only"), "read_only")
+        self.assertEqual(stricter_mode("write_confirm", "write"), "write_confirm")
+        cfg = Config()
+        apply_config_data(cfg, {"agent_max_mode": "write_confirm"})
+        self.assertEqual((cfg.agent_max_mode, cfg.warnings), ("write_confirm", []))
+        local = self.root / "локальный.json"
+        local.write_text(json.dumps({"agent_max_mode": "write"}), encoding="utf-8")
+        merged = build_config(self.store.settings, {"agent_max_mode": "write_confirm"}, local_path=local)
+        self.assertEqual(merged.agent_max_mode, "write_confirm")         # общий файл урезал потолок локального
+        local.write_text(json.dumps({"agent_max_mode": "write_confirm"}), encoding="utf-8")
+        merged = build_config(self.store.settings, {"agent_max_mode": "write"}, local_path=local)
+        self.assertEqual(merged.agent_max_mode, "write_confirm")         # и наоборот: не поднимает
+
     def test_config_option_parse_and_default(self):
         self.assertEqual(Config().agent_max_mode, "read_only")
         cfg = Config()

@@ -195,6 +195,19 @@ class PolicyAndPlanTests(WriteOpsBase):
         self.assertEqual(third.exit_code, 6)
         self.assertEqual(self.head(), second.data["number"])
 
+    def test_confirm_ceiling_keeps_token_required_in_full_mode(self):
+        """Потолок администратора write_confirm: сотрудник выбрал write_full, но без токена плана записи нет."""
+        self.use(Policy(file_mode=MODE_FULL, ceiling="write_confirm", allow=tuple(ALL), signature=SIG_OK))
+        (self.mine / "a.txt").write_text("1", encoding="utf-8")
+        before = self.head()
+        refused = self.call("save_apply", project=NAME, message="Сохранение без плана")
+        self.assertEqual((refused.exit_code, refused.error.kind), (6, "policy_denied"))
+        self.assertEqual(self.head(), before)
+        planned = self.call("save_plan", project=NAME, message="Сохранение по плану")
+        self.assertTrue(planned.data["requires_confirmation"])
+        done = self.call("save_apply", project=NAME, message="Сохранение по плану", token=planned.data["plan_id"])
+        self.assertTrue(done.ok, done.text)
+
     def test_busy_folder_gives_code_8_and_changes_nothing(self):
         (self.mine / "новый.txt").write_text("x", encoding="utf-8")
         before = self.head()
@@ -436,6 +449,66 @@ class RollbackTests(WriteOpsBase):
         os.remove(self.mine / "ещё.txt")
         self.use(policy(allow=("save_server",)))
         self.assertEqual(self.call("rollback_plan", project=NAME, revision=done.data["number"]).exit_code, 6)
+
+
+class LocalHistoryRollbackTests(WriteOpsBase):
+    """Отмена сохранения в проекте с историей на компьютере (хранилище file:// рядом с папкой проекта)."""
+
+    def setUp(self):
+        super().setUp()
+        from svnhelper import localrepo
+        self.local_name = "локальный проект"
+        self.folder = self.base / self.local_name
+        (self.folder / "docs").mkdir(parents=True)
+        (self.folder / "схема.txt").write_text("hello", encoding="utf-8")
+        (self.folder / "docs" / "b.txt").write_text("b", encoding="utf-8")
+        localrepo.create_local_repo(SvnClient("svn"), str(self.folder), shutil.which("svnadmin"), store=self.store,
+                                    jobs_dir=self.root / "jobs")
+
+    def save(self, name, text, message):
+        (self.folder / name).write_text(text, encoding="utf-8")
+        return self.plan_and_apply("save", project=self.local_name, message=message, local=True)[1]
+
+    def test_rollback_and_redo_in_local_history(self):
+        done = self.save("схема.txt", "правка помощника", "Правка схемы по просьбе")
+        revision = done.data["number"]
+        planned, undone = self.plan_and_apply("rollback", project=self.local_name, revision=revision)
+        self.assertIn("история у вас на компьютере", planned.text)
+        self.assertTrue(undone.ok, undone.text)
+        self.assertEqual(undone.data["number"], revision + 1)
+        self.assertEqual((self.folder / "схема.txt").read_text(encoding="utf-8"), "hello")
+        self.assertEqual(svn("svn", "status", str(self.folder)).strip(), "")
+        info = svn("svn", "info", "--show-item", "revision", str(self.folder)).strip()
+        self.assertEqual(int(info), revision + 1)                     # корень копии догнал сохранение
+        _p, redone = self.plan_and_apply("rollback", project=self.local_name, revision=revision + 1)
+        self.assertTrue(redone.ok, redone.text)
+        self.assertEqual((self.folder / "схема.txt").read_text(encoding="utf-8"), "правка помощника")
+
+    def test_rollback_of_added_file_in_local_history(self):
+        added = self.save("новый.txt", "x", "Добавление нового файла")
+        _p, undone = self.plan_and_apply("rollback", project=self.local_name, revision=added.data["number"])
+        self.assertTrue(undone.ok, undone.text)
+        self.assertFalse((self.folder / "новый.txt").exists())
+
+    def test_local_history_refuses_first_save_foreign_author_and_dirty_folder(self):
+        first = self.call("rollback_plan", project=self.local_name, revision=1)
+        self.assertNotEqual(first.exit_code, 0)                       # создание истории не отменить
+        done = self.save("схема.txt", "правка", "Правка схемы по просьбе")
+        with mock.patch("svnhelper.ops.write_undo.getpass.getuser", return_value="кто-то-другой"):
+            foreign = self.call("rollback_plan", project=self.local_name, revision=done.data["number"])
+        self.assertEqual((foreign.exit_code, foreign.error.kind), (6, "policy_denied"))
+        (self.folder / "ещё.txt").write_text("e", encoding="utf-8")
+        dirty = self.call("rollback_plan", project=self.local_name, revision=done.data["number"])
+        self.assertEqual((dirty.exit_code, dirty.error.kind), (7, "local_changes"))
+        os.remove(self.folder / "ещё.txt")
+        self.use(policy(allow=("save_local",)))
+        self.assertEqual(self.call("rollback_plan", project=self.local_name, revision=done.data["number"]).exit_code, 6)
+
+    def test_local_history_refused_when_file_changed_later(self):
+        done = self.save("схема.txt", "первый вариант", "Первая правка схемы")
+        self.save("схема.txt", "второй вариант", "Вторая правка схемы")
+        result = self.call("rollback_plan", project=self.local_name, revision=done.data["number"])
+        self.assertEqual((result.exit_code, result.error.kind), (7, "newer_changes"))
 
 
 class PlanStoreTests(unittest.TestCase):

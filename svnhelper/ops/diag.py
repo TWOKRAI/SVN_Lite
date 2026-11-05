@@ -102,7 +102,7 @@ def doctor(ctx: OpsContext, check_connection: bool = True) -> Result:
         differ = template.format(window=data["program"]["window_version"], cli=data["program"]["cli_version"])
         warnings.append(differ)
         text = f"{text} {differ}"
-    text = f"{text} {texts_write.mode_text(data['policy'].get('file_mode', ''), data['policy'].get('mode', ''))}".rstrip()
+    text = f"{text} {texts_write.mode_text(data['policy'].get('file_mode', ''), data['policy'].get('mode', ''), data['policy'].get('ceiling', ''))}".rstrip()
     svn = {"server": ctx.config.server, "roots": list(ctx.config.repos), "templates_root": ctx.config.templates_root}
     if error is not None:
         return Result("doctor", False, data, text, warnings, [], error, svn)

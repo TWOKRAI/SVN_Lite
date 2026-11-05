@@ -25,18 +25,19 @@ from typing import Callable, Optional, Sequence
 CONFIG_NAME = "svn_helper.json"
 
 # Потолок прав ИИ-помощника, который задаёт администратор (agent_max_mode): от самого строгого к самому свободному
-AGENT_MODES = ("off", "read_only", "write")
+# write_confirm - запись только с подтверждением: сотрудник не может включить режим без токена (write_full)
+AGENT_MODES = ("off", "read_only", "write_confirm", "write")
 DEFAULT_AGENT_MAX_MODE = "read_only"
 
 
 def clean_agent_mode(value: object) -> Optional[str]:
-    """Режим помощника из настроек (off, read_only, write; регистр и пробелы не важны) или None, если значение неверное."""
+    """Режим помощника из настроек (off, read_only, write_confirm, write; регистр и пробелы не важны) или None, если значение неверное."""
     mode = value.strip().lower() if isinstance(value, str) else ""
     return mode if mode in AGENT_MODES else None
 
 
 def stricter_mode(first: str, second: str) -> str:
-    """Меньший из двух режимов (off меньше read_only, он меньше write). Неизвестный режим считается самым строгим."""
+    """Меньший из двух режимов (off меньше read_only, он меньше write_confirm, он меньше write). Неизвестный режим считается самым строгим."""
     def rank(mode: str) -> int:
         return AGENT_MODES.index(mode) if mode in AGENT_MODES else 0
     return first if rank(first) <= rank(second) else second
@@ -150,7 +151,7 @@ class Config:
     tortoise_installer_path: str = ""  # msi TortoiseSVN на сервере: программа предложит поставить его, если нет svn.exe
     templates_root: str = ""   # ссылка на папку шаблонов проектов на сервере ("" = шаблоны не настроены)
     project_folder_format: str = DEFAULT_FOLDER_FORMAT   # формат имени главной папки: {{date}}_{{name}}
-    agent_max_mode: str = DEFAULT_AGENT_MAX_MODE   # потолок прав помощника: off | read_only | write; сильнее выбора сотрудника
+    agent_max_mode: str = DEFAULT_AGENT_MAX_MODE   # потолок прав помощника: off | read_only | write_confirm | write; сильнее выбора сотрудника
     agent_max_mode_set: bool = False   # потолок уже задан одним из файлов (из двух файлов берётся меньший)
     filter: FilterRules = field(default_factory=FilterRules)
     # готовые комментарии для кнопок в панели «Изменения»
@@ -254,7 +255,7 @@ def apply_config_data(cfg: Config, data: dict, shared: bool = False) -> None:
     if "agent_max_mode" in data:
         mode = clean_agent_mode(data["agent_max_mode"])
         if mode is None:
-            cfg.warnings.append(f'В файле настроек "agent_max_mode" должно быть off, read_only или write. '
+            cfg.warnings.append(f'В файле настроек "agent_max_mode" должно быть off, read_only, write_confirm или write. '
                                 f"Использовано {DEFAULT_AGENT_MAX_MODE}.")
             mode = DEFAULT_AGENT_MAX_MODE
         # локальный и общий файлы: действует меньший, чтобы один из них не мог поднять потолок другого
