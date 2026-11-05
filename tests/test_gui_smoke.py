@@ -4652,7 +4652,7 @@ class ColumnOneButtonsTests(unittest.TestCase):
             root.update()
             app._update_mine_buttons()
             self.assertEqual(self.accents(app), [])
-            self.assertEqual(app.mine_name_label.cget("text"), "")
+            self.assertEqual(app.project_panel.title_label.cget("text"), "")
         finally:
             root.destroy()
 
@@ -4755,7 +4755,8 @@ class ColumnOneButtonsTests(unittest.TestCase):
             iid, item = self.select_first(root, app)
             self.pump(root, lambda: not app._checking and not item.checking)
             self.show_state(app, item, "svn", WcStatus(incoming=4))
-            self.assertEqual(app.mine_name_label.cget("text"), item.display_name)
+            self.assertFalse(hasattr(app, "mine_name_label"))          # имя проекта слева не дублируется
+            self.assertEqual(app.project_panel.title_label.cget("text"), item.display_name)
             self.assertEqual(app.update_btn.cget("text"), "Получить новое (4)")
             panel = app.project_panel                       # то же число - на ярлыке вкладки «Новое»
             self.assertEqual(panel.tabs.tab(panel.frames["incoming"], "text"), "Новое 4")
@@ -4764,9 +4765,9 @@ class ColumnOneButtonsTests(unittest.TestCase):
             self.assertEqual(panel.tabs.tab(panel.frames["incoming"], "text"), "Новое")
             row = app.actions_row
             shown = [w for w in row._items if w not in row._hidden]
-            self.assertEqual(shown, [app.mine_name_label, app.check_btn, app.update_btn, app.open_btn, app.server_btn,
+            self.assertEqual(shown, [app.check_btn, app.update_btn, app.open_btn, app.server_btn,
                                      app.more_btn, app.new_project_btn])
-            self.assertEqual([w.cget("text") for w in shown[2:]],
+            self.assertEqual([w.cget("text") for w in shown[1:]],
                              ["Получить новое", "Открыть папку", "Открыть на сервере", "Ещё ▾", "＋ Новый проект…"])
             for gone in ("commit_btn", "lock_btn", "unlock_btn", "lines_nav_btn", "goto_download_btn"):
                 self.assertFalse(hasattr(app, gone), gone)             # сохранение, занятые, ветки - справа

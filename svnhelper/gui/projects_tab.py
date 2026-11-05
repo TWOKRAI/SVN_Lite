@@ -156,8 +156,7 @@ class ProjectsTabMixin:
                                              compact=self.settings.buttons_compact_left)
         row.on_toggle = lambda: self.set_buttons_compact("left", not self.actions_row.compact)
         row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
-        # перенос по ширине колонки задаёт сама колонка (SideButtons.set_width)
-        self.mine_name_label = ttk.Label(row, text="", style="Hint.TLabel", anchor="w", wraplength=px(130))
+        # имя выбранного проекта не дублируется над кнопками: оно в шапке колонки «Состояние проекта»
         self.check_btn = ttk.Button(row, text="⟳", command=self._on_refresh_tab)      # пояснение - в панели подсказок
         self.special_btn = ttk.Button(row, text="", state="disabled")  # «Починить папку» / «Разобрать конфликт»
         self.update_btn = ttk.Button(row, text="Получить новое", command=self._on_update_selected, state="disabled")
@@ -176,7 +175,6 @@ class ProjectsTabMixin:
         # порядок сверху вниз: действия над выбранным проектом целиком по частоте, потом «Открыть…» и «Ещё»;
         # сохранение, занятые файлы и ветки - справа, на вкладках «Состояния проекта»
         # hint - пояснение в панели подсказок внизу окна (hints.HINTS); у особой кнопки ключ меняется вместе с ней
-        row.add(self.mine_name_label)
         row.add(self.check_btn, hint="project.check")
         row.add(self.special_btn, visible=False, hint="project.resolve")
         row.add(self.update_btn, hint="project.get_new")
@@ -1468,7 +1466,6 @@ class ProjectsTabMixin:
             self.update_btn.configure(text=self.UPDATE_RUNNING_TEXT)
         else:
             self.update_btn.configure(text=f"Получить новое ({incoming})" if incoming else "Получить новое")
-        self.mine_name_label.configure(text=item.display_name if item else "")
         self.more_btn.configure(state=on(item))
         self.open_btn.configure(state=on(item))
         self.server_btn.configure(state=on(item and self._server_dir(item)))
