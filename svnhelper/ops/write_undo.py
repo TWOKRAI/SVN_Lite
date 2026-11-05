@@ -136,7 +136,7 @@ def execute_rollback(ctx: OpsContext, prepared: Prepared, project: str, revision
         if merged:
             _undo_merge(ctx, path, changed)
         raise
-    ctx.audit.update(rev_after=committed.revision)
+    ctx.audit.update(rev_after=committed.revision, undone_rev=state["revision"])
     data = {"number": committed.revision, "undone": state["revision"], "count": len(state["rows"]),
             "files": [{"path": clean_name(p), "action": a} for p, a in state["rows"][:MAX_SHOWN]]}
     text = (f"Сохранение № {state['revision']} отменено в проекте «{probe.name}»: "

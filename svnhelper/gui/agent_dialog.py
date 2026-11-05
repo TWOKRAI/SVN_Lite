@@ -216,8 +216,10 @@ class AgentDialog(tk.Toplevel):
 
         buttons = ttk.Frame(body)
         buttons.grid(row=9, column=0, columnspan=2, sticky="e", pady=(px(10), 0))
-        self.log_btn = ttk.Button(buttons, text="Открыть журнал действий помощника", command=self._open_journal)
+        self.log_btn = ttk.Button(buttons, text="Открыть журнал действий помощника", command=self._open_journal_window)
         self.log_btn.pack(side="left", padx=(0, px(8)))
+        self.folder_btn = ttk.Button(buttons, text="Папка с файлами журнала", command=self._open_journal)
+        self.folder_btn.pack(side="left", padx=(0, px(8)))
         self.close_btn = ttk.Button(buttons, text="Закрыть", command=self.destroy)
         self.close_btn.pack(side="left")
 
@@ -333,6 +335,9 @@ class AgentDialog(tk.Toplevel):
 
     def _copy_claude_desktop(self) -> None:
         self._copy(claude_desktop_json(), COPIED_DESKTOP_TEXT)
+
+    def _open_journal_window(self) -> None:
+        self.app._open_agent_journal()
 
     def _open_journal(self) -> None:
         folder = journal_folder()

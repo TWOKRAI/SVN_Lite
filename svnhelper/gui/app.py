@@ -40,6 +40,7 @@ from .lines_tab import LinesTabMixin
 from .new_project_dialog import auth_error, publish_summary, recover_create_jobs, report_publish_error
 from .notify_ui import NotifyMixin
 from .agent_dialog import AgentDialog
+from .agent_journal_dialog import AgentJournalDialog
 from .project_panel import TabLoads
 
 
@@ -728,11 +729,12 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         help_menu.add_command(label="Создать ярлык на рабочем столе", command=self._create_shortcut,
                               state="normal" if getattr(sys, "frozen", False) else "disabled")
         help_menu.add_command(label="ИИ-помощник…", command=self._open_agent_dialog)
+        help_menu.add_command(label="Журнал действий помощника…", command=self._open_agent_journal)
         help_menu.add_separator()
         help_menu.add_command(label="О программе", command=self._on_about)
         self._add_menu_button("Справка", help_menu, "menu.help",
-                              ["menu.cheatsheet", "menu.docs", "menu.update", "menu.shortcut", "menu.agent", None,
-                               "menu.about"])
+                              ["menu.cheatsheet", "menu.docs", "menu.update", "menu.shortcut", "menu.agent",
+                               "menu.agent_journal", None, "menu.about"])
         root.bind("<F12>", lambda _e: self._open_settings())
         root.bind("<Control-comma>", lambda _e: self._open_settings())
         root.bind("<FocusIn>", self._on_focus_in)
@@ -1503,6 +1505,17 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             dialog.focus_set()
             return
         self._agent_dialog = AgentDialog(self)
+
+    def _open_agent_journal(self) -> None:
+        """Справка → «Журнал действий помощника…»: что делал помощник, отмена его сохранений. Окно одно."""
+        window = getattr(self, "_agent_journal", None)
+        if window is not None and window.winfo_exists():
+            window.deiconify()
+            window.lift()
+            window.focus_set()
+            window.reload()
+            return
+        self._agent_journal = AgentJournalDialog(self)
 
     def _open_log(self) -> None:
         try:
