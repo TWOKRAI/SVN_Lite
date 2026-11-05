@@ -378,7 +378,7 @@ class MineTabTests(unittest.TestCase):
             item.checking, item.status = False, WcStatus(modified=1)
             values, tag = app._row_values(item)
             self.assertEqual((values[2], tag), ("● Несохранённые правки", "new"))      # в таблице короче, чем в подробностях
-            self.assertIn("Сохранить на сервер", values[3])
+            self.assertIn("Сохранить отмеченное", values[3])
             item.status = WcStatus(conflicts=1)
             self.assertEqual(app._row_values(item)[1], "bad")
             self.assertEqual(app._row_values(MineItem("p", "x", "broken"))[0][3], "Нажмите «Починить папку»")
@@ -7783,7 +7783,8 @@ class HintWiringTests(unittest.TestCase):
             iid, item = self.select_first(root, app)
             self.pump(root, lambda: not app._checking and not item.checking)
             background = app.hint_bar.text()
-            self.assertTrue(background.startswith("Что сделать: "), background)    # строка «Что сделать» карточки
+            # U4.6: проактивная подсказка - подробный текст hints.NEXT_STEP_TEXTS (карточка говорит «что», панель - «как»)
+            self.assertEqual(background, "Всё сохранено и получено.")
             left = self.shown_side_buttons(app.actions_row)
             self.assertEqual(left, [app.check_btn, app.update_btn, app.open_btn, app.server_btn, app.more_btn,
                                     app.new_project_btn])
@@ -7907,7 +7908,7 @@ class HintWiringTests(unittest.TestCase):
             self.assertTrue(app.hint_bar._background.startswith(f"«{item.display_name}»: "), app.hint_bar._background)
             app.mine_col3.expand()
             root.update()
-            self.assertTrue(app.hint_bar._background.startswith("Что сделать: "))
+            self.assertEqual(app.hint_bar._background, "Всё сохранено и получено.")
         finally:
             root.destroy()
 

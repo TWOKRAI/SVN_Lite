@@ -343,7 +343,7 @@ class CardParity(unittest.TestCase):
     """Строки «Что сделать» (messages.status_line, localrepo.status_line) говорят то же, что код next_step."""
 
     PHRASES = {"conflict": "«Разобрать конфликт»", "get_new_with_changes": "Сначала «Получить новое»",
-               "get_new": "«Получить новое»", "save": "«Сохранить на сервер»", "nothing": "Ничего делать не нужно",
+               "get_new": "«Получить новое»", "save": "«Сохранить отмеченное»", "nothing": "Ничего делать не нужно",
                "check": "«⟳»", "checking": "Идёт проверка", "broken": "«Починить папку»", "publish": "«Отправить на сервер…»"}
 
     def test_server_project_card_matches_code(self):
@@ -383,7 +383,7 @@ class CardParity(unittest.TestCase):
         карточка берёт код у него же."""
         st = WcStatus(unversioned=1, local_changes=[change("Новый.txt", "unversioned")])
         self.assertEqual(messages.status_line("svn", st, False)[::2],
-                         ("Есть несохранённые правки", "Нажмите «Сохранить на сервер»"))
+                         ("Есть несохранённые правки", "Нажмите «Сохранить отмеченное»"))
         step = next_step(svn(st))
         self.assertEqual((step.code, step.button, step.op), ("save", "commit", "save"))
 
@@ -439,6 +439,43 @@ class StateLine(unittest.TestCase):
             "Не забудьте освободить занятые файлы (2)"))
         self.assertNotIn("освободить", messages.state_line(svn(status(my_locks=locks), read_only=True))[2])
         self.assertNotIn("освободить", messages.state_line(svn(status(my_locks=locks, switched=1)))[2])
+
+
+class StepTexts(unittest.TestCase):
+    """U4.6: тексты по ключу NextStep.text_key (messages.NEXT_STEP_TEXTS, они же hints.NEXT_STEP_TEXTS)."""
+
+    def test_every_text_key_has_texts(self):
+        for name, facts, _code, text_key, *_rest in TABLE:
+            if text_key in ("none", "busy"):
+                continue                 # проект не выбран, идёт операция: панель молчит, строки проекта нет
+            with self.subTest(name):
+                entry = messages.NEXT_STEP_TEXTS[text_key]
+                self.assertTrue(entry.short and entry.detailed, text_key)
+        self.assertLessEqual(set(messages.OTHER_PROBLEMS), set(messages.NEXT_STEP_TEXTS))
+
+    def test_numbers_and_names_are_filled_in(self):
+        step = next_step(svn(status(incoming=3, incoming_files=FILES)))
+        self.assertEqual(messages.step_text(step), "У коллег новое: 3 файла. Нажмите «Получить новое» слева: ваши "
+                                                   "файлы не пострадают.")
+        step = next_step(svn(status(local_changes=[change(), change("b.txt")])))
+        self.assertTrue(messages.step_text(step).startswith("Не сохранено: 2 файла."))
+        step = next_step(svn(status(local_changes=[change("p/Узел.dwg", needs_lock=True)])))
+        self.assertTrue(messages.step_text(step).startswith("«Узел.dwg» изменён, но не занят"))
+        step = next_step(svn(status(conflicts=1, local_changes=[change("Рама.cdw", "conflicted")])))
+        self.assertTrue(messages.step_text(step).startswith("Конфликт в «Рама.cdw»: "))
+        step = next_step(svn(status(), needed_locked=("Рама.cdw", "Иванов", "с 10:20")))
+        self.assertEqual(messages.step_text(step, "short"), "«Рама.cdw» занят: Иванов, с 10:20. Попросите освободить его")
+        step = next_step(svn(status(), other=("сушилки", "conflict")))
+        self.assertEqual(messages.step_text(step, "short"), "В проекте «сушилки»: конфликт")
+        step = next_step(Facts(folder_missing=True))
+        self.assertEqual(messages.step_text(step, "short", folder="Z:\\Проекты"), "Папка «Z:\\Проекты» не найдена")
+
+    def test_card_and_panel_use_one_entry(self):
+        """Строка «Что сделать» карточки - поле short того же ключа, что подробный текст панели."""
+        st = status(incoming=1, local_changes=ONE)
+        step = next_step(svn(st))
+        self.assertEqual(messages.state_line(svn(st))[2], messages.step_text(step, "short"))
+        self.assertEqual(messages.state_line(svn(st))[0], messages.NEXT_STEP_TEXTS[step.text_key].state)
 
 
 class PureModule(unittest.TestCase):

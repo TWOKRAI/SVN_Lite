@@ -184,6 +184,30 @@ class UiTextsTests(unittest.TestCase):
         self.assertTrue(all(text.startswith("Разрешить помощнику: ") for text in
                             (agent_dialog.PERMISSION_PREFIX + label for _a, label in agent_dialog.PERMISSIONS)))
 
+    def test_next_step_texts_are_plain_russian(self):
+        """U4.6: тексты «что делать дальше» (hints.NEXT_STEP_TEXTS: карточка, таблица, панель подсказок) и фразы о
+        другом проекте - с подставленными полями - без терминов svn и слов «ревизия», «репозиторий»."""
+        from svnhelper import messages
+        from svnhelper.gui import hints
+        self.assertIs(hints.NEXT_STEP_TEXTS, messages.NEXT_STEP_TEXTS)
+        fields = messages.step_fields({"files": 3, "incoming": 2, "conflicts": 1, "file": "Рама.cdw", "who": "Иванов",
+                                       "since": "с 10:20", "project": "сушилки", "project_code": "conflict",
+                                       "error": "Сбой."}, where=messages.SERVER_TEXT, folder="Z:\\Проекты")
+        texts = []
+        for entry in hints.NEXT_STEP_TEXTS.values():
+            texts += [messages.fill(t, fields) for t in (entry.state, entry.short, entry.detailed, entry.table)]
+        texts += list(messages.OTHER_PROBLEMS.values())
+        found = []
+        for text in texts:
+            cleaned = text
+            for ok in ALLOWED:
+                cleaned = cleaned.replace(ok, "")
+            if (FORBIDDEN.search(cleaned) or FORBIDDEN_RU.search(cleaned) or SVN_WORD.search(cleaned)
+                    or STORAGE_WORD.search(cleaned)):
+                found.append(text[:80])
+        self.assertEqual(found, [])
+        self.assertNotIn("{", "".join(texts))          # все поля подставлены
+
     def test_forbidden_words_are_caught(self):
         tree = ast.parse('a = "Проект в хранилище"\nb = "Подключён к SVN"\nc = "Хранилище возвращено"\n'
                          'd = "SVN-lite и TortoiseSVN можно"\n')

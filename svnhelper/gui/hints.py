@@ -18,6 +18,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional, Sequence, Union
 
+from .. import messages, next_step as ns
 from ..config import HINT_MODES
 
 # режимы панели (настройка settings.hint_mode, меню «Вид → Подсказки внизу»)
@@ -179,6 +180,23 @@ REASONS: dict[str, str] = {
     "lines.download_other": "выберите в таблице ветку или версию",
     "lines.new_tag": "это уже зафиксированная версия",
 }
+
+# «Что делать дальше» (docs/PLAN_ui_v4.md, раздел 6.6): ключ NextStep.text_key -> messages.StepText (состояние, тег,
+# коротко, подробно). Словарь один на карточку, таблицу и панель; лежит в messages, потому что строку «Что сделать»
+# карточки и таблицы собирает messages.state_line, а messages не может зависеть от окна (его берут ops и CLI).
+NEXT_STEP_TEXTS = messages.NEXT_STEP_TEXTS
+_SILENT_WHEN_SHORT = (ns.NOTHING, ns.READ_ONLY)     # «всё в порядке»: в режиме «коротко» панель пуста
+
+
+def step_texts(step: "ns.NextStep", **fields: str) -> tuple[str, str]:
+    """(подробно, коротко) для панели по шагу next_step. Молчащий шаг (нет связи, идёт операция или проверка) - пусто:
+    об этом говорят полоса «Нет связи» и ход работы справа."""
+    if step.quiet:
+        return "", ""
+    detailed = messages.step_text(step, "detailed", **fields)
+    short = "" if step.code in _SILENT_WHEN_SHORT else messages.step_text(step, "short", **fields)
+    return tuple(_sentence(text) if text.strip() else "" for text in (detailed, short))    # type: ignore[return-value]
+
 
 Reason = Union[str, Callable[[], str], None]
 _bar: Optional["HintBar"] = None
@@ -381,6 +399,7 @@ class HintBar(ttk.Frame):
         self._hover: Optional[tuple[tk.Misc, Callable[[], str]]] = None
         self._focus: Optional[tuple[tk.Misc, Callable[[], str]]] = None
         self._error = self._result = self._background = ""
+        self._background_short: Optional[str] = None
         self._timers: dict[str, Optional[str]] = {"leave": None, "error": None, "result": None}
         self._progress = ""
         self._cancel_cmd: Optional[Callable[[], None]] = None
@@ -455,7 +474,7 @@ class HintBar(ttk.Frame):
                     return slot[1]()
                 except tk.TclError:          # виджет уже уничтожен
                     continue
-        return self._error or self._result or self._background
+        return self._error or self._result or self.background()
 
     def hovered(self) -> Optional[tk.Misc]:
         """Виджет под курсором, чьё пояснение показано (None - нет такого)."""
@@ -506,11 +525,18 @@ class HintBar(ttk.Frame):
         self._restart("result", RESULT_MS)
         self._render()
 
-    def set_background(self, text: str) -> None:
-        """Фоновый текст: что делать с выбранным проектом (или подсказка, пока проект не выбран)."""
-        if text != self._background:
-            self._background = text
+    def set_background(self, text: str, short: Optional[str] = None) -> None:
+        """Фоновый текст: что делать с выбранным проектом (или подсказка, пока проект не выбран). short - он же в режиме
+        «коротко» (None - тот же текст)."""
+        if (text, short) != (self._background, self._background_short):
+            self._background, self._background_short = text, short
             self._render()
+
+    def background(self) -> str:
+        """Фоновый текст для текущего режима (что видно, когда нет ни наведения, ни совета, ни результата)."""
+        if self.mode == MODE_SHORT and self._background_short is not None:
+            return self._background_short
+        return self._background
 
     def _restart(self, name: str, ms: int) -> None:
         self._cancel(name)

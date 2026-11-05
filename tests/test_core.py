@@ -104,7 +104,7 @@ class MessagesTests(unittest.TestCase):
                          ("bad", "Нажмите «Разобрать конфликт»"))
         self.assertEqual(sl("svn", WcStatus(incoming=1, modified=1), True),
                          ("Есть новое на сервере и ваши правки", "new",
-                          "Сначала «Получить новое», потом «Сохранить на сервер»"))
+                          "Сначала «Получить новое», потом «Сохранить отмеченное»"))
         self.assertEqual(sl("svn", WcStatus(incoming=1), True)[0], "Есть новое на сервере")
         self.assertEqual(sl("svn", WcStatus(modified=1), True)[0], "Есть несохранённые правки")
         self.assertEqual(sl("svn", WcStatus(), True), ("Актуален", "ok", "Ничего делать не нужно"))

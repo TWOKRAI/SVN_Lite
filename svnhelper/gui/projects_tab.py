@@ -1133,9 +1133,15 @@ class ProjectsTabMixin:
         """Карточка выбранного проекта (шапка «Состояния проекта») сейчас на экране."""
         return not self.mine_col3.collapsed and self._list_mode() == "mine"
 
+    def _hint_step(self, item: Optional[MineItem]) -> next_step.NextStep:
+        """Следующий шаг для панели подсказок (docs/PLAN_ui_v4.md, раздел 6): выбранный проект по тем же фактам, что
+        у карточки и подсветки."""
+        return next_step.next_step(self._facts_of(item) if item is not None else next_step.Facts())
+
     def _sync_hint_background(self) -> None:
-        """Фоновый текст панели подсказок: что делать с выбранным проектом (та же строка «Что сделать», что в
-        карточке). Карточки не видно (свёрнута, «Скачать проект») - панель говорит ещё и имя и состояние."""
+        """Фоновый текст панели подсказок - проактивная подсказка: что сделать и как (какая кнопка и где), слова из
+        hints.NEXT_STEP_TEXTS - те же, что у строки «Что сделать» карточки. Карточки не видно (свёрнута,
+        «Скачать проект») - панель говорит ещё и имя и состояние."""
         bar = getattr(self, "hint_bar", None)
         if bar is None or not hasattr(self, "project_panel"):
             return
@@ -1146,12 +1152,18 @@ class ProjectsTabMixin:
         if item is None:
             bar.set_background(self._mine_hint_text)
             return
-        name, state, _tag, _branch, todo, _note = self._header_fields(item)
-        todo = f"Что сделать: {todo}" if todo.strip(" .") else ""
-        if self._card_visible():
-            bar.set_background(todo or self._sentence(state))
-        else:
-            bar.set_background(" ".join(p for p in (f"«{name}»: {self._sentence(state)}", todo) if p))
+        step = self._hint_step(item)
+        detailed, short = hints.step_texts(step, where=self._where_text(item))
+        if not self._card_visible():
+            name, state = item.display_name, self._state_cells(item)[0]
+            prefix = f"«{name}»: {self._sentence(state)}" if state else f"«{name}»."
+            detailed, short = (" ".join(p for p in (prefix, text) if p) for text in (detailed, short))
+        bar.set_background(detailed, short)
+
+    @staticmethod
+    def _where_text(item: Optional[MineItem]) -> str:
+        """Поле {where} текстов next_step: откуда проект («Хранится на этом компьютере» / «Проект с сервера»)."""
+        return messages.LOCAL_TEXT if item is not None and item.local else messages.SERVER_TEXT
 
     UPDATE_RUNNING_TEXT = "Получаю новое…"     # подпись серой «Получить новое», пока оно идёт
 
