@@ -109,6 +109,8 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self._auto_auth_failed = False             # автообновление остановлено: вход на сервер отменили
         self._mine_scanned = False                 # список скачанных папок хотя бы раз прочитан
         self._scan_gen = 0                         # номер поиска проектов; ответы прежних поисков отбрасываются
+        self._scan_running = False                 # поиск проектов идёт (его ответ ещё не пришёл)
+        self._check_all_after_scan = False         # когда поиск закончится, проверить все проекты (а не только старые)
         # колонка 3: вкладки выбранного проекта
         self._tab_loads = TabLoads()               # что из вкладок Новое/История уже прочитано; смена проекта отменяет
         self._panel_key = ""                       # проект (normcase пути), для которого показана колонка 3

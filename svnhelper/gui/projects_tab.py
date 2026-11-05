@@ -551,9 +551,14 @@ class ProjectsTabMixin:
             self._on_mine_shown()
 
     def _on_mine_shown(self) -> None:
-        """Видна подвкладка «Мои проекты» (и при запуске): список устарел - ищем проекты, иначе состояние свежее."""
+        """Видна подвкладка «Мои проекты» (и при запуске): список устарел - ищем проекты, иначе состояние свежее.
+        Поиск уже идёт (например, только что скачан проект) - проверяем все проекты один раз, когда он закончится:
+        проверка старых строк сейчас повторилась бы после поиска (ревью v4, находка 6)."""
         if self._mine_dirty:
             self._scan_projects()
+        elif self._scan_running:
+            self._auto_auth_failed = False
+            self._check_all_after_scan = True
         else:
             self._auto_auth_failed = False
             self._load_project_tab()   # колонка 3 показывает открытую вкладку проекта
@@ -691,6 +696,7 @@ class ProjectsTabMixin:
         # папку можно сменить, пока идёт поиск в прежней: ответ прежнего поиска опоздал и не нужен
         self._scan_gen += 1
         gen = self._scan_gen
+        self._scan_running = True
 
         def work() -> list[MineItem]:
             names = sorted((n for n in os.listdir(base)
@@ -700,6 +706,7 @@ class ProjectsTabMixin:
 
         def done(res, err, _stamp) -> None:
             if gen == self._scan_gen:
+                self._scan_running = False
                 self._on_scanned(base, res, err)
 
         self.run_bg(work, done)
@@ -867,6 +874,7 @@ class ProjectsTabMixin:
         self.mine_tree.delete(*self.mine)     # и спрятанные поиском строки тоже
         self.mine.clear()
         self._mine_scanned = True
+        check_all, self._check_all_after_scan = self._check_all_after_scan, False
         if error is not None:
             self._mine_hint(f"Папка {base} не найдена или недоступна. Выберите другую папку в списке «Папка» выше.")
             # папки нет. Первый запуск (папку ещё никто не выбирал, её создаст скачивание) - тот же путь к скачиванию,
@@ -905,6 +913,9 @@ class ProjectsTabMixin:
         self._refresh_project_panel()
         self._update_mine_buttons()
         self._update_lock_warning()
+        if check_all:                     # подвкладку открыли, пока шёл поиск: проверяем всё один раз
+            self._on_check_all()
+            return
         self._check_status(interrupted)   # встанут в очередь, если проверка ещё идёт
         self._auto_check()
 

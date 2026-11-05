@@ -1073,6 +1073,46 @@ class MineTabTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_after_download_one_scan_and_one_check(self):
+        """Ревью v4, находка 6: после скачивания один поиск проектов и одна проверка каждого проекта на сервере.
+        Раньше переход на «Мои проекты» проверял старые строки, пока шёл поиск, а после поиска незаконченные проверки
+        запускались ещё раз. Проверка здесь медленнее поиска (как у сервера по сети): иначе вторая не случилась бы."""
+        from types import SimpleNamespace
+        from svnhelper.gui.models import DownloadJob
+        root, app, base = self.make_app("dl_once")
+        try:
+            dest = os.path.join(base, "upd_project")
+            app.select_list_mode("download")
+            root.update()
+            job = DownloadJob(url=self.server + "/test/projects/upd_project/trunk", name="upd_project", dest=dest,
+                              display_url=self.server + "/test/projects/upd_project", base=base)
+            app.job = job
+            client = app.client
+            real_status = client.status
+
+            def slow_status(*args, **kwargs):
+                if kwargs.get("check_server"):
+                    time.sleep(1.0)
+                return real_status(*args, **kwargs)
+
+            with mock.patch.object(app, "_scan_projects", wraps=app._scan_projects) as scan, \
+                    mock.patch.object(app, "_on_scanned", wraps=app._on_scanned) as scanned, \
+                    mock.patch.object(client, "status", side_effect=slow_status) as status:
+                app._finish_success(job, SimpleNamespace(revision=1))
+                self.assertEqual(app._list_mode(), "mine")
+                self.pump(root, lambda: scanned.called and not app._checking and not app._check_queue)
+                end = time.monotonic() + 1.5          # опоздавшие события и проверки тоже разобраны
+                while time.monotonic() < end:
+                    root.update()
+                    time.sleep(0.02)
+                self.assertFalse(app._checking)
+                checked = [os.path.normcase(c.args[0]) for c in status.call_args_list if c.kwargs.get("check_server")]
+            self.assertEqual(scan.call_count, 1)
+            self.assertEqual(checked, [os.path.normcase(dest)])
+            self.assertEqual(app._selected_item().path, dest)
+        finally:
+            root.destroy()
+
     def test_results_and_quiet_errors_go_to_hint_bar(self):
         """U4.5: итог операции - слева в панели (если он не написан в видимой карточке), тихий сбой - советом;
         фоновая проверка проектов панель не трогает."""
@@ -2298,7 +2338,8 @@ class ListModeTests(unittest.TestCase):
 
     def test_subtab_labels_tree_and_form_fit_at_every_scale(self):
         """Ярлыки «Мои проекты | Скачать проект» не обрезаны в колонке «Проекты», дерево, поля и кнопки формы
-        видны целиком в самом маленьком окне (900x640) при 100, 125 и 150%."""
+        видны целиком в самом маленьком окне (900x640) при 100, 125 и 150%. Ревью v4, находка 3: и ярлык с
+        процентами скачивания («Скачать · 100%») на обеих подвкладках."""
         for scale in (1.0, 1.25, 1.5):
             with self.subTest(scale=scale):
                 root, app, _ = self.make_app(scale=scale, visible=True)
@@ -2307,12 +2348,16 @@ class ListModeTests(unittest.TestCase):
                 root.update()
                 for mode in ("mine", "download"):
                     app.select_list_mode(mode)
-                    root.update()
-                    tabs, y = app.list_tabs, app.px(10)
-                    on_tab = [x for x in range(tabs.winfo_width()) if tabs.identify(x, y)]
-                    self.assertEqual(tabs.index(f"@{on_tab[0]},{y}"), 0, mode)
-                    self.assertEqual(tabs.index(f"@{on_tab[-1]},{y}"), 1, mode)
-                    self.assertLess(on_tab[-1], tabs.winfo_width() - 2, f"{mode}: ярлыки не помещаются")
+                    for percent in (None, 100):
+                        app._set_download_tab_label(percent)
+                        root.update()
+                        tabs, y = app.list_tabs, app.px(10)
+                        on_tab = [x for x in range(tabs.winfo_width()) if tabs.identify(x, y)]
+                        self.assertEqual(tabs.index(f"@{on_tab[0]},{y}"), 0, mode)
+                        self.assertEqual(tabs.index(f"@{on_tab[-1]},{y}"), 1, mode)
+                        self.assertLess(on_tab[-1], tabs.winfo_width() - 2,
+                                        f"{mode}, {percent}%: ярлыки не помещаются")
+                    app._set_download_tab_label()
                 right = root.winfo_rootx() + root.winfo_width()
                 bottom = root.winfo_rooty() + root.winfo_height()
                 for widget in (app.tree, app.search_entry, app.url_entry, app.dir_entry, app.browse_btn,

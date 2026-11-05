@@ -1008,10 +1008,14 @@ class DownloadTabMixin:
 
     # -- завершение задачи -----------------------------------------------------------
 
+    DOWNLOAD_TAB_PROGRESS = "Скачать · {percent}%"   # ярлык во время скачивания: короче «Скачать проект · 45%»
+
     def _set_download_tab_label(self, percent: Optional[int] = None) -> None:
-        """Ярлык подвкладки «Скачать проект»: пока идёт скачивание, с процентами («Скачать проект · 45%»)."""
+        """Ярлык подвкладки «Скачать проект»: пока идёт скачивание, с процентами («Скачать · 45%»). Слово «проект» на
+        время скачивания убрано: с ним ярлык не помещался в колонку «Проекты» шириной 260 px на «Мои проекты»."""
         title = dict(self.LIST_MODES)["download"]
-        self.list_tabs.tab(self.list_frames["download"], text=f"{title} · {percent}%" if percent is not None else title)
+        text = self.DOWNLOAD_TAB_PROGRESS.format(percent=percent) if percent is not None else title
+        self.list_tabs.tab(self.list_frames["download"], text=text)
 
     def _end_job(self) -> None:
         self._set_download_tab_label()
