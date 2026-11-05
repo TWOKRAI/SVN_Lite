@@ -300,11 +300,12 @@ class CliImportTests(unittest.TestCase):
         self.assertNotIn("collect_submodules('mcp')", spec)         # лишнее в exe не тянем
         build = (ROOT / "packaging" / "build.bat").read_text(encoding="utf-8")
         self.assertIn("svnlite.spec", build)
-        order = [build.index(text) for text in ("pip install -r requirements-mcp.txt", 'python -c "import mcp"',
+        order = [build.index(text) for text in ("pyinstaller -r requirements-mcp.txt", '-c "import mcp"',
                                                 "packaging\\svnlite.spec", "out\\dist\\svnlite.exe --version",
                                                 "echo Done:")]
         self.assertEqual(order, sorted(order))                      # mcp ставится и проверяется до сборки, exe после неё
-        for command in ("requirements-mcp.txt", 'python -c "import mcp"', "packaging\\svnlite.spec",
+        self.assertIn("out\\venv_build", build)                     # сборка идёт в своём окружении, не в глобальном Python
+        for command in ("pyinstaller -r requirements-mcp.txt", '-c "import mcp"', "packaging\\svnlite.spec",
                         "out\\dist\\svnlite.exe --version"):
             line = build[build.index(command):].split("\n")[1]
             self.assertIn("if errorlevel 1 goto :fail", line)
