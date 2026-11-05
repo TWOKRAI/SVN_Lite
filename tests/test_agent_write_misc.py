@@ -185,11 +185,13 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("пароль:", text.lower())
 
     def test_cli_writes_catalog_file_in_utf8(self):
-        target = Path(self.tmp.name) / "справочник.md"
+        outer = tempfile.TemporaryDirectory()
+        self.addCleanup(outer.cleanup)
+        target = Path(outer.name) / "справочник.md"       # вне папки данных программы
         code = cli.main(["commands", "--file", str(target), "--json"], ctx=self.ctx)
         self.assertEqual(code, 0)
         self.assertTrue(target.read_text(encoding="utf-8").startswith("# Справочник команд SVN-lite"))
-        broken = Path(self.tmp.name) / "нет такой папки" / "x.md"
+        broken = Path(outer.name) / "нет такой папки" / "x.md"
         self.assertEqual(cli.main(["commands", "--file", str(broken), "--json"], ctx=self.ctx), 1)
 
     def test_catalog_does_not_change_anything_and_is_not_a_write(self):
@@ -233,6 +235,54 @@ class CliWriteTests(unittest.TestCase):
             for word in forbidden:
                 self.assertNotIn(word, op.name)
                 self.assertNotIn(word, cli.command_name(op.name))
+
+
+class CliFileGuardTests(unittest.TestCase):
+    """Замечания проверки безопасности: --message-file не читает чужое, --file не затирает чужое."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name) / "данные"
+        self.data.mkdir()
+        env = mock.patch.dict(os.environ, {"SVNLITE_DATA_DIR": str(self.data)})
+        env.start()
+        self.addCleanup(env.stop)
+        from svnhelper.ops.errors import OpsError
+        self.OpsError = OpsError
+
+    def test_message_file_refuses_program_data_big_and_binary_files(self):
+        secret = self.data / "settings.json"
+        secret.write_text("{}", encoding="utf-8")
+        with self.assertRaises(self.OpsError):
+            cli.read_message(str(secret))
+        big = Path(self.tmp.name) / "большой.txt"
+        big.write_bytes(b"a" * (cli.MAX_MESSAGE_BYTES + 1))
+        with self.assertRaises(self.OpsError):
+            cli.read_message(str(big))
+        binary = Path(self.tmp.name) / "двоичный.bin"
+        binary.write_bytes(b"ab" + bytes([0]) + b"cd")
+        with self.assertRaises(self.OpsError):
+            cli.read_message(str(binary))
+        fine = Path(self.tmp.name) / "комментарий.txt"
+        fine.write_text("Правка допусков в чертеже", encoding="utf-8")
+        self.assertEqual(cli.read_message(str(fine)), "Правка допусков в чертеже")
+
+    def test_catalog_file_only_md_outside_program_folders_and_never_over_foreign_file(self):
+        from svnhelper.ops.result import Result
+        result = Result("commands", data={"markdown": cli.CATALOG_HEADER + chr(10) + "текст"})
+        folder = Path(self.tmp.name) / "вне"
+        folder.mkdir()
+        for bad in (folder / "справочник.txt", self.data / "справочник.md", self.data / "agent_policy.json"):
+            self.assertFalse(cli._save_catalog(Result("commands", data=dict(result.data)), str(bad)).ok, bad)
+            self.assertFalse(bad.exists() and bad.read_text(encoding="utf-8").startswith(cli.CATALOG_HEADER), bad)
+        foreign = folder / "чужой.md"
+        foreign.write_text("мои заметки", encoding="utf-8")
+        self.assertFalse(cli._save_catalog(Result("commands", data=dict(result.data)), str(foreign)).ok)
+        self.assertEqual(foreign.read_text(encoding="utf-8"), "мои заметки")
+        mine = folder / "справочник.md"
+        self.assertTrue(cli._save_catalog(Result("commands", data=dict(result.data)), str(mine)).ok)
+        self.assertTrue(cli._save_catalog(Result("commands", data=dict(result.data)), str(mine)).ok)      # прежний справочник заменяется
 
 
 if __name__ == "__main__":

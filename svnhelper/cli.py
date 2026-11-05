@@ -15,6 +15,7 @@ import argparse
 import importlib
 import json
 import logging
+import os
 import sys
 from typing import Optional
 
@@ -194,11 +195,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+CATALOG_HEADER = "# Справочник команд SVN-lite"
+MAX_MESSAGE_BYTES = 8000                    # комментарий к сохранению: несколько абзацев, не файл целиком
+MAX_FILE_NOTE = "Файл слишком большой для комментария."
+
+
+def _protected_places() -> list:
+    """Папки, из которых помощник не читает и в которые не пишет через --message-file и --file: данные программы
+    (настройки, политика, журналы, планы), кэш входа svn, ключи ssh, настройки Claude."""
+    from .config import data_dir
+    home = os.path.expanduser("~")
+    appdata = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+    places = [str(data_dir()), os.path.join(appdata, "Subversion"), os.path.join(home, ".ssh"),
+              os.path.join(home, ".claude"), os.path.join(home, ".subversion")]
+    return [os.path.normcase(os.path.realpath(p)) for p in places]
+
+
+def is_protected(path: str) -> bool:
+    real = os.path.normcase(os.path.realpath(path))
+    return any(real == p or real.startswith(p + os.sep) for p in _protected_places())
+
+
 def _save_catalog(result: Result, target: str) -> Result:
-    """Справочник команд в файл (UTF-8). Не записался: ответ с ошибкой, файла нет."""
+    """Справочник команд в файл (UTF-8). Только файл `.md` вне служебных папок программы; существующий файл заменяется,
+    только если это прежний справочник (его первая строка). Не записался: ответ с ошибкой, файла нет."""
     try:
+        if not target.lower().endswith(".md") or is_protected(target):
+            raise invalid_args("Справочник записывается в файл с расширением .md вне служебных папок программы.")
+        if os.path.exists(target):
+            with open(target, "r", encoding="utf-8", errors="replace") as old:
+                if not old.readline().startswith(CATALOG_HEADER):
+                    raise invalid_args("Такой файл уже есть и это не справочник команд: выберите другое имя.")
         with open(target, "w", encoding="utf-8", newline=chr(10)) as handle:
             handle.write(result.data.get("markdown", ""))
+    except OpsError as exc:
+        return Result.failure("commands", from_exception(exc))
     except OSError as exc:
         return Result.failure("commands", from_exception(exc))
     result.data["file"] = target
@@ -207,12 +238,24 @@ def _save_catalog(result: Result, target: str) -> Result:
 
 
 def read_message(source: str) -> str:
-    """Комментарий из файла (UTF-8) или со стандартного ввода («-»). Не прочитался: ответ с кодом 2."""
+    """Комментарий из файла (UTF-8) или со стандартного ввода («-»). Не прочитался: ответ с кодом 2.
+
+    Помощник не должен отправить на сервер чужой файл под видом комментария: служебные папки программы, кэш входа,
+    ключи и настройки Claude не читаются, размер ограничен (MAX_MESSAGE_BYTES), двоичное содержимое отвергается.
+    Комментарий и без того показывается человеку в плане."""
     try:
         if source == "-":
-            return sys.stdin.buffer.read().decode("utf-8-sig")
-        with open(source, "rb") as handle:
-            return handle.read().decode("utf-8-sig")
+            data = sys.stdin.buffer.read(MAX_MESSAGE_BYTES + 1)
+        else:
+            if is_protected(source):
+                raise invalid_args("Из этой папки комментарий не читается: положите текст комментария в обычный файл.")
+            with open(source, "rb") as handle:
+                data = handle.read(MAX_MESSAGE_BYTES + 1)
+        if len(data) > MAX_MESSAGE_BYTES:
+            raise invalid_args(f"{MAX_FILE_NOTE} Комментарий не длиннее {MAX_MESSAGE_BYTES} байт.")
+        if b"\x00" in data:
+            raise invalid_args("Файл с комментарием не текстовый.")
+        return data.decode("utf-8-sig")
     except (OSError, UnicodeDecodeError) as exc:
         raise invalid_args(f"Файл с комментарием не прочитан: {exc.__class__.__name__}. Нужен текст в кодировке UTF-8.") from exc
 

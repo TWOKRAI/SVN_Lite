@@ -16,7 +16,6 @@
       "Bash(svnlite server-projects)",
       "Bash(svnlite server-projects *)",
       "Bash(svnlite commands)",
-      "Bash(svnlite commands *)",
       "Bash(svnlite get-new-plan *)",
       "Bash(svnlite save-plan *)",
       "Bash(svnlite lock-plan *)",
@@ -28,6 +27,7 @@
       "Bash(svnlite publish-plan *)"
     ],
     "ask": [
+      "Bash(svnlite commands *)",
       "Bash(svnlite get-new-apply *)",
       "Bash(svnlite save-apply *)",
       "Bash(svnlite lock-apply *)",

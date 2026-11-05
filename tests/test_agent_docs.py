@@ -108,7 +108,8 @@ class AgentDocsTests(unittest.TestCase):
         fields = dict(line.split(": ", 1) for line in front.strip().splitlines())
         self.assertEqual(fields["name"], "svn-lite")
         # allowed-tools перечисляет только чтение и планы: любая запись (`…-apply`) требует вопроса человеку
-        allowed = re.findall(r"Bash\(svnlite ([a-z-]+):\*\)", fields["allowed-tools"])
+        allowed = re.findall(r"Bash\(svnlite ([a-z-]+)(?::\*)?\)", fields["allowed-tools"])
+        self.assertIn("Bash(svnlite commands)", fields["allowed-tools"])      # `commands --file` пишет файл: только без параметров
         self.assertEqual(set(allowed), self.commands - {"mcp", "project-info"} - APPLY_COMMANDS)
         self.assertNotIn("Bash(svnlite:*)", fields["allowed-tools"])
         self.assertGreater(len(fields["description"]), 40)
@@ -172,7 +173,9 @@ class AgentDocsTests(unittest.TestCase):
         self.assertEqual({re.match(r"Bash\(svnlite ([a-z-]+)", rule).group(1) for rule in permissions["allow"]},
                          self.commands - {"mcp", "project-info"} - APPLY_COMMANDS)
         self.assertEqual({re.match(r"Bash\(svnlite ([a-z-]+)", rule).group(1) for rule in permissions["ask"]},
-                         APPLY_COMMANDS)
+                         APPLY_COMMANDS | {"commands"})
+        self.assertIn("Bash(svnlite commands *)", permissions["ask"])
+        self.assertNotIn("Bash(svnlite commands *)", permissions["allow"])
         for rule in ("Bash(svn *)", "Bash(svn.exe *)", "Bash(svnadmin *)"):
             self.assertIn(rule, permissions["deny"])
         for tool in ("Read", "Edit"):

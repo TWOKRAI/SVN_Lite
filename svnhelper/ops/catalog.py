@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from . import texts, texts_write
@@ -97,8 +98,7 @@ def cli_example(op: Operation, project: str) -> str:
     for text, required in cli_arguments(op):
         if not required and "<проект>" not in text and "<папка>" not in text:
             continue
-        parts.append(text.replace("<проект> ...", _quote(project)).replace("<проект>", _quote(project))
-                     .replace("<папка>", _quote(project)))
+        parts.append(re.sub(r"<(?:проект|папка)>(?: \.\.\.)?", lambda _m: _quote(project), text))
     if op_kind(op) == KIND_APPLY:
         parts.append("--token <токен из плана>")
     return " ".join(parts) + " --text"

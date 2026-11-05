@@ -1,7 +1,7 @@
 ---
 name: svn-lite
 description: Помощь конструктору с проектами в SVN-lite: что с моими проектами, есть ли новое у коллег, какие у меня несохранённые правки, история, занятые файлы, шаблоны, проекты на сервере; а если сотрудник разрешил запись, то получить новое, сохранить на сервер, занять и освободить файл, создать ветку или версию, отменить своё сохранение, создать и отправить проект. Использовать, когда человек спрашивает про состояние своих проектов или просит что-то с ними сделать.
-allowed-tools: Bash(svnlite doctor:*) Bash(svnlite projects:*) Bash(svnlite status:*) Bash(svnlite changes:*) Bash(svnlite incoming:*) Bash(svnlite history:*) Bash(svnlite locks:*) Bash(svnlite info:*) Bash(svnlite templates:*) Bash(svnlite server-projects:*) Bash(svnlite commands:*) Bash(svnlite get-new-plan:*) Bash(svnlite save-plan:*) Bash(svnlite lock-plan:*) Bash(svnlite unlock-plan:*) Bash(svnlite branch-plan:*) Bash(svnlite switch-plan:*) Bash(svnlite rollback-plan:*) Bash(svnlite create-project-plan:*) Bash(svnlite publish-plan:*)
+allowed-tools: Bash(svnlite doctor:*) Bash(svnlite projects:*) Bash(svnlite status:*) Bash(svnlite changes:*) Bash(svnlite incoming:*) Bash(svnlite history:*) Bash(svnlite locks:*) Bash(svnlite info:*) Bash(svnlite templates:*) Bash(svnlite server-projects:*) Bash(svnlite commands) Bash(svnlite get-new-plan:*) Bash(svnlite save-plan:*) Bash(svnlite lock-plan:*) Bash(svnlite unlock-plan:*) Bash(svnlite branch-plan:*) Bash(svnlite switch-plan:*) Bash(svnlite rollback-plan:*) Bash(svnlite create-project-plan:*) Bash(svnlite publish-plan:*)
 ---
 
 # SVN-lite: проекты конструктора
@@ -26,7 +26,7 @@ allowed-tools: Bash(svnlite doctor:*) Bash(svnlite projects:*) Bash(svnlite stat
 | `svnlite info <проект> --json` | Сведения о проекте: название, автор, дата создания, шаблон, где хранится, ветка или версия, архив |
 | `svnlite templates --json` | Шаблоны, из которых можно создать проект (без связи: те, что уже на компьютере, с пометкой `offline`) |
 | `svnlite server-projects [путь] [--depth N] --json` | Просмотр папок и проектов на сервере без скачивания (N от 1 до 3). Без пути: главные папки |
-| `svnlite commands [--markdown] [--file справочник.md] --json` | Каталог всех команд с параметрами, примерами и вашими настоящими проектами. С `--file` записывает справочник в файл Markdown: его можно целиком отдать любому ИИ-чату, и он подскажет команды для терминала |
+| `svnlite commands [--markdown] [--file справочник.md] --json` | Каталог всех команд с параметрами, примерами и вашими настоящими проектами. С `--file` записывает справочник в файл Markdown (только `.md` вне служебных папок; требует подтверждения человека): его можно целиком отдать любому ИИ-чату, и он подскажет команды для терминала. Агент без файла получает тот же каталог через MCP `list_commands` |
 | `svnlite mcp` | Запуск MCP-сервера для Claude Desktop и Claude Code. Вручную из чата не вызывать: клиент запускает его сам |
 
 `<проект>`: название (как называется папка проекта на компьютере) или полный путь. Пути вида `/c/Users/...` (Git Bash) понимаются. Несколько совпадений: ошибка `ambiguous` со списком, спросите человека. `svnlite --version` показывает версию, `svnlite <команда> --help` справку по команде. Опасных команд (удаление на сервере, разбор конфликта, починка папки, возврат файлов, смена пароля и настроек) у помощника нет и не будет.
