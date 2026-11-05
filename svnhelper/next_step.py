@@ -105,7 +105,8 @@ class Facts:
     login_failed: bool = False            # вход на сервер не выполнен
     folder_missing: bool = False          # папка проектов не найдена
     needed_locked: Optional[tuple] = None  # (файл, кто занял, с какого времени): нужный человеку файл занят другим
-    other: Optional[tuple] = None         # (имя проекта, код NextStep) самой важной проблемы другого проекта
+    other: Optional[tuple] = None         # (имя проекта, ключ текста NextStep.text_key) самой важной проблемы другого
+                                          # проекта; окно берёт его из most_important
 
 
 @dataclass(frozen=True)

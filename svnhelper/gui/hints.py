@@ -385,6 +385,10 @@ def fit_lines(text: str, width: int, lines: int, measure: Callable[[str], int]) 
 class HintBar(ttk.Frame):
     """Полоса внизу окна: слева текст подсказки, справа ход долгой операции и «Отмена».
 
+    Фоновый текст - проактивная подсказка окна (set_background): щелчок по нему вызывает click этой подсказки
+    (окно решает, нажать кнопку или только перевести на неё фокус, docs/PLAN_ui_v4.md, раздел 6.3). Пока на месте
+    фона другой текст (пояснение элемента, совет, результат), щелчок ничего не делает.
+
     Высота задана самой полосой (grid_propagate выключен): строк текста столько, сколько велит режим, и она не
     прыгает, когда появляется кнопка «Отмена» или меняется длина текста. Цвета - только из стилей ttk (тёмная тема).
     reason(ключ) - почему элемент серый (окно знает, какая операция идёт); пустая строка - не знает.
@@ -400,6 +404,7 @@ class HintBar(ttk.Frame):
         self._focus: Optional[tuple[tk.Misc, Callable[[], str]]] = None
         self._error = self._result = self._background = ""
         self._background_short: Optional[str] = None
+        self._background_click: Optional[Callable[[], None]] = None
         self._timers: dict[str, Optional[str]] = {"leave": None, "error": None, "result": None}
         self._progress = ""
         self._cancel_cmd: Optional[Callable[[], None]] = None
@@ -410,6 +415,7 @@ class HintBar(ttk.Frame):
         self.rowconfigure(0, weight=1)
         self.text_label = ttk.Label(self, text="", justify="left", anchor="w")
         self.text_label.grid(row=0, column=0, sticky="w")
+        self.text_label.bind("<Button-1>", self._on_text_click, add="+")
         self.progress_label = ttk.Label(self, text="", justify="right", anchor="e")
         self.progress_label.grid(row=0, column=1, sticky="e", padx=(px(12), 0))
         self.cancel_btn = ttk.Button(self, text="Отмена", style="Small.TButton", command=self._on_cancel)
@@ -466,15 +472,34 @@ class HintBar(ttk.Frame):
 
     def text(self) -> str:
         """Текст слева целиком (на экране он может быть укорочен до одной-двух строк)."""
+        return self._shown()[1]
+
+    def source(self) -> str:
+        """Чей текст слева: "hover" | "focus" | "error" | "result" | "background" | "" (пусто, «только ход работы»)."""
+        return self._shown()[0]
+
+    def _shown(self) -> tuple[str, str]:
         if self.mode == MODE_PROGRESS:
-            return ""
-        for slot in (self._hover, self._focus):
+            return "", ""
+        for name, slot in (("hover", self._hover), ("focus", self._focus)):
             if slot is not None:
                 try:
-                    return slot[1]()
+                    return name, slot[1]()
                 except tk.TclError:          # виджет уже уничтожен
                     continue
-        return self._error or self._result or self.background()
+        for name, text in (("error", self._error), ("result", self._result)):
+            if text:
+                return name, text
+        background = self.background()
+        return ("background", background) if background else ("", "")
+
+    def clickable(self) -> bool:
+        """Щелчок по тексту сейчас что-то сделает: виден фоновый текст, и у него есть действие."""
+        return self._background_click is not None and self.source() == "background"
+
+    def _on_text_click(self, _event=None) -> None:
+        if self.clickable():
+            self._background_click()        # type: ignore[misc]
 
     def hovered(self) -> Optional[tk.Misc]:
         """Виджет под курсором, чьё пояснение показано (None - нет такого)."""
@@ -525,11 +550,14 @@ class HintBar(ttk.Frame):
         self._restart("result", RESULT_MS)
         self._render()
 
-    def set_background(self, text: str, short: Optional[str] = None) -> None:
+    def set_background(self, text: str, short: Optional[str] = None,
+                       click: Optional[Callable[[], None]] = None) -> None:
         """Фоновый текст: что делать с выбранным проектом (или подсказка, пока проект не выбран). short - он же в режиме
-        «коротко» (None - тот же текст)."""
-        if (text, short) != (self._background, self._background_short):
-            self._background, self._background_short = text, short
+        «коротко» (None - тот же текст); click - что делает щелчок по нему (None - ничего)."""
+        changed = (text, short, click is None) != (self._background, self._background_short,
+                                                   self._background_click is None)
+        self._background, self._background_short, self._background_click = text, short, click
+        if changed:
             self._render()
 
     def background(self) -> str:
@@ -629,3 +657,6 @@ class HintBar(ttk.Frame):
         shown = fit_lines(self.text(), room, self.lines(), self._measure)
         if str(self.text_label.cget("text")) != shown:
             self.text_label.configure(text=shown)
+        cursor = "hand2" if self.clickable() else ""
+        if str(self.text_label.cget("cursor")) != cursor:
+            self.text_label.configure(cursor=cursor)

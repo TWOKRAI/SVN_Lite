@@ -7913,6 +7913,213 @@ class HintWiringTests(unittest.TestCase):
             root.destroy()
 
 
+class ProactiveHintTests(unittest.TestCase):
+    """U4.6: проактивная подсказка внизу окна - один шаг next_step, щелчок по тексту по правилу безопасности
+    (docs/PLAN_ui_v4.md, раздел 6.3): безопасный шаг нажимает ту же кнопку, остальное - только фокус или вкладка."""
+
+    setUpClass = MineTabTests.__dict__["setUpClass"]
+    tearDownClass = MineTabTests.__dict__["tearDownClass"]
+    pump = MineTabTests.pump
+    checkout = MineTabTests.checkout
+    make_app = MineTabTests.make_app
+    select_first = MineTabTests.select_first
+
+    def ready_app(self, name):
+        root, app, base = self.make_app(name)
+        iid, item = self.select_first(root, app)
+        self.pump(root, lambda: not app._checking and not item.checking)
+        self.assertFalse(app.mine_col2.collapsed or app.mine_col3.collapsed)
+        return root, app, iid, item
+
+    def show_state(self, app, item, state, status):
+        item.state, item.status = state, status
+        app._refresh_project_panel()
+        app._update_mine_buttons()
+
+    def click_text(self, app):
+        """Щелчок по тексту панели подсказок (как мышью)."""
+        app.hint_bar.text_label.event_generate("<Button-1>")
+
+    def test_safe_steps_invoke_the_same_handler_once(self):
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, iid, item = self.ready_app("u46_invoke")
+        try:
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified")
+            # конфликт: «Разобрать конфликт» (у обработчика своё окно выбора версии)
+            with mock.patch.object(app, "_on_resolve") as resolve:
+                self.show_state(app, item, "svn", WcStatus(conflicts=1, local_changes=[change]))
+                self.assertTrue(app.hint_bar.text().startswith("Конфликт"), app.hint_bar.text())
+                self.assertTrue(app.hint_bar.clickable())
+                self.click_text(app)
+                resolve.assert_called_once_with()
+            # файл изменён, но не занят: открыть «Занятые» и нажать «Занять файл…» (окно выбора файлов)
+            lock_change = LocalChange(change.path, "modified", needs_lock=True)
+            self.show_state(app, item, "svn", WcStatus(local_changes=[lock_change]))
+            self.assertTrue(app.hint_bar.text().startswith("«a.txt» изменён, но не занят"), app.hint_bar.text())
+            app.open_project_tab("history")
+            with mock.patch.object(app, "_on_get_lock") as get_lock:
+                self.click_text(app)
+                get_lock.assert_called_once_with()
+            self.assertEqual(app.project_panel.current_tab(), "locks")
+            # обычная папка: «Отправить на сервер…» (окно места на сервере)
+            self.show_state(app, item, "plain", None)
+            self.assertEqual(str(app.publish_btn.cget("state")), "normal")
+            with mock.patch.object(app.publish_btn, "invoke") as invoke:
+                self.click_text(app)
+                invoke.assert_called_once_with()
+        finally:
+            root.destroy()
+
+    def test_focus_steps_do_not_run_the_handler(self):
+        """Получить новое, починить папку - пишут на диск без окна: щелчок только переводит фокус на кнопку."""
+        from svnhelper.svn_core import WcStatus
+        root, app, iid, item = self.ready_app("u46_focus")
+        try:
+            self.show_state(app, item, "svn", WcStatus(incoming=3))
+            self.assertTrue(app.hint_bar.text().startswith("У коллег новое: 3 файла."), app.hint_bar.text())
+            app.mine_col2.collapse()                       # кнопка слева спрятана вместе с «Проектами»
+            root.update()
+            # окно тестов скрыто, и Tk откладывает фокус до показа: проверяем сам вызов focus_set
+            with mock.patch.object(app.update_btn, "invoke") as invoke, \
+                    mock.patch.object(app, "_begin_update") as begin, \
+                    mock.patch.object(app.update_btn, "focus_set") as focus:
+                self.click_text(app)
+                invoke.assert_not_called()
+                begin.assert_not_called()
+                focus.assert_called_once_with()
+            self.assertFalse(app.mine_col2.collapsed)       # колонка развернулась: кнопку видно
+            with mock.patch.object(app, "_on_cleanup") as cleanup:
+                self.show_state(app, item, "broken", None)
+                with mock.patch.object(app.special_btn, "focus_set") as focus:
+                    self.click_text(app)
+                    focus.assert_called_once_with()
+                cleanup.assert_not_called()
+            self.assertEqual(app.special_btn.cget("text"), "Починить папку")
+        finally:
+            root.destroy()
+
+    def test_save_opens_changes_and_puts_cursor_into_comment(self):
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, iid, item = self.ready_app("u46_save")
+        try:
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified")
+            self.show_state(app, item, "svn", WcStatus(local_changes=[change]))
+            app.open_project_tab("history")
+            self.assertTrue(app.hint_bar.text().startswith("Не сохранено: 1 файл."), app.hint_bar.text())
+            with mock.patch.object(app._commit_panel.save_button, "invoke") as invoke, \
+                    mock.patch.object(app, "_on_panel_save") as save, \
+                    mock.patch.object(app._commit_panel.entry, "focus_set") as focus:
+                self.click_text(app)
+                invoke.assert_not_called()
+                save.assert_not_called()
+                focus.assert_called_once_with()                 # курсор в поле «Что вы сделали?»
+            self.assertEqual(app.project_panel.current_tab(), "changes")
+        finally:
+            root.destroy()
+
+    def test_grey_button_does_nothing(self):
+        from svnhelper.svn_core import WcStatus
+        root, app, iid, item = self.ready_app("u46_grey")
+        client = app.client
+        try:
+            app.client = None                              # без svn.exe «Разобрать конфликт» серая
+            with mock.patch.object(app, "_on_resolve") as resolve:
+                self.show_state(app, item, "svn", WcStatus(conflicts=1))
+                self.assertTrue(app.special_btn.instate(["disabled"]))
+                self.click_text(app)
+                resolve.assert_not_called()
+        finally:
+            app.client = client
+            root.destroy()
+
+    def test_click_on_other_text_does_nothing(self):
+        """Пока на месте подсказки пояснение кнопки или результат, щелчок не нажимает кнопку подсказки."""
+        from svnhelper.svn_core import WcStatus
+        root, app, iid, item = self.ready_app("u46_other_text")
+        try:
+            with mock.patch.object(app, "_on_resolve") as resolve:
+                self.show_state(app, item, "svn", WcStatus(conflicts=1))
+                app.hint_bar.show_result("Готово")
+                self.assertFalse(app.hint_bar.clickable())
+                self.click_text(app)
+                app.open_btn.event_generate("<Enter>")
+                self.click_text(app)
+                resolve.assert_not_called()
+            # и молчащая подсказка (проверка идёт) ничего не делает
+            app.hint_bar._expire("result")
+            self.show_state(app, item, "svn", None)
+            item.checking = True
+            app._sync_hint_background()
+            self.assertFalse(app.hint_bar._background_click)
+        finally:
+            root.destroy()
+
+    def test_login_folder_locked_and_other_project(self):
+        """Вход не выполнен, папка проектов не найдена, нужный файл занят другим, дело в другом проекте."""
+        from datetime import datetime, timezone
+        from svnhelper.gui.models import MineItem
+        from svnhelper.svn_core import LockInfo, WcStatus
+        root, app, iid, item = self.ready_app("u46_window")
+        try:
+            # нужный файл занят другим: подсказка с именем и временем, щелчок открывает «Занятые», ничего не нажимая
+            path = os.path.join(item.path, "Рама.cdw")
+            created = datetime.now(timezone.utc)
+            app._wanted_locks = {os.path.normcase(item.path): {os.path.normcase(path)}}
+            with mock.patch.object(app, "_on_get_lock") as get_lock:
+                self.show_state(app, item, "svn", WcStatus(other_locks=[LockInfo(path, "ivanov", created)]))
+                text = app.hint_bar.text()
+                self.assertTrue(text.startswith("Нужный вам файл «Рама.cdw» занят: ivanov, с "
+                                                f"{created.astimezone():%H:%M}"), text)
+                self.assertEqual(shown_accents(app), [])     # подсвечивать нечего
+                app.open_project_tab("history")
+                self.click_text(app)
+                get_lock.assert_not_called()
+            self.assertEqual(app.project_panel.current_tab(), "locks")
+            app._wanted_locks = {}
+            # другой проект с конфликтом: у выбранного всё в порядке - подсказка о нём, щелчок выбирает его
+            other = MineItem(os.path.join(self.tmp.name, "u46_other"), "сушилки", "svn", status=WcStatus(conflicts=1),
+                             checked=True)
+            other_iid = app._insert_mine_row(other)
+            app.mine[other_iid] = other
+            self.show_state(app, item, "svn", WcStatus())
+            self.assertTrue(app.hint_bar.text().startswith("В проекте «сушилки»: конфликт."), app.hint_bar.text())
+            self.assertEqual(shown_accents(app), [app.update_btn])        # своя подсветка прежняя
+            app.mine_filter_var.set("upd")                                 # поиск прячет другой проект
+            self.click_text(app)
+            self.assertEqual(app.mine_tree.selection(), (other_iid,))
+            self.assertEqual(app.mine_filter_var.get(), "")
+            # своё дело важнее чужого
+            app.mine_tree.selection_set(iid)
+            root.update()
+            self.show_state(app, item, "svn", WcStatus(incoming=1))
+            self.assertTrue(app.hint_bar.text().startswith("У коллег новое"), app.hint_bar.text())
+            app.mine_tree.delete(other_iid)
+            del app.mine[other_iid]
+            # вход не выполнен: щелчок - то же, что «⟳» (проверка откроет окно входа)
+            self.show_state(app, item, "svn", WcStatus())
+            app._auto_auth_failed = True
+            app._sync_hint_background()
+            self.assertTrue(app.hint_bar.text().startswith("Вы не вошли на сервер"), app.hint_bar.text())
+            with mock.patch.object(app, "_on_check_all") as check:
+                self.click_text(app)
+                check.assert_called_once_with()
+            self.assertFalse(app._auto_auth_failed)
+            # папка проектов не найдена: «Выбрать…» (подсвечена одна она), щелчок открывает выбор папки
+            app.mine_tree.selection_set(())
+            root.update()
+            app._set_mine_empty(True, missing_path="Z:\\нет_папки")
+            app._update_mine_buttons()
+            self.assertEqual(app.hint_bar.text(), "Папка «Z:\\нет_папки» не найдена. Проверьте, подключён ли сетевой "
+                                                  "диск, или нажмите «Выбрать…» и укажите, где лежат ваши проекты.")
+            self.assertEqual(shown_accents(app), [app.mine_empty_btn])
+            with mock.patch.object(app, "_on_browse") as browse:
+                self.click_text(app)
+                browse.assert_called_once_with()
+            app._set_mine_empty(False)
+        finally:
+            root.destroy()
+
+
 class FitLinesTests(unittest.TestCase):
     """U4.5: текст панели подсказок - не больше N строк по ширине, лишнее кончается «…»."""
 

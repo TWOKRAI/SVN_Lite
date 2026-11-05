@@ -6,6 +6,7 @@ import re
 import threading
 import time
 import tkinter as tk
+from dataclasses import replace
 from datetime import datetime
 from urllib.parse import unquote
 from tkinter import filedialog, messagebox, ttk
@@ -109,6 +110,8 @@ class ProjectsTabMixin:
     # у остальных действий (починить, отправить, восстановить) вкладки своей нет: остаётся открытая
     MAIN_ACTION_TAB = {"commit": "changes", "resolve": "changes", "update": "incoming"}
     _auto_tab_key = ""        # проект, для которого решение «открыть Изменения» ещё не принято (ждём проверку)
+    _folder_missing_path = ""   # папка проектов не найдена (отключён сетевой диск): её путь, иначе пусто
+    _hint_other_iid = ""        # строка таблицы проекта, о котором говорит подсказка «В проекте «…»: …»
 
     def _build_projects_tab(self, parent: tk.Misc) -> None:
         """Строит рабочую область окна self.mine_tab в parent; разместить её (pack) должен вызывающий."""
@@ -345,6 +348,7 @@ class ProjectsTabMixin:
         for widget in (self.mine_find_row, self.mine_table):
             self._show(widget, not empty)
         self._show(self.mine_empty, empty)
+        self._folder_missing_path = missing_path if empty else ""      # для подсказки «Папка … не найдена»
         if not empty:
             return
         if missing_path:
@@ -923,14 +927,59 @@ class ProjectsTabMixin:
 
     def _facts_of(self, item: MineItem) -> next_step.Facts:
         """Факты о проекте для next_step: состояние, проверка, версия (только для просмотра), история на компьютере,
-        нет связи (у обычной папки - общий флаг окна, у проекта - ошибка проверки «нет связи»)."""
+        нет связи (у обычной папки - общий флаг окна, у проекта - ошибка проверки «нет связи»), нужный файл занят
+        другим (_needed_locked)."""
         is_svn = item.state == "svn"
         missing = bool(item.local and item.history_missing)
         return next_step.Facts(
             state=item.state, status=item.status, checking=item.checking, error=item.error if is_svn else "",
             read_only=bool(is_svn and not item.local and item.line is not None and item.line.read_only),
             local=item.local, history_missing=missing, history_found=bool(missing and item.history_found),
-            offline=self._offline if item.state == "plain" else self._is_offline_error(item.error))
+            offline=self._offline if item.state == "plain" else self._is_offline_error(item.error),
+            needed_locked=self._needed_locked(item))
+
+    # «нужный мне файл занят другим»: файлы, которые человек пытался занять, а их держал другой. Пока такой файл занят
+    # другим, панель подсказок говорит, кем и с какого времени (просьба освободить - PM.3, здесь только подсказка)
+    _wanted_locks: dict = {}         # папка проекта (normcase) -> множество файлов (normcase, полный путь)
+
+    @staticmethod
+    def _lock_key(base: str, path: str) -> str:
+        full = path if os.path.isabs(path) else os.path.join(base, path)
+        return os.path.normcase(os.path.abspath(full))
+
+    def _remember_wanted_locks(self, item: MineItem, results: list[LockResult]) -> None:
+        """Итог «Занять файл…»: занятые другим файлы запоминаются как нужные человеку, занятые им - забываются."""
+        project = os.path.normcase(item.path)
+        wanted = set(self._wanted_locks.get(project, ()))
+        for r in results:
+            key = self._lock_key(item.path, r.path)
+            if r.error is not None and r.error.kind is ErrorKind.LOCKED:
+                wanted.add(key)
+            elif r.error is None:
+                wanted.discard(key)
+        self._wanted_locks = {**self._wanted_locks, project: wanted}
+
+    def _forget_released_wanted(self, item: MineItem, status: WcStatus) -> None:
+        """Нужный файл больше не занят другим (освободили): о нём больше не напоминаем."""
+        project = os.path.normcase(item.path)
+        wanted = self._wanted_locks.get(project)
+        if wanted:
+            held = {self._lock_key(item.path, lock.path) for lock in status.other_locks}
+            self._wanted_locks = {**self._wanted_locks, project: wanted & held}
+
+    def _needed_locked(self, item: MineItem) -> Optional[tuple]:
+        """(имя файла, кто занял, «с 10:20») первого нужного человеку файла, который всё ещё занят другим; None - нет."""
+        wanted = self._wanted_locks.get(os.path.normcase(item.path))
+        if not wanted or item.state != "svn" or item.status is None:
+            return None
+        for lock in item.status.other_locks:
+            if self._lock_key(item.path, lock.path) in wanted:
+                since = ""
+                if lock.created is not None:
+                    created = lock.created.astimezone()
+                    since = f"с {created:%H:%M}" if created.date() == datetime.now().date() else f"с {created:%d.%m}"
+                return os.path.basename(lock.path.rstrip("\\/")), lock.owner, since
+        return None
 
     def _status_for(self, item: MineItem, short: bool = False) -> tuple[str, str, str]:
         """(состояние, тег цвета, что сделать) по коду next_step - тому же, что выбирает подсвеченную кнопку.
@@ -1066,6 +1115,8 @@ class ProjectsTabMixin:
             if self.mine_tree.selection() == (iid,):
                 self._refresh_project_panel()
                 self._update_mine_buttons()
+            else:
+                self._sync_hint_background()      # подсказка может говорить о другом проекте («В проекте «…»: …»)
 
     def _iid_of(self, item: MineItem) -> Optional[str]:
         return next((iid for iid, it in self.mine.items() if it is item), None)
@@ -1133,15 +1184,40 @@ class ProjectsTabMixin:
         """Карточка выбранного проекта (шапка «Состояния проекта») сейчас на экране."""
         return not self.mine_col3.collapsed and self._list_mode() == "mine"
 
+    # коды, которые говорят не о выбранном проекте: панель не добавляет к ним имя и состояние проекта
+    _WINDOW_CODES = (next_step.LOGIN, next_step.NO_FOLDER, next_step.OTHER)
+
     def _hint_step(self, item: Optional[MineItem]) -> next_step.NextStep:
         """Следующий шаг для панели подсказок (docs/PLAN_ui_v4.md, раздел 6): выбранный проект по тем же фактам, что
-        у карточки и подсветки."""
-        return next_step.next_step(self._facts_of(item) if item is not None else next_step.Facts())
+        у карточки и подсветки, плюс дела окна целиком - вход не выполнен, папка проектов не найдена, идёт операция,
+        самая важная проблема другого проекта (её строка в таблице - self._hint_other_iid)."""
+        facts = self._facts_of(item) if item is not None else next_step.Facts()
+        other_iid, other = self._other_problem(item)
+        self._hint_other_iid = other_iid
+        return next_step.next_step(replace(
+            facts, login_failed=bool(self._auto_auth_failed and self.client),
+            folder_missing=bool(self._folder_missing_path), busy=self._operation_running(), other=other))
+
+    def _other_problem(self, selected: Optional[MineItem]) -> tuple[str, Optional[tuple]]:
+        """Самая важная проблема другого проекта: (строка таблицы, (имя проекта, ключ текста её шага)) или ("", None).
+        Проекты, спрятанные поиском «Найти проект», тоже считаются: их строку подсказка покажет, сбросив поиск."""
+        best = next_step.most_important(
+            (iid, next_step.next_step(self._facts_of(it))) for iid, it in self.mine.items() if it is not selected)
+        if best is None:
+            return "", None
+        iid, step = best
+        return iid, (self.mine[iid].display_name, step.text_key)
+
+    @staticmethod
+    def _step_signature(step: next_step.NextStep) -> tuple:
+        """Подпись подсказки (как Notice.signature у уведомлений): код, ключ текста, числа и имена из data."""
+        data = tuple(sorted((k, v) for k, v in step.data.items() if isinstance(v, (str, int, bool))))
+        return step.code, step.text_key, data
 
     def _sync_hint_background(self) -> None:
         """Фоновый текст панели подсказок - проактивная подсказка: что сделать и как (какая кнопка и где), слова из
         hints.NEXT_STEP_TEXTS - те же, что у строки «Что сделать» карточки. Карточки не видно (свёрнута,
-        «Скачать проект») - панель говорит ещё и имя и состояние."""
+        «Скачать проект») - панель говорит ещё и имя и состояние. Щелчок по тексту - _on_hint_click."""
         bar = getattr(self, "hint_bar", None)
         if bar is None or not hasattr(self, "project_panel"):
             return
@@ -1149,16 +1225,89 @@ class ProjectsTabMixin:
             bar.set_background(self.DOWNLOAD_BACKGROUND)
             return
         item = self._selected_item()
-        if item is None:
+        step = self._hint_step(item)
+        if item is None and step.code not in (next_step.LOGIN, next_step.NO_FOLDER):
             bar.set_background(self._mine_hint_text)
             return
-        step = self._hint_step(item)
-        detailed, short = hints.step_texts(step, where=self._where_text(item))
-        if not self._card_visible():
+        detailed, short = hints.step_texts(step, where=self._where_text(item), folder=self._folder_missing_path)
+        if item is not None and not self._card_visible() and step.code not in self._WINDOW_CODES:
             name, state = item.display_name, self._state_cells(item)[0]
             prefix = f"«{name}»: {self._sentence(state)}" if state else f"«{name}»."
             detailed, short = (" ".join(p for p in (prefix, text) if p) for text in (detailed, short))
-        bar.set_background(detailed, short)
+        click = None
+        if not step.quiet and step.click != next_step.CLICK_NONE:
+            click = lambda shown=step: self._on_hint_click(shown)      # noqa: E731
+        bar.set_background(detailed, short, click=click)
+
+    def _step_button(self, key: Optional[str]) -> Optional[tk.Misc]:
+        """Кнопка окна по ключу next_step (B_*). Вход - «⟳»: проверка откроет окно входа (у имени в шапке кнопки нет)."""
+        item = self._selected_item()
+        panel = self.project_panel
+        buttons = {
+            next_step.B_LOGIN: self.check_btn,
+            next_step.B_CHOOSE_FOLDER: (self.mine_empty_btn if self._folder_missing_path else self.mine_browse_btn),
+            next_step.B_RESOLVE: self.special_btn, next_step.B_REPAIR: self.special_btn,
+            next_step.B_RESTORE: self.special_btn, next_step.B_UPDATE: self.update_btn,
+            next_step.B_PUBLISH: self.publish_btn, next_step.B_LOCK: panel.lock_btn,
+            next_step.B_COMMIT: (panel.save_local_btn if item is not None and item.local
+                                 else self._commit_panel.save_button),
+        }
+        return buttons.get(key) if key is not None else None
+
+    def _reveal_button(self, button: tk.Misc) -> None:
+        """Кнопка слева спрятана (колонка «Проекты» свёрнута или открыта «Скачать проект»): показываем её."""
+        if button.master is not self.actions_row:
+            return
+        if self._list_mode() != "mine":
+            self.select_list_mode("mine")
+        if self.mine_col2.collapsed:
+            self.mine_col2.expand()
+
+    def _on_hint_click(self, shown: next_step.NextStep) -> None:
+        """Щелчок по проактивной подсказке (docs/PLAN_ui_v4.md, раздел 6.3, правило безопасности).
+
+        Безопасный шаг (у обработчика своё окно: разобрать конфликт, отправить на сервер, занять файл, вход, выбор
+        папки) - invoke() той же кнопки: тот же обработчик с теми же проверками и окнами; серая кнопка не срабатывает.
+        Остальное - только фокус на кнопку (получить новое, починить, восстановить: пишут на диск без окна) или
+        открыть её вкладку (сохранение - курсор в поле «Что вы сделали?»): действие делает человек. Другой проект -
+        выбрать его. Состояние уже сменилось (текст вот-вот обновится) - ничего не делаем."""
+        step = self._hint_step(self._selected_item())
+        if self._step_signature(step) != self._step_signature(shown) or step.quiet:
+            return
+        click = step.click
+        if click == next_step.CLICK_SELECT_PROJECT:
+            self._select_mine_row(self._hint_other_iid)
+            return
+        if click == next_step.CLICK_NONE:
+            return
+        if click in (next_step.CLICK_OPEN_TAB, next_step.CLICK_OPEN_TAB_INVOKE) and step.tab:
+            self.open_project_tab(step.tab)
+        if click == next_step.CLICK_OPEN_TAB:
+            entry = self._commit_panel.entry
+            if step.tab == "changes" and not entry.instate(["disabled"]):
+                entry.focus_set()                 # сохранение: напишите, что сделали, и нажмите кнопку сами
+            return
+        button = self._step_button(step.button)
+        if button is None or not button.winfo_exists():
+            return
+        self._reveal_button(button)
+        if click == next_step.CLICK_FOCUS:
+            button.focus_set()
+            return
+        if not button.instate(["disabled"]):     # CLICK_INVOKE, CLICK_OPEN_TAB_INVOKE: серая кнопка не срабатывает
+            button.invoke()
+
+    def _select_mine_row(self, iid: str) -> None:
+        """Выбирает проект в таблице «Мои проекты» (подсказка о другом проекте); поиск, который его прячет, сбрасывается."""
+        if not iid or iid not in self.mine:
+            return
+        if self._list_mode() != "mine":
+            self.select_list_mode("mine")
+        if iid not in self.mine_tree.get_children():
+            self.mine_filter_var.set("")
+        self.mine_tree.selection_set(iid)
+        self.mine_tree.focus(iid)
+        self.mine_tree.see(iid)
 
     @staticmethod
     def _where_text(item: Optional[MineItem]) -> str:
@@ -1206,6 +1355,7 @@ class ProjectsTabMixin:
         kind, self._mine_status_kind = self._mine_status_kind, ""
         self._refresh_lamp()
         self._sync_hint_progress()
+        self._sync_hint_background()              # операция началась или кончилась, вход не выполнен
         text = self.mine_status.get().strip()
         bar = getattr(self, "hint_bar", None)
         if bar is None or not text or self._operation_running():
@@ -1498,15 +1648,16 @@ class ProjectsTabMixin:
         if hasattr(self, "switch_here_btn"):
             self._update_lines_buttons()
         self._sync_hint_progress()
+        self._sync_hint_background()
 
     def _main_action_of(self, item: Optional[MineItem]) -> Optional[str]:
         """Главное действие выбранного проекта (main_action по его состоянию) или None, если проект не выбран.
-        Факты те же, что у строки «Что сделать» (_facts_of): подсветка и подсказка не расходятся."""
+        Факты те же, что у строки «Что сделать» и панели подсказок (_facts_of, в том числе «нужный файл занят
+        другим» - тогда подсвечивать нечего): подсветка и подсказка не расходятся."""
         if item is None:
             return None
-        facts = self._facts_of(item)
-        return main_action(facts.state, facts.status, facts.read_only, facts.local, facts.history_missing,
-                           facts.history_found)
+        button = next_step.main_button(self._facts_of(item))
+        return MAIN_ACTIONS[button] if button is not None else None
 
     def _on_mine_double_click(self, event: tk.Event) -> None:
         """Двойной щелчок по проекту: разворачивается «Состояние проекта» на вкладке главного действия. Это путь
@@ -1929,6 +2080,7 @@ class ProjectsTabMixin:
         elif status is not None:
             self.login.reset_attempts()  # статус с -u ходил на сервер с учётными данными
             self._set_offline(False)     # сервер ответил: полосу «Нет связи» прячем
+            self._forget_released_wanted(item, status)
         elif self._is_offline_error(error):
             self._set_offline(True)
         self._refresh_row(item)
@@ -2347,6 +2499,8 @@ class ProjectsTabMixin:
         self.run_bg(work, done)
 
     def _show_lock_results(self, item: MineItem, results: list[LockResult], lock: bool) -> None:
+        if lock:
+            self._remember_wanted_locks(item, results)
         ok = [os.path.basename(r.path) for r in results if r.error is None]
         lines = []
         if ok:
