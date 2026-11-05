@@ -16,7 +16,7 @@ from .. import localrepo, messages, theme
 from ..svn_core import CancelToken, LockInfo, LogEntry
 from . import hints
 from .commit_panel import CommitPanel
-from .widgets import button_column_width, button_padding, fit_text, SideButtons, Tooltip
+from .widgets import fit_columns, fit_two_lines, SideButtons, Tooltip
 
 # ключ вкладки -> подпись на ярлыке
 PROJECT_TABS = (("changes", "Изменения"), ("incoming", "Новое"), ("history", "История"),
@@ -201,22 +201,27 @@ class ProjectPanel(ttk.Frame):
     SideButtons (actions_for(ключ)), она лежит внутри вкладки (ярлыки вкладок занимают всю ширину панели, колонка
     не отнимает её у них); self.side - колонка выбранной вкладки. У вкладки без кнопок (Новое, История) колонки
     нет, и места она не занимает. Колонка лежит в панели, поэтому прячется и показывается вместе с ней при
-    сворачивании «Состояния проекта». Колонка не шире SIDE_MAX_WIDTH: подпись длиннее (шаблон комментария)
-    укорачивается с «…», полный текст виден во всплывающей подсказке.
+    сворачивании «Состояния проекта». У кнопок значки; подпись в две строки, колонка не шире SIDE_MAX_WIDTH: подпись
+    длиннее (шаблон комментария) укорачивается с «…», полный текст виден во всплывающей подсказке. compact - все
+    колонки только со значками (set_compact); стрелку переключения вида ставит окно в заголовок колонки
+    «Состояние проекта» (своей строки она здесь не занимает: шесть кнопок «Веток» помещаются в окно 640 px).
     """
 
-    SIDE_GAP = 6
-    SIDE_MAX_WIDTH = 240
+    SIDE_GAP = 4
+    SIDE_MAX_WIDTH = 160
 
     TAG_COLOR = {"ok": "success", "new": "warning", "bad": "danger", "plain": "muted", "frozen": "frozen"}
 
     def __init__(self, parent: tk.Misc, px: Callable[[int], int], *, templates, recent_comments,
                  on_save: Callable[[list[str], str], None], on_release: Callable[[list[str]], None],
-                 on_lock: Callable[[], None], on_save_local: Callable[[], None] = lambda: None):
+                 on_lock: Callable[[], None], on_save_local: Callable[[], None] = lambda: None,
+                 compact: bool = False):
         super().__init__(parent)
         self.px = px
         self._on_release, self._on_lock = on_release, on_lock
         self._local_view = False
+        self._compact = compact
+        self._syncing = False
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self._no_side = ttk.Frame(self)      # «колонка» вкладки без кнопок (side): не показана
@@ -276,9 +281,21 @@ class ProjectPanel(ttk.Frame):
         if bar is None:
             if key not in self.frames:
                 raise ValueError(f"нет вкладки «{key}»")
-            bar = self._side_bars[key] = SideButtons(self.frames[key], self.px(self.SIDE_GAP))
+            bar = self._side_bars[key] = SideButtons(self.frames[key], self.px(self.SIDE_GAP), px=self.px,
+                                                     side="right", compact=self._compact, toggle=False)
             bar.on_change = self.sync_actions
         return bar
+
+    @property
+    def compact(self) -> bool:
+        return self._compact
+
+    def set_compact(self, compact: bool) -> None:
+        """Колонки кнопок всех вкладок только со значками (True) или с подписями (False)."""
+        self._compact = compact
+        for bar in self._side_bars.values():
+            bar.set_compact(compact)
+        self.sync_actions()
 
     @property
     def side(self) -> tk.Misc:
@@ -287,34 +304,37 @@ class ProjectPanel(ttk.Frame):
 
     def sync_actions(self) -> None:
         """Колонки перестраиваются: у каждой вкладки колонка показана, когда в ней есть кнопки; ширина у всех одна
-        (по самому длинному тексту, но не больше SIDE_MAX_WIDTH). Нет кнопок - нет и колонки."""
-        px = self.px
-        buttons = [b for bar in self._side_bars.values() for b in bar._items]
-        width = min(button_column_width(self, [self._full_text(b) for b in buttons], px), px(self.SIDE_MAX_WIDTH))
-        for button in buttons:
-            self._fit_button(button, width - button_padding(px))
-        for bar in self._side_bars.values():
-            bar.set_width(width)
-            if bar.has_visible():
-                bar.grid(row=0, column=1, rowspan=2, sticky="n", padx=(px(12), 0))
-            else:
-                bar.grid_remove()
+        (по самой длинной подписи в две строки, но не больше SIDE_MAX_WIDTH). Нет кнопок - нет и колонки."""
+        if self._syncing:            # подпись шаблона укорачивается внутри подгонки: вторая подгонка не нужна
+            return
+        self._syncing = True
+        try:
+            px = self.px
+            bars = list(self._side_bars.values())
+            fit_columns(bars, px(self.SIDE_MAX_WIDTH), prepare=self._fit_templates)
+            for bar in bars:
+                if bar.has_visible():
+                    bar.grid(row=0, column=1, rowspan=2, sticky="n", padx=(px(12), 0))
+                else:
+                    bar.grid_remove()
+        finally:
+            self._syncing = False
 
-    @staticmethod
-    def _full_text(button: tk.Misc) -> str:
-        """Полная подпись кнопки: у кнопок с укорачиваемой подписью (шаблоны) она в атрибуте full_text."""
-        return getattr(button, "full_text", None) or str(button.cget("text"))
+    def _fit_templates(self, room: int) -> None:
+        """Подписи с full_text (шаблоны) укорачиваются до двух строк шириной room; полный текст - в подсказке."""
+        for bar in self._side_bars.values():
+            for button in bar._items:
+                if getattr(button, "full_text", None) is not None:
+                    self._fit_button(button, room)
 
     def _fit_button(self, button: tk.Misc, room: int) -> None:
-        """Подпись кнопки с full_text укорачивается, чтобы войти в колонку; полный текст - в подсказке."""
-        full = getattr(button, "full_text", None)
-        if full is None:
-            return
-        shown = fit_text(self, full, room)
+        full = button.full_text                             # type: ignore[attr-defined]
+        shown = fit_two_lines(self, full, room)
         if str(button.cget("text")) != shown:
             button.configure(text=shown)
         if not hasattr(button, "_full_tip"):
-            button._full_tip = Tooltip(                    # type: ignore[attr-defined]
+            # у кнопки колонки подсказка уже есть (SideButtons): в компактном виде она говорит подпись целиком
+            button._full_tip = getattr(button, "_side_tip", None) or Tooltip(       # type: ignore[attr-defined]
                 button, lambda b=button: b.full_text if str(b.cget("text")) != b.full_text else "")
 
     def side_buttons(self) -> list[tk.Misc]:

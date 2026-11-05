@@ -21,7 +21,7 @@ SVN_WORD = re.compile(r"SVN")
 STORAGE_WORD = re.compile(r"хранилищ", re.IGNORECASE)
 # модули, написанные с этим правилом с самого начала; ревизия/репозиторий/svnadmin проверяются только в них
 RU_CHECKED = ("gui/new_project_dialog.py", "newproject.py", "gui/server_tree.py", "localrepo.py", "gui/projects_tab.py",
-              "gui/project_panel.py", "gui/agent_dialog.py", "gui/hints.py")
+              "gui/project_panel.py", "gui/agent_dialog.py", "gui/hints.py", "gui/icons.py")
 RU_CHECKED_DIRS = ("ops/",)      # слой ops для ИИ-помощника (AG.1): все его модули, в том числе будущие
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 # что разрешено оставить в тексте: названия программ, адреса и ключи для администратора

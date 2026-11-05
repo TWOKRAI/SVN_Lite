@@ -124,6 +124,23 @@ class SettingsStoreTests(unittest.TestCase):
                 self.path.write_text(json.dumps({"hint_mode": wrong}), encoding="utf-8")
                 self.assertEqual(SettingsStore(self.path).settings.hint_mode, "detailed")
 
+    def test_buttons_compact_is_saved_and_checked(self):
+        """U4.8: вид колонок кнопок (только значки) хранится в settings.json для каждой стороны отдельно; не «да/нет» -
+        значение по умолчанию (с подписями)."""
+        settings = SettingsStore(self.path).settings
+        self.assertEqual((settings.buttons_compact_left, settings.buttons_compact_right), (False, False))
+        store = SettingsStore(self.path)
+        store.settings.buttons_compact_right = True
+        store.save()
+        saved = SettingsStore(self.path).settings
+        self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (False, True))
+        for wrong in ("да", 1, None, "true", []):
+            with self.subTest(value=wrong):
+                self.path.write_text(json.dumps({"buttons_compact_left": wrong, "buttons_compact_right": wrong}),
+                                     encoding="utf-8")
+                saved = SettingsStore(self.path).settings
+                self.assertEqual((saved.buttons_compact_left, saved.buttons_compact_right), (False, False))
+
     # --- чтение настроек при создании store ---
 
     def test_load_without_file_gives_default_settings(self):

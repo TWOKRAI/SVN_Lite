@@ -316,6 +316,10 @@ def apply(root: tk.Misc, px: Callable[[int], int] = lambda v: v, mode: str = "li
     s.configure("Small.TButton", padding=(px(10), px(1)))
     accent_button("Accent.TButton", pad, strong10)
     accent_button("Big.TButton", (px(28), px(10)), _strong(root, 12))
+    # кнопки колонок со значками (widgets.SideButtons): цвета обычной и подсвеченной кнопки, но значок и подпись
+    # прижаты влево, чтобы значки всех кнопок колонки стояли друг под другом
+    for name in ("Side.TButton", "Side.Accent.TButton"):
+        s.configure(name, anchor="w")
 
     s.configure("Link.TButton", background=p.surface, foreground=p.accent_text, borderwidth=0,
                 bordercolor=p.surface, lightcolor=p.surface, darkcolor=p.surface,

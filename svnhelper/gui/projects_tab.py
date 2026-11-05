@@ -21,7 +21,7 @@ from .project_panel import ProjectPanel, PROJECT_TABS
 from .models import (AUTO_CHECK_SEC, JobStamp, REFRESH_SEC, line_cell, lock_holder_text, LOCK_WARN_DAYS, LockResult, log,
                      MineItem, PROGRESS_MS, shorten_path, UpdateJob)
 from . import hints
-from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip
+from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip, ViewToggle
 
 
 # Кнопка next_step (B_*) -> главное действие окна. Кнопки входа и папки проектов main_button не выбирает (это дела
@@ -150,10 +150,14 @@ class ProjectsTabMixin:
         self.publish_warn.grid_remove()
 
         # колонка 1: кнопки по частоте использования; главное действие по состоянию проекта - Accent.TButton
-        # (_update_mine_buttons). Относится к панели «Проекты»: сворачивается и разворачивается вместе с ней
-        self.actions_row = row = SideButtons(tab, px(6), px(230))
+        # (_update_mine_buttons). Относится к панели «Проекты»: сворачивается и разворачивается вместе с ней.
+        # Кнопки со значками; вид «только значки» переключает стрелка вверху колонки или меню «Вид → Кнопки»
+        self.actions_row = row = SideButtons(tab, px(6), px=px, side="left",
+                                             compact=self.settings.buttons_compact_left)
+        row.on_toggle = lambda: self.set_buttons_compact("left", not self.actions_row.compact)
         row.grid(row=1, column=0, sticky="nw", padx=(0, px(12)))
-        self.mine_name_label = ttk.Label(row, text="", style="Hint.TLabel", anchor="w", wraplength=px(220))
+        # перенос по ширине колонки задаёт сама колонка (SideButtons.set_width)
+        self.mine_name_label = ttk.Label(row, text="", style="Hint.TLabel", anchor="w", wraplength=px(130))
         self.check_btn = ttk.Button(row, text="⟳", command=self._on_refresh_tab)      # пояснение - в панели подсказок
         self.special_btn = ttk.Button(row, text="", state="disabled")  # «Починить папку» / «Разобрать конфликт»
         self.update_btn = ttk.Button(row, text="Получить новое", command=self._on_update_selected, state="disabled")
@@ -194,6 +198,12 @@ class ProjectsTabMixin:
                                            collapsed=self.settings.mine_col3_collapsed)
         for column in (self.mine_col2, self.mine_col3):
             column.bind(CollapsibleColumn.EVENT, self._on_mine_column_toggled)
+        # вид кнопок справа («Состояние проекта» и форма «Скачивание»): стрелка в заголовке колонки, а не над кнопками -
+        # так она не отнимает строку у шести кнопок «Веток» в самом низком окне
+        self.buttons_right_toggle = ViewToggle(
+            self.mine_col3.header, px, "right", compact=self.settings.buttons_compact_right,
+            command=lambda: self.set_buttons_compact("right", not self.settings.buttons_compact_right))
+        self.mine_col3.add_header_widget(self.buttons_right_toggle)
         # форма скачивания первой: в ней папка для проектов (dir_var), её берёт и список своих проектов
         self._build_download_form(self.mine_col3.body)
         if not self.settings.project_dirs and self.dir_var.get().strip():   # первый запуск: папка по умолчанию
@@ -358,7 +368,7 @@ class ProjectsTabMixin:
         self.project_panel = panel = ProjectPanel(
             body, self.px, templates=self.config.commit_templates, recent_comments=self.settings.recent_comments,
             on_save=self._on_panel_save, on_release=self._on_panel_release, on_lock=lambda: self._on_get_lock(),
-            on_save_local=self._on_save_local_clicked)
+            on_save_local=self._on_save_local_clicked, compact=self.settings.buttons_compact_right)
         panel.grid(row=0, column=0, sticky="nsew")
         self.project_tabs = panel.tabs
         self.project_tab_frames: dict[str, ttk.Frame] = panel.frames
@@ -1450,7 +1460,7 @@ class ProjectsTabMixin:
                                        state=on(ready and free and not self._locking and not self._committing))
         self._show(self.special_btn, main in ("resolve", "repair", "restore"))
         if main in ("resolve", "repair", "restore"):
-            hints.hint(self.special_btn, f"project.{main}")
+            self.actions_row.set_hint(self.special_btn, f"project.{main}")     # пояснение и значок
         self.new_project_btn.configure(state=on(not busy and not self._new_project_running()))
 
         incoming = item.status.incoming if is_svn and item.status else 0

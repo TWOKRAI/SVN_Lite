@@ -144,6 +144,7 @@ class CommitPanel(ttk.Frame):
         for index, text in enumerate(self._templates):
             button = ttk.Button(self._actions, text=text, command=lambda t=text: self.set_comment(t))
             button.full_text = text                  # type: ignore[attr-defined]  # ProjectPanel укорачивает подпись
+            button.icon_badge = str(index + 1)       # type: ignore[attr-defined]  # номер на значке в компактном виде
             self._actions.add(button, visible=self._has_changes, separator=index == 0, before=self._recent_btn,
                               hint="changes.template")
             self._template_buttons.append(button)

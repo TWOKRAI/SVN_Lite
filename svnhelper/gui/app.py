@@ -29,7 +29,8 @@ from ..dialogs import AboutDialog, center_window, ErrorDialog, FONT_FAMILY
 from ..svn_core import CancelToken, CheckoutProgress, ErrorKind, SvnClient, SvnError
 from .models import (CLOSE_POLL_MS, CLOSE_WAIT_SEC, DownloadJob, JobStamp, log, MineItem, Node, POLL_MS,
                      REFRESH_SEC, UpdateJob)
-from .widgets import ButtonRow, Lamp, popup_menu_under, SettingsDialog, SideButtons, Tooltip
+from .widgets import (ButtonRow, Lamp, popup_menu_under, SettingsDialog, SIDE_VIEW_LABELS, SIDE_VIEW_MENU, SideButtons,
+                      Tooltip)
 from . import hints
 from .hints import HintBar
 from .login import connection_error_text, LoginCoordinator
@@ -703,6 +704,15 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
             self.hint_menu.add_radiobutton(label=hints.MODE_LABELS[mode], value=mode, variable=self.hint_mode_var,
                                            command=lambda m=mode: self.set_hint_mode(m))
         view_menu.add_cascade(label=hints.MENU_TITLE, menu=self.hint_menu)
+        # «Кнопки: с подписями | только значки» - для обеих колонок кнопок сразу (у каждой есть и своя стрелка)
+        self.buttons_view_var = tk.StringVar()
+        self.buttons_menu = tk.Menu(view_menu, tearoff=False)
+        for compact in (False, True):
+            self.buttons_menu.add_radiobutton(label=SIDE_VIEW_LABELS[compact], value=self.BUTTONS_VIEW[compact],
+                                              variable=self.buttons_view_var,
+                                              command=lambda c=compact: self.set_buttons_compact("both", c))
+        view_menu.add_cascade(label=SIDE_VIEW_MENU, menu=self.buttons_menu)
+        self._sync_buttons_view_var()
         self._add_menu_button("Вид", view_menu)
         self.help_menu = help_menu = tk.Menu(root, tearoff=False)
         help_menu.add_command(label="Шпаргалка", command=self._open_help)
@@ -785,6 +795,35 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         if self.settings.hint_mode != mode:
             self.settings.hint_mode = mode
             self.settings_store.save()
+
+    # -- колонки кнопок: с подписями | только значки (docs/PLAN_ui_v4.md, раздел 11) ---------------------
+
+    BUTTONS_VIEW = {False: "labels", True: "icons"}      # значение пункта меню «Вид → Кнопки»
+
+    def set_buttons_compact(self, side: str, compact: bool) -> None:
+        """Вид колонок кнопок: только значки (compact) или значки с подписями. side - "left" (колонка слева), "right"
+        (справа: «Состояние проекта» и форма «Скачивание») или "both" (меню «Вид → Кнопки»). Запоминается."""
+        if side not in ("left", "right", "both"):
+            raise ValueError(f"сторона колонки: left | right | both, получено {side!r}")
+        st = self.settings
+        before = (st.buttons_compact_left, st.buttons_compact_right)
+        if side in ("left", "both"):
+            self.actions_row.set_compact(compact)
+            st.buttons_compact_left = compact
+        if side in ("right", "both"):
+            self.project_panel.set_compact(compact)
+            self.download_actions.set_compact(compact)
+            self.buttons_right_toggle.set_compact(compact)
+            st.buttons_compact_right = compact
+        self._sync_buttons_view_var()
+        if (st.buttons_compact_left, st.buttons_compact_right) != before:
+            self.settings_store.save()
+
+    def _sync_buttons_view_var(self) -> None:
+        """Пункт меню отмечен, когда обе колонки в одном виде; разные - не отмечен ни один."""
+        st = self.settings
+        same = st.buttons_compact_left == st.buttons_compact_right
+        self.buttons_view_var.set(self.BUTTONS_VIEW[st.buttons_compact_left] if same else "")
 
     def _disabled_reason(self, key: str) -> str:
         """Почему элемент с подсказкой key сейчас серый (общие причины окна); пусто - пусть скажет hints.REASONS."""
