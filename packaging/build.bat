@@ -1,27 +1,32 @@
 @echo off
 rem Builds SVN-lite.exe (window, no console) and svnlite.exe (console: CLI + "mcp" subcommand for AI assistants).
-rem Requires Python 3.10+ and PyInstaller. Settings live in SVN-lite.spec and svnlite.spec.
+rem Requires Python 3.10+. Settings live in SVN-lite.spec and svnlite.spec.
 rem Everything PyInstaller produces goes to out\ (out\work = temporary files, out\dist = what to hand out).
-rem The sources stay untouched. out\ can be deleted at any time.
+rem The sources stay untouched. out\ can be deleted at any time (the build environment is created again).
+rem
+rem The build runs in its own virtual environment out\venv_build, not in the global Python: PyInstaller follows every
+rem package it finds, and a global Python with several Qt bindings (PyQt5 and PySide6) or other big libraries makes
+rem it fail ("multiple Qt bindings") or bloats the exe. The environment holds only PyInstaller and requirements-mcp.txt.
 cd /d "%~dp0.."
 
-python -m PyInstaller --version >nul 2>&1
-if errorlevel 1 (
-    echo PyInstaller not found, installing...
-    python -m pip install pyinstaller
+set "VENV=out\venv_build"
+set "PY=%VENV%\Scripts\python.exe"
+if not exist "%PY%" (
+    echo Creating build environment %VENV% ...
+    python -m venv "%VENV%"
     if errorlevel 1 goto :fail
 )
+"%PY%" -m pip install --disable-pip-version-check --quiet pyinstaller -r requirements-mcp.txt
+if errorlevel 1 goto :fail
+"%PY%" -c "import mcp"
+if errorlevel 1 goto :fail
 
-python -m PyInstaller --clean --noconfirm --workpath "out\work" --distpath "out\dist" "packaging\SVN-lite.spec"
+"%PY%" -m PyInstaller --clean --noconfirm --workpath "out\work" --distpath "out\dist" "packaging\SVN-lite.spec"
 if errorlevel 1 goto :fail
 
 rem Second exe: console program svnlite.exe. It must contain the assistant server ("svnlite mcp"), so the "mcp"
-rem package is mandatory: install it and check that it imports; the build stops here if that fails.
-python -m pip install -r requirements-mcp.txt
-if errorlevel 1 goto :fail
-python -c "import mcp"
-if errorlevel 1 goto :fail
-python -m PyInstaller --clean --noconfirm --workpath "out\work" --distpath "out\dist" "packaging\svnlite.spec"
+rem package is mandatory (installed and checked above; the spec itself stops the build if it is missing).
+"%PY%" -m PyInstaller --clean --noconfirm --workpath "out\work" --distpath "out\dist" "packaging\svnlite.spec"
 if errorlevel 1 goto :fail
 
 rem Smoke check of the built console exe (the assistant server itself is checked by hand).
