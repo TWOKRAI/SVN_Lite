@@ -11,7 +11,7 @@ from urllib.parse import unquote
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Optional
 
-from .. import __version__, audit, localrepo, messages, mirrors, publish, server, theme, tortoise
+from .. import __version__, audit, localrepo, messages, mirrors, next_step, publish, server, theme, tortoise
 from ..config import add_project_dir, is_newer_version, same_dir
 from ..dialogs import ConflictDialog, FONT_FAMILY
 from ..svn_core import CommitResult, ErrorKind, SvnClient, SvnError, WcStatus
@@ -23,35 +23,39 @@ from .models import (AUTO_CHECK_SEC, JobStamp, REFRESH_SEC, line_cell, lock_hold
 from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tooltip
 
 
+# Кнопка next_step (B_*) -> главное действие окна. Кнопки входа и папки проектов main_button не выбирает (это дела
+# окна целиком, а не проекта). «Занять файл…» (файл изменён, но не занят) подсвечивает сохранение, как раньше:
+# «Сохранить отмеченное» само предлагает занять такой файл (COMMIT_LOCK_REQUIRED), а подсветки на «Занятых» пока нет.
+MAIN_ACTIONS = {
+    next_step.B_RESOLVE: "resolve",      # «Разобрать конфликт» (особая кнопка слева)
+    next_step.B_REPAIR: "repair",        # «Починить папку» (особая кнопка слева)
+    next_step.B_RESTORE: "restore",      # «Восстановить историю» (особая кнопка слева)
+    next_step.B_UPDATE: "update",        # «Получить новое» (слева)
+    next_step.B_PUBLISH: "publish",      # «Отправить на сервер…» (слева)
+    next_step.B_COMMIT: "commit",        # сохранение справа, на «Изменениях»
+    next_step.B_LOCK: "commit",
+    next_step.B_LOGIN: None,
+    next_step.B_CHOOSE_FOLDER: None,
+}
+
+
 def main_action(state: Optional[str], status: Optional[WcStatus], read_only: bool = False,
                 local: bool = False, history_missing: bool = False, history_found: bool = False) -> Optional[str]:
     """Главное действие колонки 1 по состоянию проекта: "resolve" | "repair" | "commit" | "update" | "publish" |
     "restore" | None (проект не выбран).
 
-    state - MineItem.state ("svn" | "plain" | "broken") или None, если проект не выбран.
-    Порядок важности: конфликт, повреждённая папка, свои правки, новое на сервере. Если делать нечего (или проверка
-    ещё не пришла), главной остаётся «Получить новое». Версия (read_only) правки не принимает - «Сохранить» не предлагаем.
-    Обычная папка (без истории и без сервера) - "publish" («Отправить на сервер…»).
-    Проект с историей на компьютере (local): история пропала - "restore" («Восстановить историю»), если хранилище
-    найдено на диске, иначе "publish"; есть правки (или проверка ещё не пришла) - "commit" («Сохранить у себя»);
-    папка чистая - "publish". «Продолжить без истории» главным не бывает: это второе действие с подтверждением.
+    Обёртка над `next_step.main_button` (docs/PLAN_ui_v4.md, раздел 6): подсветка, строка «Что сделать» и
+    `next_action` помощника считаются одной функцией. state - MineItem.state ("svn" | "plain" | "broken") или None.
+    Порядок: конфликт, повреждённая папка, незаконченный переход, новое на сервере (и при своих правках: сначала
+    «Получить новое»), свои правки. Делать нечего или проверка ещё не пришла - «Получить новое». Версия (read_only)
+    правки не принимает. Обычная папка - "publish". Проект с историей на компьютере (local): история пропала -
+    "restore", если она найдена на диске, иначе "publish"; есть правки (или проверка ещё не пришла) - "commit"
+    («Сохранить у себя»); папка чистая - "publish". «Продолжить без истории» главным не бывает: это второе действие
+    с подтверждением.
     """
-    if state == "broken":
-        return "repair"
-    if state == "plain":
-        return "publish"
-    if state != "svn":
-        return None
-    if local:
-        if history_missing:
-            return "restore" if history_found else "publish"
-        return "publish" if status is not None and not status.local_changes else "commit"
-    if status is not None:
-        if status.conflicts:
-            return "resolve"
-        if status.local_changes and not read_only:
-            return "commit"
-    return "update"
+    button = next_step.main_button(next_step.Facts(state=state, status=status, read_only=read_only, local=local,
+                                                    history_missing=history_missing, history_found=history_found))
+    return MAIN_ACTIONS[button] if button is not None else None
 
 
 class ProjectsTabMixin:
@@ -901,24 +905,22 @@ class ProjectsTabMixin:
     def _is_offline_error(error: str) -> bool:
         return error == messages.short_message(ErrorKind.NO_CONNECTION)
 
+    def _facts_of(self, item: MineItem) -> next_step.Facts:
+        """Факты о проекте для next_step: состояние, проверка, версия (только для просмотра), история на компьютере,
+        нет связи (у обычной папки - общий флаг окна, у проекта - ошибка проверки «нет связи»)."""
+        is_svn = item.state == "svn"
+        missing = bool(item.local and item.history_missing)
+        return next_step.Facts(
+            state=item.state, status=item.status, checking=item.checking, error=item.error if is_svn else "",
+            read_only=bool(is_svn and not item.local and item.line is not None and item.line.read_only),
+            local=item.local, history_missing=missing, history_found=bool(missing and item.history_found),
+            offline=self._offline if item.state == "plain" else self._is_offline_error(item.error))
+
     def _status_for(self, item: MineItem, short: bool = False) -> tuple[str, str, str]:
-        """(состояние, тег цвета, что сделать) с поправкой для версии (тега): в ней нельзя сохранять правки."""
-        if item.local:
-            return localrepo.status_line(item.status, item.checking, item.history_missing, bool(item.history_found))
-        text, tag, hint = messages.status_line(item.state, item.status, item.checking)
-        if item.state == "plain" and self._offline:
-            hint = messages.PLAIN_OFFLINE_TODO
-        st = item.status
-        if item.state == "svn" and item.line is not None and item.line.read_only:
-            if st is not None and st.modified and not st.conflicts:
-                hint = messages.TAG_MODIFIED_SHORT if short else messages.TAG_MODIFIED
-            elif st is not None and not (st.incoming or st.conflicts):
-                hint = "Только для чтения" if short else messages.TAG_TODO
-            if tag == "ok":
-                tag = "frozen"
-        if item.state == "svn" and st is not None and st.switched and not st.conflicts:
-            text, tag, hint = messages.SWITCH_UNFINISHED, "bad", messages.SWITCH_UNFINISHED_TODO
-        return text, tag, hint
+        """(состояние, тег цвета, что сделать) по коду next_step - тому же, что выбирает подсвеченную кнопку.
+        Поправки окна учтены в фактах: версия (только для просмотра, тег «frozen»), незаконченный переход, нет связи
+        и ошибка проверки, обычная папка без связи."""
+        return messages.state_line(self._facts_of(item), short=short)
 
     def _row_values(self, item: MineItem) -> tuple[tuple, str]:
         """Значения строки таблицы («Проект», «Ветка», «● Состояние», «Что сделать») и тег цвета."""
@@ -1088,13 +1090,7 @@ class ProjectsTabMixin:
 
     def _state_cells(self, item: MineItem, short: bool = False) -> tuple[str, str, str]:
         """(состояние, тег цвета, что сделать): общий текст для строки таблицы и шапки колонки 3."""
-        text, tag, hint = self._status_for(item, short=short)
-        if (item.state == "svn" and item.status is None and item.error and not item.checking
-                and not (item.local and item.history_missing)):
-            if self._is_offline_error(item.error):
-                return "Нет связи", "plain", "Сохранить получится, когда связь появится"
-            return item.error, "bad", "Нажмите «⟳»"
-        return text, tag, hint
+        return self._status_for(item, short=short)
 
     def _header_fields(self, item: MineItem) -> tuple[str, str, str, str, str, str]:
         """Шапка колонки 3: (название, состояние, тег цвета, ветка, что сделать, результат последнего действия)."""
@@ -1380,12 +1376,13 @@ class ProjectsTabMixin:
             self._update_lines_buttons()
 
     def _main_action_of(self, item: Optional[MineItem]) -> Optional[str]:
-        """Главное действие выбранного проекта (main_action по его состоянию) или None, если проект не выбран."""
+        """Главное действие выбранного проекта (main_action по его состоянию) или None, если проект не выбран.
+        Факты те же, что у строки «Что сделать» (_facts_of): подсветка и подсказка не расходятся."""
         if item is None:
             return None
-        read_only = bool(item.state == "svn" and item.line is not None and item.line.read_only)
-        missing = bool(item.local and item.history_missing)
-        return main_action(item.state, item.status, read_only, item.local, missing, bool(missing and item.history_found))
+        facts = self._facts_of(item)
+        return main_action(facts.state, facts.status, facts.read_only, facts.local, facts.history_missing,
+                           facts.history_found)
 
     def _on_mine_double_click(self, event: tk.Event) -> None:
         """Двойной щелчок по проекту: разворачивается «Состояние проекта» на вкладке главного действия. Это путь

@@ -4263,7 +4263,8 @@ class MainActionTests(unittest.TestCase):
             ("svn", WcStatus(), False, "update"),                         # актуален
             ("svn", WcStatus(incoming=3), False, "update"),               # есть новое
             ("svn", WcStatus(local_changes=changes), False, "commit"),    # есть правки
-            ("svn", WcStatus(local_changes=changes, incoming=1), False, "commit"),
+            # U4.6: новое и свои правки - сначала «Получить новое» (как карточка и next_action помощника)
+            ("svn", WcStatus(local_changes=changes, incoming=1), False, "update"),
             ("svn", WcStatus(conflicts=1), False, "resolve"),             # конфликт
             ("svn", WcStatus(conflicts=1, local_changes=changes, incoming=1), False, "resolve"),   # конфликт важнее
             ("svn", WcStatus(local_changes=changes, incoming=1), True, "update"),   # версия: правки не сохраняются
@@ -4271,6 +4272,14 @@ class MainActionTests(unittest.TestCase):
         for state, status, read_only, expected in cases:
             with self.subTest(state=state, conflicts=getattr(status, "conflicts", None), read_only=read_only):
                 self.assertEqual(main_action(state, status, read_only), expected)
+
+    def test_every_next_step_button_has_a_main_action(self):
+        """U4.6: main_action - обёртка над next_step.main_button; перевод кнопок B_* явный и полный."""
+        from svnhelper import next_step
+        from svnhelper.gui.projects_tab import MAIN_ACTIONS
+        self.assertEqual(set(MAIN_ACTIONS), {v for k, v in vars(next_step).items() if k.startswith("B_")})
+        self.assertLessEqual(set(MAIN_ACTIONS.values()),
+                             {"resolve", "repair", "commit", "update", "publish", "restore", None})
 
     def test_main_action_for_local_history(self):
         """Ревью 2026-11-02, п.5: история потеряна - «Восстановить», если нашлась, иначе «Отправить на сервер»;
@@ -4325,7 +4334,12 @@ class ColumnOneButtonsTests(unittest.TestCase):
             cases = [("svn", WcStatus(), "update", app.update_btn),
                      ("svn", WcStatus(incoming=2), "update", app.update_btn),
                      ("svn", WcStatus(local_changes=[change]), "commit", app._commit_panel.save_button),
-                     ("svn", WcStatus(incoming=2, local_changes=[change]), "commit", app._commit_panel.save_button),
+                     # U4.6: новое и свои правки - сначала «Получить новое»
+                     ("svn", WcStatus(incoming=2, local_changes=[change]), "update", app.update_btn),
+                     # файл изменён, но не занят: сохранение само предложит занять его
+                     ("svn", WcStatus(local_changes=[LocalChange(change.path, "modified", needs_lock=True)]), "commit",
+                      app._commit_panel.save_button),
+                     ("svn", WcStatus(switched=1, local_changes=[change]), "update", app.update_btn),
                      ("svn", WcStatus(conflicts=1), "resolve", app.special_btn),
                      ("broken", None, "repair", app.special_btn),
                      ("plain", None, "publish", app.publish_btn)]

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import platform
 import re
+from dataclasses import replace
 from datetime import datetime
 from typing import Optional
 
-from . import __version__
+from . import __version__, next_step
 from .svn_core import BranchHistory, ErrorKind, Estimate, LockInfo, WcStatus, extract_codes
 
 _SHORT = {
@@ -108,36 +109,87 @@ PLAIN_TEXT = "Только на этом компьютере"
 PLAIN_TODO = "Нажмите «Отправить на сервер…»: тогда проект увидят коллеги"
 PLAIN_OFFLINE_TODO = "Отправить на сервер получится, когда появится связь"
 
+# проект с историей на этом компьютере (localrepo держит те же имена: MISSING_TEXT, MISSING_TODO, NOT_FOUND_*)
+LOCAL_TEXT = "Хранится на этом компьютере"
+LOCAL_SAVE_TODO = "Нажмите «Сохранить у себя»"
+LOCAL_SAVED_TEXT = "Всё сохранено у вас"
+LOCAL_PUBLISH_TODO = "Можно отправить проект на сервер"
+HISTORY_MISSING_TEXT = "История на этом компьютере потеряна"
+HISTORY_RESTORE_TODO = "Нажмите «Восстановить историю»: прежние сохранения вернутся"      # история найдена на диске
+HISTORY_NOT_FOUND_TEXT = "История этого проекта на компьютере не найдена"
+HISTORY_NOT_FOUND_TODO = HISTORY_NOT_FOUND_TEXT + ". Нажмите «Отправить на сервер…»: файлы уйдут как есть"
+
+SERVER_TEXT = "Проект с сервера"
+OFFLINE_STATE = ("Нет связи", "plain", "Сохранить получится, когда связь появится")
+CHECK_TODO = "Нажмите «⟳»"
+CHECKING_TODO = "Идёт проверка…"
+CHANGES_TEXT = "Есть несохранённые правки"
+SAVE_TODO = "Нажмите «Сохранить на сервер»"
+UP_TO_DATE_TEXT = "Актуален"
+READ_ONLY_SHORT = "Только для чтения"
+MY_LOCKS_TODO = ". Не забудьте освободить занятые файлы ({count})"
+
+
+def _state_texts(key: str, step_data: dict, local: bool, short: bool) -> tuple[str, str, str]:
+    """Ключ текста `NextStep.text_key` -> (состояние, тег цвета, что сделать). Словарь подсказок окна (gui/hints.py,
+    Task U4.5) заменит эти строки; пока они здесь, чтобы карточка и таблица говорили одно."""
+    unchecked = LOCAL_TEXT if local else SERVER_TEXT
+    texts = {
+        "publish": (PLAIN_TEXT, "plain", PLAIN_TODO),
+        "publish_offline": (PLAIN_TEXT, "plain", PLAIN_OFFLINE_TODO),
+        "broken": ("Папка повреждена", "bad", "Нажмите «Починить папку»"),
+        "conflict": ("Конфликт: ваши и чужие правки в одном файле", "bad", "Нажмите «Разобрать конфликт»"),
+        "switch": (SWITCH_UNFINISHED, "bad", SWITCH_UNFINISHED_TODO),
+        "get_new_with_changes": ("Есть новое на сервере и ваши правки", "new",
+                                 "Сначала «Получить новое», потом «Сохранить на сервер»"),
+        "get_new": ("Есть новое на сервере", "new", "Нажмите «Получить новое»"),
+        "save": (CHANGES_TEXT, "new", SAVE_TODO),
+        # файл изменён, но не занят: «Сохранить на сервер» само предложит занять его (COMMIT_LOCK_REQUIRED)
+        "need_lock": (CHANGES_TEXT, "new", SAVE_TODO),
+        "tag_changes": (CHANGES_TEXT, "new", TAG_MODIFIED_SHORT if short else TAG_MODIFIED),
+        "nothing": (UP_TO_DATE_TEXT, "ok", "Ничего делать не нужно"),
+        "read_only": (UP_TO_DATE_TEXT, "ok", READ_ONLY_SHORT if short else TAG_TODO),
+        "save_local": (CHANGES_TEXT, "new", LOCAL_SAVE_TODO),
+        "publish_local": (LOCAL_SAVED_TEXT, "ok", LOCAL_PUBLISH_TODO),
+        "history": (HISTORY_MISSING_TEXT, "bad", HISTORY_RESTORE_TODO),
+        "publish_history_lost": (HISTORY_MISSING_TEXT, "bad", HISTORY_NOT_FOUND_TODO),
+        "check": (unchecked, "ok", CHECK_TODO),
+        "checking": (unchecked, "ok", CHECKING_TODO),
+        "offline": OFFLINE_STATE,
+        "error": (step_data.get("error", ""), "bad", CHECK_TODO),
+    }
+    return texts.get(key, ("", "ok", ""))     # "none": проект не выбран
+
+
+# после этих подсказок проекта с сервера напоминаем о своих занятых файлах
+_MY_LOCKS_REMINDED = ("conflict", "get_new", "get_new_with_changes", "save", "need_lock", "nothing")
+
+
+def state_line(facts: next_step.Facts, short: bool = False) -> tuple[str, str, str]:
+    """Состояние проекта для карточки и таблицы «Мои проекты»: (текст, тег цвета ok|new|bad|plain|frozen, что сделать).
+
+    Код состояния даёт `next_step` (тот же, что выбирает подсвеченную кнопку и `next_action` помощника), здесь только
+    перевод в слова. Строка описывает сам проект: вход, папка проектов, занятость папки и чужие проекты в неё не
+    попадают. short - короткие подсказки для таблицы. Версия (read_only): тег «frozen» вместо «ok»."""
+    own = replace(facts, login_failed=False, folder_missing=False, busy=False, needed_locked=None, other=None)
+    step = next_step.next_step(own)
+    text, tag, todo = _state_texts(step.text_key, step.data, facts.local, short)
+    if step.text_key in _MY_LOCKS_REMINDED and step.data.get("my_locks"):
+        todo += MY_LOCKS_TODO.format(count=step.data["my_locks"])
+    if facts.read_only and tag == "ok":
+        tag = "frozen"
+    return text, tag, todo
+
 
 def status_line(state: str, status: Optional[WcStatus], checked: bool) -> tuple[str, str, str]:
-    """Состояние проекта в «Мои проекты»: (текст, тег цвета ok|new|bad|plain, подсказка «что сделать»).
+    """Состояние проекта с сервера (или обычной папки) в «Мои проекты»: (текст, тег цвета ok|new|bad|plain, подсказка
+    «что сделать»). Без поправок окна (версия, нет связи): их учитывает `state_line` с полными фактами.
 
     state: "svn" | "plain" | "broken". checked=False и status=None → проверка ещё не запускалась;
     checked=True и status=None → проверка идёт прямо сейчас.
     "plain" - обычная папка: ни истории, ни сервера; её можно отправить на сервер.
     """
-    if state == "plain":
-        return PLAIN_TEXT, "plain", PLAIN_TODO
-    if state == "broken":
-        return ("Папка повреждена", "bad", "Нажмите «Починить папку»")
-    if status is None:
-        return ("Проект с сервера", "ok", "Идёт проверка…" if checked else "Нажмите «⟳»")
-    if status.conflicts:
-        text, tag, hint = ("Конфликт: ваши и чужие правки в одном файле", "bad",
-                           "Нажмите «Разобрать конфликт»")
-    elif status.incoming and status.modified:
-        text, tag, hint = ("Есть новое на сервере и ваши правки", "new",
-                           "Сначала «Получить новое», потом «Сохранить на сервер»")
-    elif status.incoming:
-        text, tag, hint = "Есть новое на сервере", "new", "Нажмите «Получить новое»"
-    elif status.modified:
-        text, tag, hint = ("Есть несохранённые правки", "new",
-                           "Нажмите «Сохранить на сервер»")
-    else:
-        text, tag, hint = "Актуален", "ok", "Ничего делать не нужно"
-    if status.my_locks:
-        hint += f". Не забудьте освободить занятые файлы ({len(status.my_locks)})"
-    return text, tag, hint
+    return state_line(next_step.Facts(state=state, status=status, checking=bool(checked)))
 
 
 HISTORY_NAMES_MAX = 4        # сколько имён авторов показываем, остальные «и ещё N»

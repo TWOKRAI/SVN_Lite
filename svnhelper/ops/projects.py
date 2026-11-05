@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .. import folderlock, localrepo, projectmeta, publish, server
+from .. import folderlock, localrepo, next_step, projectmeta, publish, server
 from ..svn_core import ErrorKind, SvnError, WcInfo, WcStatus
 from . import texts
 from .context import OpsContext, deadline
@@ -272,10 +272,6 @@ def read_status(ctx: OpsContext, probe: Probe, want_server: bool, down: Optional
     return StatusRead(status, want_server)
 
 
-def _needs_lock_missing(status: WcStatus) -> bool:
-    return any(c.needs_lock and not c.locked_by_me for c in status.local_changes)
-
-
 def _state(status: WcStatus, checked: bool, kind: str) -> tuple:
     """(state, число своих правок, число файлов с новым на сервере)."""
     local = len(status.local_changes)
@@ -291,22 +287,34 @@ def _state(status: WcStatus, checked: bool, kind: str) -> tuple:
     return ("up_to_date" if checked or kind == KIND_LOCAL_HISTORY else "unknown_offline"), local, incoming
 
 
-def _next_action(state: str, status: Optional[WcStatus], busy: bool, read_only: bool, kind: str) -> str:
-    if busy:
-        return "wait"
-    if state == "conflict":
-        return "human_resolve_conflict"
-    if state in ("incoming", "both"):
-        return "get_new"
-    if state == "local_changes":
-        if read_only:
-            return "nothing"
-        return "take_lock" if status is not None and _needs_lock_missing(status) else "save"
-    if state == "broken":
-        return "human_resolve_conflict"
-    if state == "plain" and kind == KIND_LOCAL_ONLY:
-        return "send_to_server"
-    return "nothing"
+# Код next_step для помощника -> код `next_action` в ответе ops. Коды ops - договорённость с внешними клиентами
+# (MCP, CLI), они не меняются, даже если next_step переименует свои.
+NEXT_ACTIONS = {
+    next_step.OP_NOTHING: "nothing",
+    next_step.OP_GET_NEW: "get_new",
+    next_step.OP_SAVE: "save",
+    next_step.OP_TAKE_LOCK: "take_lock",
+    next_step.OP_HUMAN_RESOLVE: "human_resolve_conflict",
+    next_step.OP_SEND_TO_SERVER: "send_to_server",
+    next_step.OP_WAIT: "wait",
+}
+
+
+def _facts(kind: str, status: Optional[WcStatus], busy: bool, read_only: bool, server_checked: bool) -> next_step.Facts:
+    """Факты о папке для next_step по тому, что знает ops (вид папки, состояние, занятость)."""
+    if kind in (KIND_PLAIN, KIND_LOCAL_ONLY):
+        return next_step.Facts(state="plain", local_only=kind == KIND_LOCAL_ONLY)
+    if kind == KIND_BROKEN:
+        return next_step.Facts(state="broken")
+    if kind == KIND_HISTORY_MISSING:
+        return next_step.Facts(state="svn", local=True, history_missing=True)
+    return next_step.Facts(state="svn", status=status, busy=busy, read_only=read_only,
+                           local=kind == KIND_LOCAL_HISTORY, server_checked=server_checked)
+
+
+def _next_action(kind: str, status: Optional[WcStatus], busy: bool, read_only: bool, server_checked: bool) -> str:
+    """Что делать дальше (`next_action`): тот же next_step, что у подсветки и подсказок окна."""
+    return NEXT_ACTIONS[next_step.next_step(_facts(kind, status, busy, read_only, server_checked)).op]
 
 
 def _status_row(ctx: OpsContext, ref: ProjectRef, check_server: bool, down: threading.Event, warnings: list) -> dict:
@@ -340,7 +348,7 @@ def _status_row(ctx: OpsContext, ref: ProjectRef, check_server: bool, down: thre
             row.update({"state": state, "local_changes": local, "incoming": incoming, "conflicts": status.conflicts,
                         "my_locks": len(status.my_locks), "others_locks": len(status.other_locks),
                         "server_checked": read.checked, "cached": read.cached})
-    row["next_action"] = _next_action(row["state"], status, row["busy"], probe.read_only, probe.kind)
+    row["next_action"] = _next_action(probe.kind, status, row["busy"], probe.read_only, row["server_checked"])
     row["message"] = texts.state_message(probe.name, row["state"], row["incoming"], row["local_changes"],
                                          probe.read_only, probe.kind)
     return row

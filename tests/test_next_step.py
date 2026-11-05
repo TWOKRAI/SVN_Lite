@@ -312,6 +312,27 @@ class OpsParity(unittest.TestCase):
         self.assertEqual(next_step(svn(status(switched=1, local_changes=ONE))).op, "save")
         self.assertEqual(next_step(svn(status(switched=1, incoming=1))).op, "get_new")
 
+    def test_ops_next_action_goes_through_next_step(self):
+        """U4.6: ops `_next_action` - перевод кода next_step по таблице; виды папок ops дают прежние коды."""
+        from svnhelper.ops import projects as ops
+        self.assertEqual(set(ops.NEXT_ACTIONS), {v for k, v in vars(ns).items() if k.startswith("OP_")})
+        self.assertEqual(set(ops.NEXT_ACTIONS.values()), {"nothing", "get_new", "save", "take_lock",
+                                                          "human_resolve_conflict", "send_to_server", "wait"})
+        cases = [(ops.KIND_PLAIN, None, False, False, False, "nothing"),
+                 (ops.KIND_LOCAL_ONLY, None, False, False, False, "send_to_server"),
+                 (ops.KIND_BROKEN, None, False, False, False, "human_resolve_conflict"),
+                 (ops.KIND_HISTORY_MISSING, None, False, False, False, "human_resolve_conflict"),
+                 (ops.KIND_LOCAL_HISTORY, status(local_changes=ONE), False, False, False, "save"),
+                 (ops.KIND_LOCAL_HISTORY, status(), False, False, False, "nothing"),
+                 (ops.KIND_PROJECT, None, True, False, False, "wait"),           # папку держит другая программа
+                 (ops.KIND_PROJECT, status(incoming=2), False, False, False, "nothing"),   # сервер не проверялся
+                 (ops.KIND_PROJECT, status(incoming=2, local_changes=ONE), False, False, True, "get_new"),
+                 (ops.KIND_PROJECT, status(local_changes=LOCK_NEEDED), False, False, True, "take_lock"),
+                 (ops.KIND_PROJECT, status(local_changes=ONE), False, True, True, "nothing")]   # версия
+        for kind, st, busy, read_only, checked, expected in cases:
+            with self.subTest(kind=kind, expected=expected):
+                self.assertEqual(ops._next_action(kind, st, busy, read_only, checked), expected)
+
     def test_ops_codes_are_known_values(self):
         known = {"nothing", "get_new", "save", "take_lock", "human_resolve_conflict", "send_to_server", "wait"}
         for name, facts, *_rest in TABLE:
@@ -358,11 +379,66 @@ class CardParity(unittest.TestCase):
 
     def test_unversioned_only_is_a_change_for_all_sources(self):
         """Расхождение: у нового файла без правок остальных `status.modified` равен 0, и карточка писала «Актуален», а
-        подсветка и ops уже предлагали сохранить. next_step считает правкой любой элемент local_changes."""
+        подсветка и ops уже предлагали сохранить. next_step считает правкой любой элемент local_changes, и с U4.6
+        карточка берёт код у него же."""
         st = WcStatus(unversioned=1, local_changes=[change("Новый.txt", "unversioned")])
-        self.assertEqual(messages.status_line("svn", st, False)[0], "Актуален")       # прежняя карточка
+        self.assertEqual(messages.status_line("svn", st, False)[::2],
+                         ("Есть несохранённые правки", "Нажмите «Сохранить на сервер»"))
         step = next_step(svn(st))
         self.assertEqual((step.code, step.button, step.op), ("save", "commit", "save"))
+
+
+class StateLine(unittest.TestCase):
+    """U4.6: messages.state_line - строка «Что сделать» карточки и таблицы по коду next_step, с поправками окна."""
+
+    def test_every_project_row_of_the_table_has_words(self):
+        """У всех строк таблицы, которые описывают сам проект, есть состояние и подсказка."""
+        for name, facts, code, *_rest in TABLE:
+            if code in ("login", "no_folder", "other", "none", "busy", "locked_other"):
+                continue        # дела окна целиком, чужих проектов и занятой папки в строку проекта не попадают
+            with self.subTest(name):
+                text, tag, todo = messages.state_line(facts)
+                self.assertTrue(text and todo, (text, todo))
+                self.assertIn(tag, ("ok", "new", "bad", "plain", "frozen"))
+
+    def test_window_corrections(self):
+        cases = [
+            (svn(status(local_changes=ONE), read_only=True), False, ("Есть несохранённые правки", "new",
+                                                                    messages.TAG_MODIFIED)),
+            (svn(status(local_changes=ONE), read_only=True), True, ("Есть несохранённые правки", "new",
+                                                                   messages.TAG_MODIFIED_SHORT)),
+            (svn(status(), read_only=True), False, ("Актуален", "frozen", messages.TAG_TODO)),
+            (svn(status(), read_only=True), True, ("Актуален", "frozen", "Только для чтения")),
+            (svn(None, read_only=True), False, ("Проект с сервера", "frozen", "Нажмите «⟳»")),
+            (svn(status(switched=1, local_changes=ONE, incoming=1)), False,
+             (messages.SWITCH_UNFINISHED, "bad", messages.SWITCH_UNFINISHED_TODO)),
+            (svn(None, error="Нет связи", offline=True), False,
+             ("Нет связи", "plain", "Сохранить получится, когда связь появится")),
+            (svn(None, error="Нет связи", offline=True, local=True), False,
+             ("Нет связи", "plain", "Сохранить получится, когда связь появится")),
+            (svn(None, error="Сбой", checking=True), False, ("Проект с сервера", "ok", "Идёт проверка…")),
+            (svn(None, error="Сбой"), False, ("Сбой", "bad", "Нажмите «⟳»")),
+            (svn(None, error="Сбой", local=True, history_missing=True), False,
+             (localrepo.MISSING_TEXT, "bad", localrepo.NOT_FOUND_TODO)),
+            (Facts(state="plain", offline=True), False, (messages.PLAIN_TEXT, "plain", messages.PLAIN_OFFLINE_TODO)),
+        ]
+        for facts, short, expected in cases:
+            with self.subTest(expected=expected, short=short):
+                self.assertEqual(messages.state_line(facts, short=short), expected)
+
+    def test_line_ignores_window_wide_facts(self):
+        """Вход, папка проектов, занятость папки и чужие проекты - не про этот проект: строка та же."""
+        plain = messages.state_line(svn(status(local_changes=ONE)))
+        noisy = messages.state_line(svn(status(local_changes=ONE), login_failed=True, folder_missing=True, busy=True,
+                                        other=("x", "conflict"), needed_locked=("a", "b", "c")))
+        self.assertEqual(noisy, plain)
+
+    def test_my_locks_reminder_only_for_server_projects(self):
+        locks = [object(), object()]
+        self.assertTrue(messages.state_line(svn(status(my_locks=locks)))[2].endswith(
+            "Не забудьте освободить занятые файлы (2)"))
+        self.assertNotIn("освободить", messages.state_line(svn(status(my_locks=locks), read_only=True))[2])
+        self.assertNotIn("освободить", messages.state_line(svn(status(my_locks=locks, switched=1)))[2])
 
 
 class PureModule(unittest.TestCase):

@@ -33,7 +33,7 @@ from typing import Optional
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from . import checks, fsutil, importer, jobs, messages, publish
+from . import checks, fsutil, importer, jobs, messages, next_step, publish
 from .config import FilterRules, SettingsStore
 from .svn_core import (CREATE_NO_WINDOW, CancelToken, CheckoutProgress, CommitResult, ErrorKind, SvnClient, SvnError,
                        WcStatus, decode_output)
@@ -75,10 +75,11 @@ FAILED = "failed"
 
 # тексты для человека (без терминов svn)
 WHERE_TEXT = "Хранится только на этом компьютере"
-MISSING_TEXT = "История на этом компьютере потеряна"
-MISSING_TODO = "Нажмите «Восстановить историю»: прежние сохранения вернутся"             # история найдена на диске
-NOT_FOUND_TEXT = "История этого проекта на компьютере не найдена"
-NOT_FOUND_TODO = NOT_FOUND_TEXT + ". Нажмите «Отправить на сервер…»: файлы уйдут как есть"
+# строки состояния живут в messages (там их переводит в слова state_line по коду next_step)
+MISSING_TEXT = messages.HISTORY_MISSING_TEXT
+MISSING_TODO = messages.HISTORY_RESTORE_TODO              # история найдена на диске
+NOT_FOUND_TEXT = messages.HISTORY_NOT_FOUND_TEXT
+NOT_FOUND_TODO = messages.HISTORY_NOT_FOUND_TODO
 SAVE_BUTTON = "Сохранить у себя"
 PUBLISH_BUTTON = "Отправить на сервер…"
 RESTORE_BUTTON = "Восстановить историю"
@@ -599,14 +600,10 @@ def delete_history(store: SettingsStore, folder: str, client: Optional[SvnClient
 def status_line(status: Optional[WcStatus], checking: bool, missing: bool, found: bool = False) -> tuple[str, str, str]:
     """Состояние проекта с историей на компьютере: (текст, тег цвета ok|new|bad, подсказка «что сделать»).
 
-    missing: истории на месте нет; found: она найдена в другом месте (можно восстановить)."""
-    if missing:
-        return MISSING_TEXT, "bad", MISSING_TODO if found else NOT_FOUND_TODO
-    if status is None:
-        return "Хранится на этом компьютере", "ok", "Идёт проверка…" if checking else "Нажмите «⟳»"
-    if status.local_changes or status.modified:
-        return "Есть несохранённые правки", "new", "Нажмите «Сохранить у себя»"
-    return "Всё сохранено у вас", "ok", "Можно отправить проект на сервер"
+    missing: истории на месте нет; found: она найдена в другом месте (можно восстановить).
+    Код состояния даёт next_step, слова - messages.state_line (как у проектов с сервера)."""
+    return messages.state_line(next_step.Facts(state="svn", status=status, local=True, checking=bool(checking),
+                                               history_missing=bool(missing), history_found=bool(found)))
 
 
 def saved_text(count: int) -> str:
