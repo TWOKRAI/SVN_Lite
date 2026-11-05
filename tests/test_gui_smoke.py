@@ -466,7 +466,10 @@ class MineTabTests(unittest.TestCase):
                         self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
                         # подпись не обрезана: кнопке дали не меньше, чем она просит
                         self.assertGreaterEqual(widget.winfo_width(), widget.winfo_reqwidth(), widget)
-                    self.assertFalse(app.mine_cancel_btn.winfo_ismapped())      # «Отмена» только во время операции
+                    # «Отмена» только во время операции, и не слева, а в панели подсказок внизу окна (U4.5)
+                    self.assertFalse(hasattr(app, "mine_cancel_btn"))
+                    self.assertFalse(app.hint_bar.cancel_btn.winfo_ismapped())
+                    self.assertLessEqual(app.hint_bar.winfo_rooty() + app.hint_bar.winfo_height(), bottom)
                     for column in (app.mine_col2, app.mine_col3):               # обе колонки помещаются в окно
                         self.assertTrue(column.body.winfo_ismapped(), column)
                         self.assertLessEqual(column.winfo_rootx() + column.winfo_width(), right, column)
@@ -719,6 +722,7 @@ class MineTabTests(unittest.TestCase):
                 app._on_close()
                 self.assertTrue(app.upd.cancel.cancelled)
                 self.assertEqual(app.mine_status.get(), "Останавливаю…")
+                self.assertEqual(app.hint_bar.progress_text(), "Останавливаю…")     # ход - справа в панели подсказок
                 end = time.monotonic() + 0.5
                 while time.monotonic() < end:  # пока задача не завершилась, окно живёт
                     root.update()
@@ -995,26 +999,93 @@ class MineTabTests(unittest.TestCase):
             root.destroy()
 
     def test_cancel_buttons_visible_only_during_operations(self):
+        """U4.5: одна «Отмена» на окно - справа в панели подсказок, только пока идёт скачивание или получение нового;
+        в форме скачивания и в левой колонке её больше нет."""
         from svnhelper.gui.models import DownloadJob, UpdateJob
         root, app, _base = self.make_app("cancel")
         try:
+            bar = app.hint_bar
             iid, item = self.select_first(root, app)
-            self.assertEqual(app.cancel_btn.winfo_manager(), "")
-            self.assertFalse(app.mine_cancel_btn.winfo_ismapped())
+            self.assertFalse(hasattr(app, "cancel_btn") or hasattr(app, "mine_cancel_btn"))
+            self.assertEqual(bar.cancel_btn.winfo_manager(), "")
             app.job = DownloadJob(url="u", name="n", dest="d")
             app._update_buttons()
-            self.assertEqual(app.cancel_btn.winfo_manager(), "pack")
-            self.assertEqual(str(app.cancel_btn.cget("state")), "normal")
+            self.assertEqual(bar.cancel_btn.winfo_manager(), "grid")
+            self.assertEqual(str(bar.cancel_btn.cget("state")), "normal")
+            self.assertTrue(bar.progress_text().startswith("Скачиваю «n»"))
+            bar.cancel_btn.invoke()                                    # та же отмена, что была в форме
+            self.assertTrue(app.job.cancel.cancelled)
+            self.assertEqual(bar.progress_text(), "«n»: Отмена…")
+            self.assertEqual(str(bar.cancel_btn.cget("state")), "disabled")
             app.job = None
             app._update_buttons()
-            self.assertEqual(app.cancel_btn.winfo_manager(), "")
+            self.assertEqual(bar.cancel_btn.winfo_manager(), "")
+            self.assertFalse(bar.progress_active)
             app.upd = UpdateJob(item)
             app._update_buttons()
-            self.assertNotIn(app.mine_cancel_btn, app.actions_row._hidden)
+            self.assertEqual(bar.cancel_btn.winfo_manager(), "grid")
             self.assertEqual(str(app.update_btn.cget("state")), "disabled")
+            self.assertEqual(app.update_btn.cget("text"), "Получаю новое…")     # слева серая, ход - в панели
             app.upd = None
             app._update_buttons()
-            self.assertIn(app.mine_cancel_btn, app.actions_row._hidden)
+            self.assertEqual(bar.cancel_btn.winfo_manager(), "")
+            self.assertEqual(app.update_btn.cget("text"), "Получить новое")
+        finally:
+            root.destroy()
+
+    def test_update_is_cancelled_from_hint_bar_with_projects_collapsed(self):
+        """U4.5: «Проекты» (с левой колонкой) свёрнуты - получение нового всё равно отменяется из панели внизу."""
+        from svnhelper.gui.models import UpdateJob
+        root, app, _base = self.make_app("cancel_collapsed", visible=True)
+        try:
+            bar = app.hint_bar
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking)
+            app.mine_col2.collapse()
+            root.update()
+            self.assertFalse(app.actions_row.winfo_ismapped())
+            app.upd = UpdateJob(item)
+            app._update_buttons()
+            app.mine_status.set("Получено файлов: 120")
+            root.update()
+            self.assertTrue(bar.cancel_btn.winfo_ismapped())
+            self.assertEqual(bar.progress_text(), "Получено файлов: 120")
+            bar.cancel_btn.invoke()
+            self.assertTrue(app.upd.cancel.cancelled)
+            self.assertEqual(bar.progress_text(), "Отмена…")
+            self.assertEqual(str(bar.cancel_btn.cget("state")), "disabled")    # второй раз не нажать
+            app.upd = None
+            app._update_buttons()
+            self.assertFalse(bar.progress_active)
+        finally:
+            root.destroy()
+
+    def test_results_and_quiet_errors_go_to_hint_bar(self):
+        """U4.5: итог операции - слева в панели (если он не написан в видимой карточке), тихий сбой - советом;
+        фоновая проверка проектов панель не трогает."""
+        root, app, _base = self.make_app("hint_results")
+        try:
+            bar = app.hint_bar
+            iid, item = self.select_first(root, app)
+            self.pump(root, lambda: not app._checking and not item.checking)
+            background = bar.text()
+            app._on_check_all()
+            self.assertFalse(bar.progress_active)                       # проверка идёт молча
+            self.pump(root, lambda: not app._checking)
+            self.assertEqual(bar.text(), background)
+            app.mine_status.set("Готово")                               # итог не по карточке
+            self.assertEqual(bar.text(), "Готово")
+            app._status_error("Нужен вход на сервер.")
+            self.assertEqual((bar._error, bar.text()), ("Нужен вход на сервер.", "Нужен вход на сервер."))
+            bar._expire("error")
+            bar._expire("result")
+            app._action_notes[os.path.normcase(item.path)] = "Сохранено на сервер: 1 файл"
+            app.mine_status.set("Сохранено на сервер: 1 файл")          # он уже в карточке: панель не повторяет
+            self.assertEqual(bar.text(), background)
+            app.mine_col3.collapse()                                    # карточки не видно: итог в панели
+            app.mine_status.set("")
+            app.mine_status.set("Сохранено на сервер: 1 файл")
+            self.assertEqual(bar.text(), "Сохранено на сервер: 1 файл")
         finally:
             root.destroy()
 
@@ -2106,8 +2177,10 @@ class ListModeTests(unittest.TestCase):
         app._mine_dirty = False
         bar = app.download_actions
         shown = lambda: [w for w in bar._items if w not in bar._hidden]   # noqa: E731
+        # «Отмены» в форме нет: она справа в панели подсказок внизу окна, пока идёт скачивание (U4.5)
         self.assertEqual([w.cget("text") for w in bar._items],
-                         ["Скачать", "Отмена", "Создать проект из этой папки…", "Удалить недокачанную папку"])
+                         ["Скачать", "Создать проект из этой папки…", "Удалить недокачанную папку"])
+        self.assertEqual(list(app.DOWNLOAD_BUTTONS), [w.cget("text") for w in bar._items])
         self.assertEqual(shown(), [app.download_btn])
         self.assertEqual(str(app.download_btn.cget("style")), "Accent.TButton")
         app._set_create_target(("C:\\папка", "svn://srv", ["test", "папка"]))
@@ -2158,9 +2231,15 @@ class ListModeTests(unittest.TestCase):
         bottom = app.mine_col3.winfo_rooty() + app.mine_col3.winfo_height()    # колонка обрезает то, что ниже
         info = next(w for w in app.progress.master.winfo_children()
                     if "textvariable" in w.keys() and str(w.cget("textvariable")) == str(app.info_var))
-        for widget in (app.progress, app.cancel_btn, app.download_btn, app.line_combo, info):
+        for widget in (app.progress, app.download_btn, app.line_combo, info):
             self.assertTrue(widget.winfo_ismapped(), widget)
             self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom, widget)
+        # ход словами и «Отмена» - в панели подсказок внизу окна (U4.5), в форме строка хода спрятана
+        self.assertFalse(app.download_status.winfo_ismapped())
+        self.assertEqual(app.hint_bar.progress_text(), "«n»: Скачано 120 из 400 (30%), осталось ~1 мин")
+        cancel = app.hint_bar.cancel_btn
+        self.assertTrue(cancel.winfo_ismapped())
+        self.assertLessEqual(cancel.winfo_rooty() + cancel.winfo_height(), root.winfo_rooty() + root.winfo_height())
         app.job = None
         app._update_buttons()
 

@@ -303,6 +303,7 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self._publish_busy = busy
         if status:
             self.mine_status.set(status)
+        self._sync_hint_progress()
         self._update_publish_banner()
 
     def _on_finish_publish(self) -> None:
@@ -370,7 +371,7 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self.run_bg(lambda: publish.discard_job(job, client=client), done)
 
     def _publish_declined(self) -> None:
-        self.mine_status.set("Отправка не завершена: нужен вход на сервер")
+        self._status_error("Отправка не завершена: нужен вход на сервер")
 
     def _publish_failed(self, job: publish.PublishJob, error: BaseException) -> None:
         if isinstance(error, publish.PublishError):

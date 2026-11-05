@@ -166,7 +166,6 @@ class ProjectsTabMixin:
         self.expert_menu = tk.Menu(self.more_menu, tearoff=False)      # подменю «Для опытных»
         self.more_btn = self._menu_button(row, "Ещё ▾", self.more_menu)
         self.more_btn.configure(state="disabled")
-        self.mine_cancel_btn = ttk.Button(row, text="Отмена", command=self._on_cancel_update, state="disabled")
         # «Новый проект» стоит в колонке 1, а не в колонке 2: там при любом масштабе экрана ей не хватало места.
         # Обычного стиля: подсвечена на экране только одна кнопка - главное действие (_update_mine_buttons)
         self.new_project_btn = ttk.Button(row, text="＋ Новый проект…", style="TButton", command=self._on_new_project)
@@ -179,7 +178,6 @@ class ProjectsTabMixin:
         row.add(self.update_btn, hint="project.get_new")
         row.add(self.publish_btn, visible=False, hint="project.publish")
         row.add(self.continue_btn, visible=False, hint="project.continue")    # второе действие при потерянной истории
-        row.add(self.mine_cancel_btn, visible=False)    # видна только пока идёт получение нового
         row.add(self.open_btn, separator=True, hint="project.open")
         row.add(self.server_btn, hint="project.server")
         row.add(self.more_btn, hint="project.more")
@@ -207,9 +205,11 @@ class ProjectsTabMixin:
         self._build_mine_sash(tab)
         self._layout_mine_columns()
 
-        # сообщения о ходе работы больше не занимают место внизу: они видны в подсказке индикатора в шапке
+        # ход и итог операций с проектами (получение нового, сохранение, занятие файлов, окна TortoiseSVN): пока
+        # операция идёт - справа в панели подсказок, после неё - итог слева (_on_mine_status)
         self.mine_status = tk.StringVar()
-        self.mine_status.trace_add("write", lambda *_: self._refresh_lamp())
+        self._mine_status_kind = ""            # "error" - следующая запись в mine_status - совет о сбое (_status_error)
+        self.mine_status.trace_add("write", lambda *_: self._on_mine_status())
         self._mine_hint("Выберите проект в списке, чтобы увидеть подробности.")
         self.dir_var.trace_add("write", lambda *_: self._on_dir_var_changed())
         self._apply_tortoise()
@@ -1145,6 +1145,60 @@ class ProjectsTabMixin:
         else:
             bar.set_background(" ".join(p for p in (f"«{name}»: {self._sentence(state)}", todo) if p))
 
+    UPDATE_RUNNING_TEXT = "Получаю новое…"     # подпись серой «Получить новое», пока оно идёт
+
+    def _operation_running(self) -> bool:
+        """Идёт долгая операция, ход которой показывает правая часть панели подсказок. Фоновая проверка проектов
+        (раз в несколько секунд) операцией не считается: о ней панель молчит."""
+        return (self.upd is not None or self.job is not None or self._committing or self._locking
+                or self._publish_busy or self._conn_checking or bool(self._tortoise_open))
+
+    def _sync_hint_progress(self) -> None:
+        """Правая часть панели подсказок: ход получения нового или скачивания (с «Отменой»), ход сохранения, занятия
+        файлов, окна TortoiseSVN (без отмены). Операции нет - правая часть пуста; в режиме «только ход работы» панель
+        видна, только пока что-то идёт."""
+        bar = getattr(self, "hint_bar", None)
+        if bar is None or not hasattr(self, "mine_status"):
+            return
+        status = self.mine_status.get().strip()
+        if self.upd is not None:
+            bar.set_progress(status or self.UPDATE_RUNNING_TEXT, cancel=self._on_cancel_update,
+                             cancel_enabled=not self.upd.cancel.cancelled)
+        elif self.job is not None:
+            done = self.status_var.get().strip()
+            bar.set_progress(f"«{self.job.name}»: {done}" if done else f"Скачиваю «{self.job.name}»…",
+                             cancel=self._on_cancel, cancel_enabled=not self.job.cancel.cancelled)
+        elif self._operation_running():
+            bar.set_progress(status)
+        else:
+            bar.clear_progress()
+        self._place_hint_bar()
+
+    def _status_error(self, text: str) -> None:
+        """Тихий сбой без окна («Нужен вход на сервер»): совет в панели подсказок на ERROR_MS."""
+        self._mine_status_kind = "error"
+        self.mine_status.set(text)
+
+    def _on_mine_status(self) -> None:
+        """Записан ход или итог операции (mine_status). Пока операция идёт - это ход справа в панели; после неё -
+        итог слева на RESULT_MS (тихий сбой - на ERROR_MS). Итог по проекту, который уже написан в видимой карточке
+        (note_label), панель не повторяет."""
+        kind, self._mine_status_kind = self._mine_status_kind, ""
+        self._refresh_lamp()
+        self._sync_hint_progress()
+        text = self.mine_status.get().strip()
+        bar = getattr(self, "hint_bar", None)
+        if bar is None or not text or self._operation_running():
+            return
+        if kind == "error":
+            bar.show_error(text)
+            return
+        item = self._selected_item()
+        if (item is not None and self._card_visible()
+                and self._action_notes.get(os.path.normcase(item.path), "").strip() == text):
+            return
+        bar.show_result(text)
+
     def _mine_row_hint(self, iid: str) -> str:
         """Пояснение строки таблицы проектов: имя, состояние и что сделать."""
         item = self.mine.get(iid)
@@ -1374,8 +1428,6 @@ class ProjectsTabMixin:
         self.continue_btn.configure(state=on(missing and ready and free and not self._locking and not self._committing))
         self.check_btn.configure(state=on(bool(self.client) and not busy))
         self.rescan_btn.configure(state="disabled" if busy else "normal")
-        self.mine_cancel_btn.configure(state=on(self.upd))
-        self._show(self.mine_cancel_btn, self.upd is not None)
 
         has_conflicts = bool(is_svn and item.status and item.status.conflicts)
         # главное действие по состоянию: одна кнопка в стиле Accent.TButton, остальные обычные
@@ -1402,7 +1454,10 @@ class ProjectsTabMixin:
         self.new_project_btn.configure(state=on(not busy and not self._new_project_running()))
 
         incoming = item.status.incoming if is_svn and item.status else 0
-        self.update_btn.configure(text=f"Получить новое ({incoming})" if incoming else "Получить новое")
+        if self.upd is not None and not self.upd.url:      # ход и «Отмена» - в панели подсказок внизу окна
+            self.update_btn.configure(text=self.UPDATE_RUNNING_TEXT)
+        else:
+            self.update_btn.configure(text=f"Получить новое ({incoming})" if incoming else "Получить новое")
         self.mine_name_label.configure(text=item.display_name if item else "")
         self.more_btn.configure(state=on(item))
         self.open_btn.configure(state=on(item))
@@ -1423,6 +1478,7 @@ class ProjectsTabMixin:
         self._sync_commit_enabled()
         if hasattr(self, "switch_here_btn"):
             self._update_lines_buttons()
+        self._sync_hint_progress()
 
     def _main_action_of(self, item: Optional[MineItem]) -> Optional[str]:
         """Главное действие выбранного проекта (main_action по его состоянию) или None, если проект не выбран.
@@ -1760,7 +1816,6 @@ class ProjectsTabMixin:
         self._checking = True
         self._check_batch = list(items)
         self._refresh_mine_progress()
-        self.mine_status.set("Проверка изменений на сервере…")
         self._update_mine_buttons()
         stamp = self.login.stamp()
         rules = {id(i): self._rules_for(i) for i in items}   # мусор среди новых файлов не считается несохранённой правкой
@@ -1807,7 +1862,6 @@ class ProjectsTabMixin:
         if self.client is None:
             return p.danger, False, "Не найдена программа svn.exe (TortoiseSVN)"
         items = [i for i in self.mine.values() if i.state in ("svn", "broken")]
-        note = self.mine_status.get().strip()
         offline = self._offline
         bad = [i for i in items if i.state == "broken" or i.history_missing or (i.status is None and i.error
                                                            and not self._is_offline_error(i.error))
@@ -1830,9 +1884,7 @@ class ProjectsTabMixin:
         else:
             color, text = p.muted, "Проекты ещё не проверены" if items else "Скачанных проектов пока нет"
         if busy:
-            text = ("Идёт работа… " + note).strip()
-        elif note:
-            text += ". " + note
+            text = "Идёт работа…"           # что именно идёт - справа в панели подсказок внизу окна
         return color, busy, text
 
     def _refresh_lamp(self) -> None:
@@ -1869,7 +1921,7 @@ class ProjectsTabMixin:
             return
         self.login.request(retry=lambda: (self._end_check(), self._check_status(items)),
                            give_up=lambda: (setattr(self, "_auto_auth_failed", True), self._status_done(),
-                                            self.mine_status.set("Нужен вход на сервер.")),
+                                            self._status_error("Нужен вход на сервер.")),
                            job_gen=stamp)
 
     def _end_check(self) -> None:
@@ -1884,7 +1936,6 @@ class ProjectsTabMixin:
                 item.checking = False   # проверка прервалась (например, отказ от входа): не оставляем «Идёт проверка…»
                 self._refresh_row(item)
         self._check_batch = []
-        self.mine_status.set("Проверка завершена.")
         self._update_mine_buttons()
         self._drain_check_queue()
 
@@ -1991,7 +2042,10 @@ class ProjectsTabMixin:
         self.run_bg(lambda: localrepo.save(client, item.path, rules, comment), done)
 
     def _commit_load_failed(self, item: MineItem, kind: ErrorKind) -> None:
-        self.mine_status.set("Нужен вход на сервер." if kind is ErrorKind.AUTH else "")
+        if kind is ErrorKind.AUTH:
+            self._status_error("Нужен вход на сервер.")
+        else:
+            self.mine_status.set("")
         if kind is not ErrorKind.AUTH:
             self.show_error(messages.COMMIT_TITLE, messages.short_message(kind),
                             action=f"Поиск правок проекта {item.name}", kind=kind, extra={"Папка": item.path})
@@ -2070,7 +2124,7 @@ class ProjectsTabMixin:
             kind = self._error_kind(error)
             if kind is ErrorKind.AUTH:
                 self.login.request(retry=lambda: self._run_commit(item, paths, comment, prelude, tried), job_gen=stamp,
-                                   give_up=lambda: self.mine_status.set("Нужен вход на сервер."))
+                                   give_up=lambda: self._status_error("Нужен вход на сервер."))
                 return
             self._commit_failed(item, paths, comment, tried, error, kind)
 
@@ -2188,7 +2242,7 @@ class ProjectsTabMixin:
         client = self.client
         self.run_auth(lambda: client.status(item.path, check_server=True),
                       lambda st: self._choose_unlock(item, st),
-                      lambda kind: self.mine_status.set(messages.short_message(kind)))
+                      lambda kind: self._status_error(messages.short_message(kind)))
 
     def _choose_unlock(self, item: MineItem, status: WcStatus) -> None:
         self._on_item_status(item, status, "")
@@ -2226,7 +2280,7 @@ class ProjectsTabMixin:
         if not client or self._locking or self._committing:
             return
         if self._path_busy(item.path):
-            self.mine_status.set(messages.UPDATE_BUSY)
+            self._status_error(messages.UPDATE_BUSY)
             return
         self._locking = True
         self._refresh_mine_progress()
@@ -2259,7 +2313,7 @@ class ProjectsTabMixin:
             if error is not None:
                 if self._error_kind(error) is ErrorKind.AUTH:
                     self.login.request(retry=lambda: self._run_locks(item, files, lock), job_gen=stamp,
-                                       give_up=lambda: self.mine_status.set("Нужен вход на сервер."))
+                                       give_up=lambda: self._status_error("Нужен вход на сервер."))
                 else:
                     self.mine_status.set("")
                     kind = self._error_kind(error)
@@ -2323,7 +2377,7 @@ class ProjectsTabMixin:
         if not self.client or self.upd or self.job or self._locking or self._committing:
             return False
         if self._path_busy(item.path):   # TortoiseSVN держит папку: получение нового при блокировке запустит починку и снимет её
-            self.mine_status.set(messages.UPDATE_BUSY)
+            self._status_error(messages.UPDATE_BUSY)
             return False
         self._action_notes.pop(os.path.normcase(item.path), None)
         self.upd = UpdateJob(self._current(item) or item, client=self.client)
@@ -2394,10 +2448,10 @@ class ProjectsTabMixin:
         self.root.after(PROGRESS_MS, self._tick_update, job)
 
     def _on_cancel_update(self) -> None:
+        """«Отмена» в панели подсказок, пока идёт получение нового (или переключение ветки)."""
         if self.upd:
-            self.mine_cancel_btn.configure(state="disabled")
-            self.mine_status.set("Отмена…")
             self.upd.cancel.cancel()
+            self.mine_status.set("Отмена…")     # панель покажет «Отмена…», её кнопка станет серой
 
     def _end_update(self) -> None:
         self.upd = None
@@ -2416,7 +2470,7 @@ class ProjectsTabMixin:
             kind = self._error_kind(error)
             if kind is ErrorKind.AUTH and not self._closing:
                 self.login.request(retry=self._start_update, job_gen=stamp,
-                                   give_up=lambda: (self._end_update(), self.mine_status.set("Нужен вход на сервер.")))
+                                   give_up=lambda: (self._end_update(), self._status_error("Нужен вход на сервер.")))
                 return
             self._end_update()
             if self._closing:

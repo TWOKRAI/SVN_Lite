@@ -56,7 +56,7 @@ class LinesTabMixin:
         def fail(kind: ErrorKind) -> None:
             finish()
             if kind is ErrorKind.AUTH:
-                self.mine_status.set("Нужен вход на сервер.")
+                self._status_error("Нужен вход на сервер.")
                 return
             self.mine_status.set("")
             self.show_error("Не удалось получить сведения о проекте", messages.short_message(kind),
@@ -125,7 +125,7 @@ class LinesTabMixin:
                 kind = self._error_kind(error)
                 if kind is ErrorKind.AUTH:
                     self.login.request(retry=lambda: self._run_copy(item, new_line, comment, switch, status),
-                                       give_up=lambda: self.mine_status.set("Нужен вход на сервер."),
+                                       give_up=lambda: self._status_error("Нужен вход на сервер."),
                                        job_gen=stamp)
                     return
                 self.mine_status.set("")

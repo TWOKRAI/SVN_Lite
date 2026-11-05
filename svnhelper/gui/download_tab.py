@@ -29,7 +29,7 @@ class DownloadTabMixin:
     # подписи кнопок колонки справа в форме; ширина колонки - не меньше, чем у «Скачать проект», и не меньше самой
     # длинной из показанных (_fit_download_actions): «Создать проект из этой папки…» и «Удалить недокачанную папку»
     # появляются редко, и пока их нет, форме остаётся больше места (в окне 900x640 при скачивании это важно)
-    DOWNLOAD_BUTTONS = ("Скачать", "Отмена", "Создать проект из этой папки…", "Удалить недокачанную папку")
+    DOWNLOAD_BUTTONS = ("Скачать", "Создать проект из этой папки…", "Удалить недокачанную папку")
     DOWNLOAD_COLUMN_MIN_TEXT = "Скачать проект"
     # фоновый текст панели подсказок на подвкладке «Скачать проект»
     DOWNLOAD_BACKGROUND = ("Найдите проект в списке слева или вставьте ссылку на него, проверьте «Что скачать» "
@@ -99,9 +99,9 @@ class DownloadTabMixin:
         self._autowrap(self.tree_status, bar, px(60))
 
     def _build_download_form(self, parent: tk.Misc) -> None:
-        """Колонка 3 на «Скачать проект»: какой проект, что скачать, куда; ход скачивания. Кнопки - колонкой справа
-        (self.download_actions): «Скачать», «Отмена» (пока идёт скачивание), «Создать проект из этой папки…» и
-        «Удалить недокачанную папку» (когда они нужны)."""
+        """Колонка 3 на «Скачать проект»: какой проект, что скачать, куда; полоса хода скачивания. Кнопки - колонкой
+        справа (self.download_actions): «Скачать», «Создать проект из этой папки…» и «Удалить недокачанную папку»
+        (когда они нужны). Ход скачивания словами и «Отмена» - справа в панели подсказок внизу окна."""
         px = self.px
         self.download_form = form = ttk.Frame(parent)
         form.columnconfigure(0, weight=1)
@@ -192,10 +192,12 @@ class DownloadTabMixin:
         self.progress.grid(row=1, column=0, sticky="ew", pady=(px(4), px(4)))
         self.progress.grid_remove()
         self.status_var = tk.StringVar()
-        status = ttk.Label(step3, textvariable=self.status_var, justify="left")
+        self.download_status = status = ttk.Label(step3, textvariable=self.status_var, justify="left")
         status.grid(row=2, column=0, sticky="w", pady=(px(4), 0))
         self._autowrap(status, step3, px(40))
-        self._hide_when_empty(status, self.status_var)
+        # пока идёт скачивание, ход словами виден в панели подсказок (с «Отменой»); здесь - итог после него
+        self.status_var.trace_add("write", lambda *_: self._sync_download_status())
+        self._show(status, False)
         # подсказка нужна, пока скачивания не было; дальше её место занимают ход и итог (окно в 640 px невысокое)
         self.status_var.trace_add("write", lambda *_: self._show(step3_hint, not self.status_var.get().strip()))
         self.info_var = tk.StringVar()
@@ -210,17 +212,20 @@ class DownloadTabMixin:
         actions.grid(row=0, column=1, sticky="n", padx=(px(12), 0))
         self.download_btn = ttk.Button(actions, text="Скачать", style="Accent.TButton", command=self._on_download,
                                        state="disabled")
-        # «Отмена» видна только во время скачивания
-        self.cancel_btn = ttk.Button(actions, text="Отмена", command=self._on_cancel, state="disabled")
         # появляется, когда введён путь к папке, которой ещё нет в хранилище
-        self.create_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[2], command=self._on_create_project)
+        self.create_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[1], command=self._on_create_project)
         # появляется только после отмены или ошибки, если на диске осталась недокачанная папка
-        self.cleanup_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[3], command=self._on_remove_partial)
+        self.cleanup_btn = ttk.Button(actions, text=self.DOWNLOAD_BUTTONS[2], command=self._on_remove_partial)
         actions.add(self.download_btn, hint="download.start")
-        actions.add(self.cancel_btn, visible=False)
         actions.add(self.create_btn, visible=False, separator=True, hint="download.create")
         actions.add(self.cleanup_btn, visible=False, separator=True, hint="download.cleanup")
         actions.on_change = self._fit_download_actions
+
+    def _sync_download_status(self) -> None:
+        """Строка хода в форме видна, когда в ней есть текст и скачивание не идёт (во время скачивания ход - в панели
+        подсказок); заодно обновляется сама панель."""
+        self._show(self.download_status, bool(self.status_var.get().strip()) and self.job is None)
+        self._sync_hint_progress()
 
     def _fit_download_actions(self) -> None:
         """Ширина колонки кнопок формы по самой длинной из показанных подписей: длинные не обрезаются."""
@@ -783,8 +788,6 @@ class DownloadTabMixin:
         any_busy = busy or self.upd is not None
         self.download_btn.configure(
             state="normal" if (self.project and not any_busy and self.client) else "disabled")
-        self._show(self.cancel_btn, busy)       # «Отмена» видна только во время скачивания
-        self.cancel_btn.configure(state="normal" if busy else "disabled")
         other = "disabled" if any_busy else "normal"
         self.browse_btn.configure(state=other)
         self.refresh_btn.configure(state=other)
@@ -796,6 +799,7 @@ class DownloadTabMixin:
                                   else "disabled")
         self.fav_btn.configure(state="normal" if (self.project and not any_busy) else "disabled")
         self.line_combo.configure(state="readonly" if (self.project and not any_busy) else "disabled")
+        self._sync_download_status()
         self._update_mine_buttons()
 
     def _notify_done(self, started: float, cancelled: bool = False) -> None:
@@ -996,10 +1000,10 @@ class DownloadTabMixin:
             self._start_checkout()
 
     def _on_cancel(self) -> None:
+        """«Отмена» в панели подсказок, пока идёт скачивание."""
         if self.job:
-            self.cancel_btn.configure(state="disabled")
-            self.status_var.set("Отмена…")
             self.job.cancel.cancel()
+            self.status_var.set("Отмена…")      # панель покажет «Отмена…», её кнопка станет серой
 
     # -- завершение задачи -----------------------------------------------------------
 
@@ -1104,6 +1108,8 @@ class DownloadTabMixin:
         self._action_notes[os.path.normcase(os.path.normpath(job.dest))] = text
         self._show_new_project(job.dest)
         self.select_list_mode("mine")
+        if not self._card_visible():           # «Состояние проекта» свёрнуто: итог в панели подсказок
+            self.hint_bar.show_result(text)
 
     def _finish_cancelled(self, job: DownloadJob) -> None:
         self.status_var.set("Скачивание отменено")
