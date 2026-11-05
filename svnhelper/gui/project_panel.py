@@ -419,6 +419,10 @@ class ProjectPanel(ttk.Frame):
         self.commit_panel.set_save_accent(accent)
         self.save_local_btn.configure(style="Accent.TButton" if accent else "TButton")
 
+    def set_lock_accent(self, accent: bool) -> None:
+        """Подсвечена «Занять файл…» на «Занятых» (файл изменён, но не занят - главное действие проекта)."""
+        self.lock_btn.configure(style="Accent.TButton" if accent else "TButton")
+
     def current_tab(self) -> str:
         """Ключ выбранной вкладки."""
         selected = self.tabs.select()

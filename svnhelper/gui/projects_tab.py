@@ -26,8 +26,7 @@ from .widgets import ButtonRow, CollapsibleColumn, PickDialog, SideButtons, Tool
 
 
 # Кнопка next_step (B_*) -> главное действие окна. Кнопки входа и папки проектов main_button не выбирает (это дела
-# окна целиком, а не проекта). «Занять файл…» (файл изменён, но не занят) подсвечивает сохранение, как раньше:
-# «Сохранить отмеченное» само предлагает занять такой файл (COMMIT_LOCK_REQUIRED), а подсветки на «Занятых» пока нет.
+# окна целиком, а не проекта). Файл изменён, но не занят - подсвечена «Занять файл…» на вкладке «Занятые» ("lock").
 MAIN_ACTIONS = {
     next_step.B_RESOLVE: "resolve",      # «Разобрать конфликт» (особая кнопка слева)
     next_step.B_REPAIR: "repair",        # «Починить папку» (особая кнопка слева)
@@ -35,7 +34,7 @@ MAIN_ACTIONS = {
     next_step.B_UPDATE: "update",        # «Получить новое» (слева)
     next_step.B_PUBLISH: "publish",      # «Отправить на сервер…» (слева)
     next_step.B_COMMIT: "commit",        # сохранение справа, на «Изменениях»
-    next_step.B_LOCK: "commit",
+    next_step.B_LOCK: "lock",            # «Занять файл…» справа, на «Занятых»
     next_step.B_LOGIN: None,
     next_step.B_CHOOSE_FOLDER: None,
 }
@@ -43,13 +42,13 @@ MAIN_ACTIONS = {
 
 def main_action(state: Optional[str], status: Optional[WcStatus], read_only: bool = False,
                 local: bool = False, history_missing: bool = False, history_found: bool = False) -> Optional[str]:
-    """Главное действие колонки 1 по состоянию проекта: "resolve" | "repair" | "commit" | "update" | "publish" |
-    "restore" | None (проект не выбран).
+    """Главное действие по состоянию проекта: "resolve" | "repair" | "commit" | "lock" | "update" | "publish" |
+    "restore" | None (проект не выбран или подсвечивать нечего).
 
     Обёртка над `next_step.main_button` (docs/PLAN_ui_v4.md, раздел 6): подсветка, строка «Что сделать» и
     `next_action` помощника считаются одной функцией. state - MineItem.state ("svn" | "plain" | "broken") или None.
     Порядок: конфликт, повреждённая папка, незаконченный переход, новое на сервере (и при своих правках: сначала
-    «Получить новое»), свои правки. Делать нечего или проверка ещё не пришла - «Получить новое». Версия (read_only)
+    «Получить новое»), свои правки (файл изменён, но не занят - "lock"). Делать нечего или проверка ещё не пришла - «Получить новое». Версия (read_only)
     правки не принимает. Обычная папка - "publish". Проект с историей на компьютере (local): история пропала -
     "restore", если она найдена на диске, иначе "publish"; есть правки (или проверка ещё не пришла) - "commit"
     («Сохранить у себя»); папка чистая - "publish". «Продолжить без истории» главным не бывает: это второе действие
@@ -108,7 +107,7 @@ class ProjectsTabMixin:
     PROJECT_DIR_REMOVE = "Убрать эту папку из списка"     # последний пункт выпадающего списка папок
     # двойной щелчок по проекту разворачивает «Состояние проекта» на вкладке главного действия (main_action);
     # у остальных действий (починить, отправить, восстановить) вкладки своей нет: остаётся открытая
-    MAIN_ACTION_TAB = {"commit": "changes", "resolve": "changes", "update": "incoming"}
+    MAIN_ACTION_TAB = {"commit": "changes", "resolve": "changes", "update": "incoming", "lock": "locks"}
     _auto_tab_key = ""        # проект, для которого решение «открыть Изменения» ещё не принято (ждём проверку)
     _folder_missing_path = ""   # папка проектов не найдена (отключён сетевой диск): её путь, иначе пусто
     _hint_other_iid = ""        # строка таблицы проекта, о котором говорит подсказка «В проекте «…»: …»
@@ -1237,7 +1236,24 @@ class ProjectsTabMixin:
         click = None
         if not step.quiet and step.click != next_step.CLICK_NONE:
             click = lambda shown=step: self._on_hint_click(shown)      # noqa: E731
-        bar.set_background(detailed, short, click=click)
+        signature = self._step_signature(step)
+        about = self._hint_about(item, step)
+        hide_key = (about, signature) if detailed and step.code not in self._UNHIDDEN_CODES else None
+        bar.set_background(detailed, short, click=click, subject=os.path.normcase(item.path) if item else "",
+                           signature=signature, hide_key=hide_key)
+
+    # «всё в порядке» скрывать незачем: это не совет
+    _UNHIDDEN_CODES = (next_step.NOTHING, next_step.READ_ONLY)
+
+    def _hint_about(self, item: Optional[MineItem], step: next_step.NextStep) -> str:
+        """О чём подсказка (для «Скрыть»): папка проекта, о котором она говорит (у «В проекте «…»» - другой проект);
+        вход и папка проектов - дела окна (пустая строка)."""
+        if step.code == next_step.OTHER:
+            other = self.mine.get(self._hint_other_iid)
+            return os.path.normcase(other.path) if other is not None else ""
+        if step.code in (next_step.LOGIN, next_step.NO_FOLDER) or item is None:
+            return ""
+        return os.path.normcase(item.path)
 
     def _step_button(self, key: Optional[str]) -> Optional[tk.Misc]:
         """Кнопка окна по ключу next_step (B_*). Вход - «⟳»: проверка откроет окно входа (у имени в шапке кнопки нет)."""
@@ -1431,7 +1447,9 @@ class ProjectsTabMixin:
             return
         if self._typing_comment():
             return
-        self.project_tabs.select(self.project_tab_frames["changes"])
+        # файл изменён, но не занят: подсвечена «Занять файл…» - открываем её вкладку, а не «Изменения»
+        tab = "locks" if self._main_action_of(item) == "lock" else "changes"
+        self.project_tabs.select(self.project_tab_frames[tab])
 
     # вкладка «Изменения»: панель постоянная, список правок берётся из последней проверки проекта
 
@@ -1609,6 +1627,7 @@ class ProjectsTabMixin:
         for button in (self.special_btn, self.update_btn, self.publish_btn):
             button.configure(style="Accent.TButton" if main_buttons.get(main) is button else "TButton")
         self.project_panel.set_save_accent(main == "commit")
+        self.project_panel.set_lock_accent(main == "lock")
         # особая кнопка видна, только когда она и есть главное действие (конфликт, повреждённая папка, пропавшая история)
         if main == "restore":
             self.special_btn.configure(text=localrepo.RESTORE_BUTTON, command=self._on_restore_history,

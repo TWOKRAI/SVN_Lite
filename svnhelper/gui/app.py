@@ -677,6 +677,7 @@ class App(DownloadTabMixin, ProjectsTabMixin, LinesTabMixin, NotifyMixin):
         self.hint_bar = HintBar(root, px, mode=self.settings.hint_mode, reason=self._disabled_reason)
         hints.install(self.hint_bar)
         hints.hint(self.hint_bar.cancel_btn, "bar.cancel")
+        hints.hint(self.hint_bar.hide_btn, "bar.hide")
 
         # рабочая область прямо в окне, без ряда вкладок: «Скачать проект» - подвкладка колонки «Проекты»
         self._update_login_label()

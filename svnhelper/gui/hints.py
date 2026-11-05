@@ -14,9 +14,10 @@
 """
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable, Optional, Sequence, Union
+from typing import Callable, Hashable, Optional, Sequence, Union
 
 from .. import messages, next_step as ns
 from ..config import HINT_MODES
@@ -33,6 +34,7 @@ SMALL_WINDOW = 700        # окно ниже этого (px до масштаб
 HOVER_DELAY_MS = 150      # уход с элемента возвращает прежний текст не сразу: между соседними кнопками не мигает
 ERROR_MS = 15_000         # сколько виден совет о тихом сбое
 RESULT_MS = 10_000        # сколько виден результат действия
+STEP_MIN_MS = 2_000       # проактивная подсказка о том же проекте меняется не чаще (раздел 6.4, «не раздражать»)
 
 UNAVAILABLE = "Сейчас недоступно: {reason}."
 GENERIC_REASON = "для выбранного проекта это сейчас не подходит"
@@ -161,7 +163,10 @@ HINTS: dict[str, tuple[str, str]] = {
                         "кнопка, видно при наведении."),
     "buttons.expand": ("Показать подписи", "Показать подписи: кнопки колонки снова со значками и подписями."),
     # сама панель
-    "bar.cancel":("Отмена", "Отмена: остановить операцию. То, что уже пришло, останется в папке."),
+    "bar.cancel": ("Отмена", "Отмена: остановить операцию. То, что уже пришло, останется в папке."),
+    "bar.hide": ("Скрыть подсказку",
+                 "Скрыть: эта подсказка не появится для проекта, пока не изменится то, о чём она (например, число "
+                 "файлов)."),
 }
 
 # причина, почему кнопка серая, если окно не назвало общей (идёт операция, не выбран проект)
@@ -405,7 +410,14 @@ class HintBar(ttk.Frame):
         self._error = self._result = self._background = ""
         self._background_short: Optional[str] = None
         self._background_click: Optional[Callable[[], None]] = None
-        self._timers: dict[str, Optional[str]] = {"leave": None, "error": None, "result": None}
+        # проактивная подсказка: о каком проекте, подпись состояния, когда сменилась, ключ «Скрыть», ждущая смена
+        self._bg_subject: Hashable = None
+        self._bg_signature: Hashable = None
+        self._bg_hide_key: Hashable = None
+        self._bg_since = 0.0
+        self._pending: Optional[tuple] = None
+        self._hidden: set = set()            # ключи подсказок, скрытых крестиком (до конца работы программы)
+        self._timers: dict[str, Optional[str]] = {"leave": None, "error": None, "result": None, "step": None}
         self._progress = ""
         self._cancel_cmd: Optional[Callable[[], None]] = None
         self._small = False
@@ -422,6 +434,10 @@ class HintBar(ttk.Frame):
         self.cancel_btn.grid(row=0, column=2, sticky="e", padx=(px(8), 0))
         self.progress_label.grid_remove()
         self.cancel_btn.grid_remove()
+        # «Скрыть» проактивную подсказку - крестик в правой части панели (виден, пока она на экране)
+        self.hide_btn = ttk.Button(self, text="✕", style="Small.TButton", width=2, command=self.hide)
+        self.hide_btn.grid(row=0, column=3, sticky="e", padx=(px(8), 0))
+        self.hide_btn.grid_remove()
         self.bind("<Configure>", lambda _e: self._render(), add="+")
         self.winfo_toplevel().bind("<Configure>", self._on_window_configure, add="+")
         self.bind("<Destroy>", self._on_destroy, add="+")
@@ -550,18 +566,66 @@ class HintBar(ttk.Frame):
         self._restart("result", RESULT_MS)
         self._render()
 
-    def set_background(self, text: str, short: Optional[str] = None,
-                       click: Optional[Callable[[], None]] = None) -> None:
+    def set_background(self, text: str, short: Optional[str] = None, click: Optional[Callable[[], None]] = None, *,
+                       subject: Hashable = None, signature: Hashable = None, hide_key: Hashable = None) -> None:
         """Фоновый текст: что делать с выбранным проектом (или подсказка, пока проект не выбран). short - он же в режиме
-        «коротко» (None - тот же текст); click - что делает щелчок по нему (None - ничего)."""
-        changed = (text, short, click is None) != (self._background, self._background_short,
-                                                   self._background_click is None)
+        «коротко» (None - тот же текст); click - что делает щелчок по нему (None - ничего).
+
+        Проактивная подсказка (docs/PLAN_ui_v4.md, раздел 6.4, «не раздражать») передаёт ещё subject (о каком
+        выбранном проекте речь) и signature (подпись состояния: код и числа). У того же subject новая подпись
+        показывается не чаще раза в STEP_MIN_MS: более частые смены ждут, и если состояние вернулось к показанному,
+        текст так и не мигнёт. Другой subject или та же подпись (поменялась только подача: карточка свёрнута) -
+        сразу. hide_key - ключ для «Скрыть» (None - скрыть нельзя): скрытая подсказка не показывается, пока не
+        придёт другой ключ (подпись изменилась)."""
+        new = (text, short, click, subject, signature, hide_key)
+        if subject is not None and subject == self._bg_subject and signature != self._bg_signature:
+            if self._pending is not None:
+                self._pending = new              # уже ждём: когда подойдёт время, покажем самое свежее
+                return
+            wait = STEP_MIN_MS - int((time.monotonic() - self._bg_since) * 1000)
+            if wait > 0:
+                self._pending = new
+                self._timers["step"] = self.after(wait, self._apply_pending)
+                return
+        self._cancel("step")
+        self._pending = None
+        self._apply_background(*new)
+
+    def _apply_pending(self) -> None:
+        self._timers["step"] = None
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            self._apply_background(*pending)
+
+    def _apply_background(self, text: str, short: Optional[str], click: Optional[Callable[[], None]],
+                          subject: Hashable, signature: Hashable, hide_key: Hashable) -> None:
+        if (subject, signature) != (self._bg_subject, self._bg_signature):
+            self._bg_since = time.monotonic()
+        changed = ((text, short, click is None, hide_key) != (self._background, self._background_short,
+                                                              self._background_click is None, self._bg_hide_key))
         self._background, self._background_short, self._background_click = text, short, click
+        self._bg_subject, self._bg_signature, self._bg_hide_key = subject, signature, hide_key
         if changed:
+            self._render()
+
+    def hidden(self) -> bool:
+        """Фоновая подсказка скрыта крестиком («Скрыть») и не изменилась с тех пор."""
+        return self._bg_hide_key is not None and self._bg_hide_key in self._hidden
+
+    def can_hide(self) -> bool:
+        """Крестик «Скрыть» сейчас нужен: виден фоновый текст, и его можно скрыть."""
+        return self._bg_hide_key is not None and not self.hidden() and self.source() == "background"
+
+    def hide(self) -> None:
+        """Крестик «Скрыть»: эта подсказка (её ключ - проект и подпись) больше не показывается, пока не изменится."""
+        if self._bg_hide_key is not None:
+            self._hidden.add(self._bg_hide_key)
             self._render()
 
     def background(self) -> str:
         """Фоновый текст для текущего режима (что видно, когда нет ни наведения, ни совета, ни результата)."""
+        if self.hidden():
+            return ""
         if self.mode == MODE_SHORT and self._background_short is not None:
             return self._background_short
         return self._background
@@ -651,8 +715,14 @@ class HintBar(ttk.Frame):
                 right += self.cancel_btn.winfo_reqwidth() + self.px(8)
         if self.mode == MODE_PROGRESS:
             self.text_label.grid_remove()
+            self.hide_btn.grid_remove()
             return
         self.text_label.grid()
+        if self.can_hide():
+            self.hide_btn.grid()
+            right += self.hide_btn.winfo_reqwidth() + self.px(8)
+        else:
+            self.hide_btn.grid_remove()
         room = width - pad - right if width > 1 else 0
         shown = fit_lines(self.text(), room, self.lines(), self._measure)
         if str(self.text_label.cget("text")) != shown:

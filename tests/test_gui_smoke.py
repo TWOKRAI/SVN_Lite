@@ -37,7 +37,11 @@ def setUpModule():
                            # тесты истории сами подставляют настоящий svnadmin
                            ("svnhelper.config.find_svnadmin", {"return_value": None}),
                            ("svnhelper.tortoise.launch",
-                            {"side_effect": AssertionError("тест не должен запускать TortoiseSVN")})):
+                            {"side_effect": AssertionError("тест не должен запускать TortoiseSVN")}),
+                           # U4.6: проактивная подсказка о том же проекте меняется не чаще раза в 2 с; тесты окна
+                           # меняют состояние проекта подряд и сразу смотрят текст. Ограничение частоты проверяет
+                           # HintBarTests.test_step_changes_not_more_often_than_min_interval (с настоящей задержкой)
+                           ("svnhelper.gui.hints.STEP_MIN_MS", {"new": 0})):
         patch = mock.patch(target, **kwargs)
         patch.start()
         _cache_patches.append(patch)
@@ -4568,7 +4572,7 @@ class MainActionTests(unittest.TestCase):
         from svnhelper.gui.projects_tab import MAIN_ACTIONS
         self.assertEqual(set(MAIN_ACTIONS), {v for k, v in vars(next_step).items() if k.startswith("B_")})
         self.assertLessEqual(set(MAIN_ACTIONS.values()),
-                             {"resolve", "repair", "commit", "update", "publish", "restore", None})
+                             {"resolve", "repair", "commit", "lock", "update", "publish", "restore", None})
 
     def test_main_action_for_local_history(self):
         """Ревью 2026-11-02, п.5: история потеряна - «Восстановить», если нашлась, иначе «Отправить на сервер»;
@@ -4625,18 +4629,21 @@ class ColumnOneButtonsTests(unittest.TestCase):
                      ("svn", WcStatus(local_changes=[change]), "commit", app._commit_panel.save_button),
                      # U4.6: новое и свои правки - сначала «Получить новое»
                      ("svn", WcStatus(incoming=2, local_changes=[change]), "update", app.update_btn),
-                     # файл изменён, но не занят: сохранение само предложит занять его
-                     ("svn", WcStatus(local_changes=[LocalChange(change.path, "modified", needs_lock=True)]), "commit",
-                      app._commit_panel.save_button),
+                     # U4.6: файл изменён, но не занят - «Занять файл…» на «Занятых» (а не сохранение)
+                     ("svn", WcStatus(local_changes=[LocalChange(change.path, "modified", needs_lock=True)]), "lock",
+                      panel.lock_btn),
                      ("svn", WcStatus(switched=1, local_changes=[change]), "update", app.update_btn),
                      ("svn", WcStatus(conflicts=1), "resolve", app.special_btn),
                      ("broken", None, "repair", app.special_btn),
                      ("plain", None, "publish", app.publish_btn)]
             for state, status, main, expected in cases:
                 with self.subTest(state=state, status=status):
+                    # подсвеченная кнопка справа видна на своей вкладке: сохранение - «Изменения», занять - «Занятые»
+                    panel.tabs.select(panel.frames["locks" if main == "lock" else "changes"])
                     self.show_state(app, item, state, status)
                     self.assertEqual(app._main_action_of(item), main)
                     self.assertEqual(self.accents(app), [expected])
+            panel.tabs.select(panel.frames["changes"])
             # сохранение подсвечено на любой подвкладке, где оно видно, и только у главного действия
             self.show_state(app, item, "svn", WcStatus(local_changes=[change]))
             self.assertEqual(str(app._commit_panel.save_button.cget("style")), "Accent.TButton")
@@ -8054,6 +8061,66 @@ class ProactiveHintTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_need_lock_highlights_take_file_on_locks_tab(self):
+        """Файл изменён, но не занят: подсвечена «Занять файл…» на «Занятых» (одна подсветка на экране); выбор проекта
+        и двойной щелчок открывают «Занятые»."""
+        from types import SimpleNamespace
+        from svnhelper.svn_core import LocalChange, WcStatus
+        root, app, iid, item = self.ready_app("u46_need_lock")
+        try:
+            panel = app.project_panel
+            change = LocalChange(os.path.join(item.path, "a.txt"), "modified", needs_lock=True)
+            self.show_state(app, item, "svn", WcStatus(local_changes=[change]))
+            app.open_project_tab("locks")
+            root.update()
+            self.assertEqual(app._main_action_of(item), "lock")
+            self.assertEqual(shown_accents(app), [panel.lock_btn])
+            self.assertEqual(str(app._commit_panel.save_button.cget("style")), "TButton")
+            app.open_project_tab("changes")
+            root.update()
+            self.assertEqual(shown_accents(app), [])                 # подсвеченная кнопка на другой вкладке
+            # выбор проекта открывает вкладку подсвеченной кнопки
+            app.mine_tree.selection_set(())
+            root.update()
+            app.mine_tree.selection_set(iid)
+            root.update()
+            self.assertEqual(panel.current_tab(), "locks")
+            app.open_project_tab("history")
+            with mock.patch.object(app.mine_tree, "identify_row", return_value=iid), \
+                    mock.patch.object(app.mine_tree, "identify_region", return_value="cell"):
+                app._on_mine_double_click(SimpleNamespace(x=5, y=5))
+            self.assertEqual(panel.current_tab(), "locks")
+            # файл занят вами - обычное сохранение
+            self.show_state(app, item, "svn", WcStatus(local_changes=[LocalChange(change.path, "modified",
+                                                                                  needs_lock=True, locked_by_me=True)]))
+            self.assertEqual(str(panel.lock_btn.cget("style")), "TButton")
+            self.assertEqual(app._main_action_of(item), "commit")
+        finally:
+            root.destroy()
+
+    def test_hide_in_window_until_numbers_change(self):
+        from svnhelper.svn_core import WcStatus
+        root, app, iid, item = self.ready_app("u46_hide")
+        try:
+            self.show_state(app, item, "svn", WcStatus(incoming=2))
+            root.update()
+            bar = app.hint_bar
+            self.assertEqual(bar.hide_btn.winfo_manager(), "grid")
+            from svnhelper.gui import hints
+            self.assertEqual(hints.key_of(bar.hide_btn), "bar.hide")
+            bar.hide_btn.invoke()
+            self.assertEqual(bar.text(), "")
+            app._refresh_project_panel()                               # та же проверка ещё раз: скрыта
+            self.assertEqual(bar.text(), "")
+            self.show_state(app, item, "svn", WcStatus(incoming=5))    # нового стало больше - снова видна
+            self.assertTrue(bar.text().startswith("У коллег новое: 5 файлов."), bar.text())
+            self.show_state(app, item, "svn", WcStatus())              # «всё в порядке» не скрывается
+            root.update()
+            self.assertEqual(bar.text(), "Всё сохранено и получено.")
+            self.assertEqual(bar.hide_btn.winfo_manager(), "")
+        finally:
+            root.destroy()
+
     def test_login_folder_locked_and_other_project(self):
         """Вход не выполнен, папка проектов не найдена, нужный файл занят другим, дело в другом проекте."""
         from datetime import datetime, timezone
@@ -8294,6 +8361,83 @@ class HintBarTests(unittest.TestCase):
         bar.clear_progress()
         self.assertFalse(bar.progress_active)
         self.assertEqual(bar.progress_label.winfo_manager(), "")
+
+    def test_click_on_background_text(self):
+        """U4.6: щелчок по фоновому тексту вызывает его действие один раз; по другому тексту - ничего."""
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        clicked = []
+        bar.set_background("Нажмите «Разобрать конфликт»", click=lambda: clicked.append(1))
+        self.assertTrue(bar.clickable())
+        bar.text_label.event_generate("<Button-1>")
+        self.assertEqual(clicked, [1])
+        root.update()
+        self.assertEqual(str(bar.text_label.cget("cursor")), "hand2")
+        bar.show_result("Сохранено")                         # на месте подсказки результат: щелчок не нажимает
+        bar.text_label.event_generate("<Button-1>")
+        self.assertEqual(clicked, [1])
+        bar._expire("result")
+        bar.set_mode(hints.MODE_PROGRESS)                    # текста нет вовсе
+        bar.text_label.event_generate("<Button-1>")
+        bar.set_mode(hints.MODE_DETAILED)
+        bar.set_background("Всё сохранено и получено.")     # без действия
+        bar.text_label.event_generate("<Button-1>")
+        self.assertEqual(clicked, [1])
+        self.assertEqual(str(bar.text_label.cget("cursor")), "")
+
+    def test_step_changes_not_more_often_than_min_interval(self):
+        """U4.6, раздел 6.4: подсказка о том же проекте меняется не чаще раза в STEP_MIN_MS; вернулось прежнее
+        состояние - текст не мигнул; другой проект или та же подпись (другая подача) - сразу."""
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        with mock.patch.object(hints, "STEP_MIN_MS", 400):
+            bar.set_background("Новое: 1 файл", subject="p", signature=("get_new", 1))
+            started = time.monotonic()
+            bar.set_background("Новое: 2 файла", subject="p", signature=("get_new", 2))
+            self.assertEqual(bar.text(), "Новое: 1 файл")             # рано: ждёт
+            bar.set_background("Новое: 1 файл", subject="p", signature=("get_new", 1))
+            self.assertIsNone(bar._pending)                          # состояние вернулось: менять нечего
+            bar.set_background("«p»: Новое: 1 файл", subject="p", signature=("get_new", 1))
+            self.assertEqual(bar.text(), "«p»: Новое: 1 файл")        # та же подпись, другая подача - сразу
+            bar.set_background("Новое: 3 файла", subject="p", signature=("get_new", 3))
+            bar.set_background("Новое: 4 файла", subject="p", signature=("get_new", 4))
+            self.assertEqual(bar.text(), "«p»: Новое: 1 файл")
+            self.pump(root, lambda: bar.text() == "Новое: 4 файла")   # самое свежее, одной сменой
+            self.assertGreaterEqual(time.monotonic() - started, 0.35)
+            bar.set_background("Конфликт", subject="q", signature=("conflict",))
+            self.assertEqual(bar.text(), "Конфликт")                  # другой проект - сразу
+            bar.set_background("Выберите проект в списке.")
+            self.assertEqual(bar.text(), "Выберите проект в списке.")  # не подсказка о проекте - сразу
+
+    def test_hide_button_hides_hint_until_its_signature_changes(self):
+        from svnhelper.gui import hints
+        root, bar = self.make_bar()
+        bar.set_background("Всё сохранено и получено.", subject="p", signature=("nothing",))
+        root.update()
+        self.assertEqual(bar.hide_btn.winfo_manager(), "")        # скрывать нечего
+        bar.set_background("Не сохранено: 2 файла.", "Нажмите «Сохранить отмеченное».", subject="p",
+                           signature=("save", 2), hide_key=("p", ("save", 2)))
+        root.update()
+        self.assertEqual(bar.hide_btn.winfo_manager(), "grid")
+        self.assertEqual(bar.hide_btn.cget("text"), "✕")
+        button = ttk.Button(root, text="Открыть папку")
+        button.pack()
+        hints.hint(button, "project.open")
+        button.event_generate("<Enter>")                           # на месте подсказки пояснение кнопки
+        self.assertEqual(bar.hide_btn.winfo_manager(), "")
+        bar._leave()
+        bar.hide_btn.invoke()
+        self.assertEqual(bar.text(), "")
+        self.assertEqual(bar.hide_btn.winfo_manager(), "")
+        bar.set_mode(hints.MODE_SHORT)
+        self.assertEqual(bar.text(), "")                           # скрыта в обоих режимах
+        bar.set_mode(hints.MODE_DETAILED)
+        bar.set_background("Не сохранено: 2 файла.", subject="p", signature=("save", 2), hide_key=("p", ("save", 2)))
+        self.assertEqual(bar.text(), "")                           # та же подпись - всё ещё скрыта
+        bar.set_background("Не сохранено: 3 файла.", subject="p", signature=("save", 3), hide_key=("p", ("save", 3)))
+        self.assertEqual(bar.text(), "Не сохранено: 3 файла.")     # подпись сменилась - снова видна
+        bar.set_background("Не сохранено: 2 файла.", subject="q", signature=("save", 2), hide_key=("q", ("save", 2)))
+        self.assertEqual(bar.text(), "Не сохранено: 2 файла.")     # скрыта только для своего проекта
 
     def test_lines_by_mode_and_window_height(self):
         from svnhelper.gui import hints
