@@ -95,8 +95,10 @@ def _number(value: object) -> Optional[int]:
 
 def build_entry(ctx, operation: str, outcome: str = "ok", *, read_only: bool = True, project: object = "",
                 files: Iterable = (), plan_id: str = "", exit_code: int = 0, rev_before: object = None,
-                rev_after: object = None, op_id: str = "", comment: object = "", now: Optional[datetime] = None) -> dict:
-    """Строка журнала как словарь. Набор ключей постоянный (его читает окно журнала, AG.8)."""
+                rev_after: object = None, op_id: str = "", comment: object = "", undone_rev: object = None,
+                now: Optional[datetime] = None) -> dict:
+    """Строка журнала как словарь. Набор ключей постоянный (его читает окно журнала, AG.8). `undone_rev` пишет только
+    удавшаяся отмена сохранения: номер сохранения, которое она обратила (в старых строках поля нет)."""
     rows, total = _files(files)
     text = str(comment or "").strip()
     user = getattr(getattr(ctx, "settings", None), "username", "") or getattr(getattr(ctx, "config", None),
@@ -119,6 +121,7 @@ def build_entry(ctx, operation: str, outcome: str = "ok", *, read_only: bool = T
         "rev_before": _number(rev_before),
         "rev_after": _number(rev_after),
         "op_id": clean_name(op_id, 64),
+        "undone_rev": _number(undone_rev),
         "comment": redact(untrusted(text, COMMENT_LIMIT)),
         "comment_truncated": len(text) > COMMENT_LIMIT,
     }
@@ -143,6 +146,16 @@ def record(ctx, operation: str, outcome: str = "ok", **fields) -> bool:
     except Exception:                                   # журнал важен, но операции он не ломает
         log.exception("Не удалось записать журнал действий помощника")
         return False
+
+
+def list_months(folder: Optional[Path] = None) -> list:
+    """Месяцы, за которые есть файл журнала: [(год, месяц)], свежие первыми."""
+    try:
+        names = os.listdir(folder or audit_dir())
+    except OSError:
+        return []
+    found = [(int(m.group(1)), int(m.group(2))) for m in map(_NAME_RE.match, names) if m]
+    return sorted(found, reverse=True)
 
 
 def read_entries(now: Optional[datetime] = None) -> list:

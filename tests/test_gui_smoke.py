@@ -7753,7 +7753,7 @@ class AgentDialogTests(unittest.TestCase):
     def test_open_journal_opens_agent_folder(self):
         root, app, dialog = self.open_dialog()
         with mock.patch("os.startfile", create=True) as start:
-            dialog.log_btn.invoke()
+            dialog.folder_btn.invoke()
         start.assert_called_once_with(self.data / "agent")
         self.assertTrue((self.data / "agent").is_dir())
 
@@ -7901,6 +7901,225 @@ class AgentDialogTests(unittest.TestCase):
             self.assertLessEqual(dialog.winfo_reqwidth(), root.winfo_screenwidth(), scale)
             self.assertEqual(before, (app._min_width, app._min_height, root.minsize()))   # окно программы не менялось
             dialog.destroy()
+            root.destroy()
+
+
+@unittest.skipUnless(HAS_DISPLAY, "нет экрана")
+class AgentJournalDialogTests(unittest.TestCase):
+    """AG.8: окно «Журнал действий помощника»: лента, фильтры, кнопки «Отменить» и «Вернуть» (логика отмены проверена
+    на настоящем svn в tests/test_agent_journal.py; здесь слой отмены подменён)."""
+
+    setUp = AgentDialogTests.setUp
+    make_app = AgentDialogTests.make_app
+    destroy_root = staticmethod(AgentDialogTests.destroy_root)
+
+    PROJECT = "пробный проект"
+
+    def write_rows(self, *rows, month=None):
+        from datetime import datetime, timedelta
+        from svnhelper.ops import audit
+        base = {"v": 1, "ts": "", "pid": 1, "client": "mcp",
+                "client_info": "Claude Code", "user": "ivanov", "operation": "save_apply", "read_only": False,
+                "project": self.PROJECT, "files": [], "files_total": 0, "plan_id": "", "outcome": "ok",
+                "exit_code": 0, "rev_before": None, "rev_after": None, "op_id": "", "comment": ""}
+        path = audit.audit_path(month)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "ab") as handle:
+            for number, row in enumerate(rows):
+                stamp = (datetime.now().astimezone() + timedelta(seconds=number)).isoformat(timespec="seconds")
+                row = {**base, **row}
+                row["ts"] = row["ts"] or stamp
+                handle.write((self.json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+
+    def open_window(self, **kwargs):
+        root, app = self.make_app(**kwargs)
+        app._open_agent_journal()
+        return root, app, app._agent_journal
+
+    def select(self, window, revision, operation="save_apply"):
+        for iid, row in window.rows.items():
+            if row.entry.rev_after == revision and row.entry.operation == operation:
+                window.tree.selection_set(iid)
+                window._on_select()
+                return row
+        self.fail(f"нет строки с сохранением {revision}")
+
+    def shown(self, window):
+        return [window.tree.item(iid, "values") for iid in window.tree.get_children()]
+
+    def sync_run_bg(self, app):
+        app.run_bg = lambda work, done: done(work(), None, 0)
+
+    def test_menu_item_opens_one_window_with_hint(self):
+        from svnhelper.gui import hints
+        root, app = self.make_app()
+        self.assertEqual(app.help_menu.entrycget("Журнал действий помощника…", "state"), "normal")
+        app.help_menu.invoke(app.help_menu.index("Журнал действий помощника…"))
+        first = app._agent_journal
+        self.assertTrue(first.winfo_exists())
+        app._open_agent_journal()
+        self.assertIs(app._agent_journal, first)
+        self.assertIn("menu.agent_journal", hints.HINTS)
+
+    def test_button_in_agent_dialog_opens_the_journal(self):
+        root, app = self.make_app()
+        app._open_agent_dialog()
+        app._agent_dialog.log_btn.invoke()
+        self.assertTrue(app._agent_journal.winfo_exists())
+
+    def test_empty_journal_says_so_and_has_no_buttons(self):
+        root, app, window = self.open_window()
+        self.assertEqual(self.shown(window), [])
+        self.assertIn("ничего не менял", window.empty_var.get())
+        self.assertEqual((str(window.undo_btn.cget("state")), str(window.redo_btn.cget("state"))),
+                         ("disabled", "disabled"))
+
+    def test_feed_default_filter_and_columns(self):
+        self.write_rows({"operation": "status", "read_only": True},
+                        {"operation": "save_apply", "rev_after": 5, "files": [{"path": "чертёж 1.txt", "action": "M"}],
+                         "files_total": 1})
+        root, app, window = self.open_window()
+        rows = self.shown(window)
+        self.assertEqual(len(rows), 1)                                    # по умолчанию только изменения
+        when, who, what, project, files, number, outcome, link = rows[0]
+        self.assertEqual((who, what, project, files, number, outcome),
+                         ("MCP: Claude Code", "сохранил изменения", self.PROJECT, "чертёж 1.txt", "№ 5", "выполнено"))
+        self.assertEqual(window.empty_var.get(), "")
+        window.filter_var.set("Все действия")
+        window.reload()
+        self.assertEqual(len(self.shown(window)), 2)
+        window.filter_var.set("Только чтение")
+        window.reload()
+        self.assertEqual([r[2].startswith("посмотрел") for r in self.shown(window)], [True])
+
+    def test_period_reads_month_files(self):
+        from datetime import datetime, timedelta
+        old = datetime.now().replace(day=1) - timedelta(days=40)
+        self.write_rows({"operation": "save_apply", "rev_after": 1, "ts": old.astimezone().isoformat()}, month=old)
+        self.write_rows({"operation": "save_apply", "rev_after": 2})
+        root, app, window = self.open_window()
+        self.assertEqual(len(self.shown(window)), 2)                      # по умолчанию 3 месяца
+        window.period_var.set("Этот месяц")
+        window.reload()
+        self.assertEqual([r[5] for r in self.shown(window)], ["№ 2"])
+
+    def test_buttons_follow_selected_row(self):
+        from datetime import datetime
+        self.write_rows({"rev_after": 10, "ts": "2026-11-05T09:00:00+03:00"},
+                        {"operation": "rollback_apply", "rev_after": 11, "undone_rev": 10, "client": "window",
+                         "client_info": "", "ts": "2026-11-05T09:10:00+03:00"},
+                        {"rev_after": 12, "ts": "2026-11-05T09:20:00+03:00"},
+                        {"operation": "publish_apply", "ts": "2026-11-05T09:30:00+03:00"},
+                        month=datetime.now())
+        root, app, window = self.open_window()
+        state = lambda: (str(window.undo_btn.cget("state")), str(window.redo_btn.cget("state")))   # noqa: E731
+        self.select(window, 12)
+        self.assertEqual(state(), ("normal", "disabled"))
+        self.select(window, 10)
+        self.assertEqual(state(), ("disabled", "disabled"))               # уже отменено
+        self.assertIn("отменено сохранением № 11", window.detail.get("1.0", "end"))
+        self.select(window, 11, "rollback_apply")
+        self.assertEqual(state(), ("disabled", "normal"))
+        publish = [i for i, r in window.rows.items() if r.entry.operation == "publish_apply"][0]
+        window.tree.selection_set(publish)
+        window._on_select()
+        self.assertEqual(state(), ("disabled", "disabled"))
+        self.assertEqual(window.tree.item(publish, "values")[7], "не отменяется")
+
+    def test_undo_asks_then_applies_and_reports(self):
+        from svnhelper import agent_journal
+        from svnhelper.ops.result import Result
+        self.write_rows({"rev_after": 10, "files": [{"path": "чертёж 1.txt", "action": "modified"}], "files_total": 1})
+        root, app, window = self.open_window()
+        self.sync_run_bg(app)
+        self.select(window, 10)
+        plan = Result("rollback_plan", data={"plan_id": "t0ken", "count": 1,
+                                             "files": [{"path": "чертёж 1.txt", "action": "M"}]})
+        done = Result("rollback_apply", data={"number": 11}, text="Сохранение № 10 отменено.")
+        with mock.patch.object(agent_journal, "plan_undo", return_value=plan) as plan_undo, \
+                mock.patch.object(agent_journal, "apply_undo", return_value=done) as apply_undo, \
+                mock.patch("tkinter.messagebox.askyesno", return_value=True) as ask, \
+                mock.patch("tkinter.messagebox.showinfo") as info:
+            window.undo_btn.invoke()
+        self.assertEqual(plan_undo.call_args.args[1].rev_after, 10)
+        self.assertIn("Отменить сохранение № 10 в проекте «пробный проект»?", ask.call_args.args[1])
+        self.assertIn("чертёж 1.txt", ask.call_args.args[1])
+        self.assertIs(apply_undo.call_args.args[2], plan)
+        self.assertEqual(info.call_args.args[1], "Сохранение № 10 отменено.")
+        self.assertFalse(window.busy)
+
+    def test_answer_no_changes_nothing(self):
+        from svnhelper import agent_journal
+        from svnhelper.ops.result import Result
+        self.write_rows({"rev_after": 10})
+        root, app, window = self.open_window()
+        self.sync_run_bg(app)
+        self.select(window, 10)
+        plan = Result("rollback_plan", data={"plan_id": "t0ken", "count": 0, "files": []})
+        with mock.patch.object(agent_journal, "plan_undo", return_value=plan), \
+                mock.patch.object(agent_journal, "apply_undo") as apply_undo, \
+                mock.patch("tkinter.messagebox.askyesno", return_value=False):
+            window.undo_btn.invoke()
+        apply_undo.assert_not_called()
+        self.assertFalse(window.busy)
+
+    def test_refusal_is_shown_in_plain_words_and_nothing_is_applied(self):
+        from svnhelper import agent_journal
+        from svnhelper.ops.result import ErrorInfo, Result
+        self.write_rows({"rev_after": 10})
+        root, app, window = self.open_window()
+        self.sync_run_bg(app)
+        self.select(window, 10)
+        refused = Result.failure("rollback_plan", ErrorInfo("newer_changes", "x", "y", False, 7),
+                                 {"authors": ["petrov"]})
+        with mock.patch.object(agent_journal, "plan_undo", return_value=refused), \
+                mock.patch.object(agent_journal, "apply_undo") as apply_undo, \
+                mock.patch("tkinter.messagebox.askyesno") as ask, \
+                mock.patch("tkinter.messagebox.showwarning") as warn:
+            window.undo_btn.invoke()
+        ask.assert_not_called()
+        apply_undo.assert_not_called()
+        self.assertIn("файл менял petrov", warn.call_args.args[1])
+        self.assertIn("Отменить автоматически нельзя", warn.call_args.args[1])
+
+    def test_redo_button_runs_the_same_flow(self):
+        from svnhelper import agent_journal
+        from svnhelper.ops.result import Result
+        self.write_rows({"operation": "rollback_apply", "rev_after": 11, "undone_rev": 10})
+        root, app, window = self.open_window()
+        self.sync_run_bg(app)
+        row = self.select(window, 11, "rollback_apply")
+        plan = Result("rollback_plan", data={"plan_id": "t", "count": 0, "files": []})
+        done = Result("rollback_apply", data={"number": 12}, text="x")
+        with mock.patch.object(agent_journal, "plan_undo", return_value=plan) as plan_undo, \
+                mock.patch.object(agent_journal, "apply_undo", return_value=done), \
+                mock.patch("tkinter.messagebox.askyesno", return_value=True) as ask, \
+                mock.patch("tkinter.messagebox.showinfo") as info:
+            window.redo_btn.invoke()
+        self.assertIs(plan_undo.call_args.args[1], row.entry)
+        self.assertIn("Вернуть отмену № 11", ask.call_args.args[1])
+        self.assertIn("Отмена № 11 возвращена", info.call_args.args[1])
+
+    def test_unexpected_error_is_logged_and_shown(self):
+        self.write_rows({"rev_after": 10})
+        root, app, window = self.open_window()
+        app.run_bg = lambda work, done: done(None, RuntimeError("boom"), 0)
+        self.select(window, 10)
+        with mock.patch("tkinter.messagebox.showerror") as shown:
+            window.undo_btn.invoke()
+        self.assertIn("неожиданная ошибка", shown.call_args.args[1])
+        self.assertFalse(window.busy)
+
+    def test_window_fits_the_screen_at_any_scale(self):
+        self.write_rows(*[{"rev_after": n, "files": [{"path": f"f{n}.txt", "action": "M"}] * 3} for n in range(40)])
+        for scale in (1.0, 1.25, 1.5):
+            root, app = self.make_app(scale=scale)
+            app._open_agent_journal()
+            window = app._agent_journal
+            window.update_idletasks()
+            self.assertLessEqual(window.winfo_reqheight(), root.winfo_screenheight() - 60, scale)
+            self.assertLessEqual(window.winfo_reqwidth(), root.winfo_screenwidth(), scale)
+            window.destroy()
             root.destroy()
 
 

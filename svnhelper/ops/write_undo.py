@@ -157,7 +157,7 @@ def execute_rollback(ctx: OpsContext, prepared: Prepared, project: str, revision
         if merged:
             _undo_merge(ctx, path, changed)
         raise
-    ctx.audit.update(rev_after=committed.revision)
+    ctx.audit.update(rev_after=committed.revision, undone_rev=state["revision"])
     if state["local"]:
         _catch_up(ctx, path)
     data = {"number": committed.revision, "undone": state["revision"], "count": len(state["rows"]),

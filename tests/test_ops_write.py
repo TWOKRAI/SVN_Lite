@@ -407,6 +407,14 @@ class RollbackTests(WriteOpsBase):
         status = svn("svn", "status", str(self.mine))
         self.assertEqual(status.strip(), "")
 
+    def test_rollback_audit_row_links_to_undone_save(self):
+        done = self.save("чертёж 1.txt", "изменено помощником", "Правка чертежа по просьбе")
+        _p, undone = self.plan_and_apply("rollback", project=NAME, revision=done.data["number"])
+        rows = {r["operation"]: r for r in audit.read_entries() if r["operation"] in ("save_apply", "rollback_apply")}
+        self.assertEqual((rows["save_apply"]["rev_after"], rows["save_apply"]["undone_rev"]), (done.data["number"], None))
+        self.assertEqual((rows["rollback_apply"]["rev_after"], rows["rollback_apply"]["undone_rev"]),
+                         (undone.data["number"], done.data["number"]))
+
     def test_rollback_of_added_and_deleted_files(self):
         added = self.save("новый.txt", "x", "Добавление нового файла")
         _p, undone = self.plan_and_apply("rollback", project=NAME, revision=added.data["number"])
