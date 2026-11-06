@@ -176,11 +176,15 @@ POLICY_MODE_RU_WRITE = {
     "write_confirm": "Помощнику разрешена запись с подтверждением: каждое изменение сначала план, потом выполнение.",
     "write_full": "Помощнику разрешена запись без отдельного подтверждения (лимиты и журнал действуют).",
 }
+CEILING_CONFIRM_NOTE = "Так решил администратор: запись без подтверждения помощнику недоступна."
 texts.POLICY_MODE_RU.update({"write": "Помощнику разрешена запись по настройкам программы."})
 
 
-def mode_text(file_mode: str, mode: str) -> str:
-    """Фраза о режиме для doctor: учитывает, подтверждение нужно или нет."""
+def mode_text(file_mode: str, mode: str, ceiling: str = "") -> str:
+    """Фраза о режиме для doctor: учитывает, подтверждение нужно или нет. Потолок администратора «запись только с
+    подтверждением» (write_confirm) делает подтверждение обязательным, даже если сотрудник выбрал write_full."""
     if mode == "write":
+        if ceiling == "write_confirm":
+            return POLICY_MODE_RU_WRITE["write_confirm"] + " " + CEILING_CONFIRM_NOTE
         return POLICY_MODE_RU_WRITE.get(file_mode, texts.policy_mode_text("write"))
     return texts.policy_mode_text(mode)

@@ -90,6 +90,14 @@ class PolicyModesTests(unittest.TestCase):
         self.assertEqual(Policy(file_mode="read_only", ceiling="write").mode, "read_only")
         self.assertEqual(Policy(file_mode="write", ceiling="write").mode, "write")
 
+    def test_doctor_text_tells_about_confirm_ceiling(self):
+        from svnhelper.ops import texts_write
+        free = texts_write.mode_text(MODE_FULL, "write", "write")
+        capped = texts_write.mode_text(MODE_FULL, "write", "write_confirm")
+        self.assertIn("без отдельного подтверждения", free)
+        self.assertNotIn("без отдельного подтверждения", capped)
+        self.assertIn("администратор", capped)
+
     def test_new_actions_are_known(self):
         self.assertIn("branches", agent_policy.ACTIONS)
         self.assertIn("rollback", agent_policy.ACTIONS)
